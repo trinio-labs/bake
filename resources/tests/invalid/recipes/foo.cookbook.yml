@@ -1,0 +1,7 @@
+name: foo
+recipes:
+  build:
+    run: echo "foo"
+    dependencies:
+      - "nocookbook:bar"
+      - "nocookbook:foo"

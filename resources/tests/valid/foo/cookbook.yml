@@ -1,0 +1,9 @@
+name: foo
+recipes:
+  build: 
+    run: |
+      echo "Hello Foo Build!"
+  
+  test:
+    run: |
+      echo "Hello Foo Test!"

@@ -1,0 +1,7 @@
+name: foo
+recipes:
+  build:
+    run: |
+      echo "Hello Foo Build!"
+    dependencies:
+      - bar:build

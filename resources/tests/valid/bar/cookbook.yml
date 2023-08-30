@@ -1,0 +1,21 @@
+name: bar
+recipes:
+  build:
+    run: |
+      echo "Hello Bar Build!"
+      sleep 0.2
+      echo "Done!"
+
+  test:
+    run: |
+      echo "Hello Bar Test!"
+      ls
+      pwd
+    dependencies:
+      - foo:build
+
+  unique-recipe:
+    dependencies:
+      - build
+    run: |
+      echo "Hello Bar Unique Recipe!"
