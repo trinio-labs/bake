@@ -53,6 +53,11 @@ pub struct BakeProject {
     pub root_path: PathBuf,
 }
 
+pub enum RecipeSearch<'a> {
+    All,
+    ByPattern(&'a str),
+}
+
 impl BakeProject {
     /// Creates a bake project from a path to a bake.yml file or a directory in a bake project
     ///
@@ -96,7 +101,8 @@ impl BakeProject {
 
         project.cookbooks = Cookbook::map_from(path)?;
 
-        let all_recipes = project.recipes(None, None);
+        let all_recipes = project.recipes(RecipeSearch::All);
+
         // Validate if all recipe dependencies exist
         let err_msg = all_recipes.iter().fold("".to_owned(), |msg, recipe| {
             let mut missing_deps: Vec<String> = Vec::new();
@@ -164,41 +170,55 @@ impl BakeProject {
 
     /// Filter recipes by full recipe name e.g. "foo:build", "foo:" (all recipes in cookbook foo),
     /// ":build" (all recipes called build in all cookbooks)
-    pub fn recipes_by_name(&self, filter: &str) -> Vec<&Recipe> {
+    pub fn get_recipe_by_name(&self, name: &str) -> Result<&Recipe, String> {
+        if let Ok((Some(cookbook_name), Some(recipe_name))) = self.parse_recipe_full_name(name) {
+            if let Some(cookbook) = self.cookbooks.get(&cookbook_name) {
+                if let Some(recipe) = cookbook.recipes.get(&recipe_name) {
+                    return Ok(recipe);
+                }
+            }
+        }
+        Err(format!("Recipe not found: {}", name))
+    }
+
+    fn all_recipes(&self) -> Vec<&Recipe> {
+        self.cookbooks
+            .iter()
+            .flat_map(|(_, c)| c.recipes.values())
+            .collect()
+    }
+
+    fn parse_recipe_full_name(
+        &self,
+        pattern: &str,
+    ) -> Result<(Option<String>, Option<String>), String> {
         let re = Regex::new(r"(?P<cookbook>[\w.\-]*):(?P<recipe>[\w.\-]*)").unwrap();
-        if let Some(caps) = re.captures(filter) {
+        if let Some(caps) = re.captures(pattern) {
             let cookbook = caps.name("cookbook").unwrap().as_str();
             let cookbook = if cookbook.is_empty() {
                 None
             } else {
-                Some(cookbook)
+                Some(cookbook.to_owned())
             };
 
             let recipe = caps.name("recipe").unwrap().as_str();
             let recipe = if recipe.is_empty() {
                 None
             } else {
-                Some(recipe)
+                Some(recipe.to_owned())
             };
 
-            return self.recipes(cookbook, recipe);
+            Ok((cookbook, recipe))
         } else {
-            Vec::new()
+            Err(format!(
+                "Invalid recipe pattern: {}\nRecipe patterns need to be in the format 'cookbook:recipe'",
+                pattern
+            ))
         }
     }
 
-    pub fn get_recipe_by_name(&self, name: &str) -> Result<&Recipe, String> {
-        let recipes = self.recipes_by_name(name);
-        if recipes.is_empty() {
-            return Err(format!("Recipe not found: {}", name));
-        }
-        if recipes.len() != 1 {
-            return Err(format!("Multiple recipes found: {}", name));
-        }
-        Ok(recipes[0])
-    }
-
-    /// Get a list of recipes given a cookbook name and/or recipe name.
+    /// Get a list of recipes given a cookbook name and/or recipe name, including all dependent
+    /// recipes recursively
     ///
     /// # Arguments
     /// * `cookbook_name` - Cookbook name
@@ -206,34 +226,60 @@ impl BakeProject {
     ///
     /// Returns a list of recipes filtered by cookbook name and/or recipe name unless both are
     /// None, in which case all recipes are returned.
-    pub fn recipes(&self, cookbook_name: Option<&str>, recipe_name: Option<&str>) -> Vec<&Recipe> {
-        let mut recipes: Vec<&Recipe> = Vec::new();
-        if let Some(cookbook_name) = cookbook_name {
-            if let Some(cookbook) = self.cookbooks.get(cookbook_name) {
-                if let Some(recipe) = cookbook.recipes.get(recipe_name.unwrap_or("")) {
-                    recipes.push(recipe);
+    pub fn recipes(&self, search_arg: RecipeSearch) -> Vec<&Recipe> {
+        let recipes = match search_arg {
+            // We want to return early with all recipes since there's no need to add dependencies,
+            // they are all included
+            RecipeSearch::All => return self.all_recipes(),
+            RecipeSearch::ByPattern(pattern) => {
+                if let Ok((cookbook_name, recipe_name)) = self.parse_recipe_full_name(pattern) {
+                    match (cookbook_name, recipe_name) {
+                        (Some(cookbook_name), Some(recipe_name)) => {
+                            if let Some(cookbook) = self.cookbooks.get(&cookbook_name) {
+                                if let Some(recipe) = cookbook.recipes.get(&recipe_name) {
+                                    vec![recipe]
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (Some(cookbook_name), None) => {
+                            if let Some(cookbook) = self.cookbooks.get(&cookbook_name) {
+                                cookbook.recipes.values().collect()
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (None, Some(recipe_name)) => self
+                            .cookbooks
+                            .iter()
+                            .flat_map(|(_, c)| c.recipes.get(&recipe_name))
+                            .collect(),
+                        (None, None) => return self.all_recipes(),
+                    }
                 } else {
-                    recipes = cookbook.recipes.values().collect();
+                    Vec::new()
                 }
             }
-        } else if let Some(recipe_name) = recipe_name {
-            recipes = self
-                .cookbooks
-                .iter()
-                .flat_map(|(_, c)| {
-                    c.recipes
-                        .iter()
-                        .filter_map(|(name, r)| if name == recipe_name { Some(r) } else { None })
-                        .collect::<Vec<&Recipe>>()
-                })
-                .collect();
-        } else {
-            recipes = self
-                .cookbooks
-                .iter()
-                .flat_map(|(_, c)| c.recipes.values())
-                .collect();
-        }
+        };
+
+        // Recursively get recipes for dependencies
+        // let dep_recipes = recipes.iter().flat_map(|r| {
+        //     if let Some(dependencies) = r.dependencies.as_ref() {
+        //         dependencies
+        //             .iter()
+        //             .flat_map(|dep| self.recipes(RecipeSearch::ByPattern(dep)))
+        //             .collect()
+        //     } else {
+        //         Vec::new()
+        //     }
+        // });
+        // let mut res = Vec::new();
+        // res.extend(dep_recipes);
+        // res.extend(recipes);
+        // res
         recipes
     }
 
@@ -257,7 +303,7 @@ impl BakeProject {
             result: Vec::new(),
         };
 
-        for recipe in self.recipes(None, None) {
+        for recipe in self.recipes(RecipeSearch::All) {
             if !ctx.visited.contains(&recipe.name) {
                 ctx.cur_path = Vec::new();
                 check_cycle(&recipe.full_name(), &mut ctx);
@@ -296,6 +342,8 @@ mod tests {
     use std::{os::unix::prelude::PermissionsExt, path::PathBuf};
 
     use test_case::test_case;
+
+    use super::RecipeSearch;
 
     fn config_path(path_str: &str) -> String {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
@@ -341,21 +389,27 @@ mod tests {
     }
 
     #[test]
-    fn recipes_by_name() {
+    fn recipes() {
         let project = super::BakeProject::from(&PathBuf::from(config_path("/valid/"))).unwrap();
 
         // Should return empty when not specifying format "<cookbook>:<recipe>"
-        let recipes = project.recipes_by_name("foo");
+        let recipes = project.recipes(RecipeSearch::ByPattern("foo"));
         assert_eq!(recipes.len(), 0);
 
-        let recipes = project.recipes_by_name("foo:build");
+        let recipes = project.recipes(RecipeSearch::ByPattern("foo:build"));
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].name, "build");
 
-        let recipes = project.recipes_by_name("foo:");
+        let recipes = project.recipes(RecipeSearch::ByPattern("foo:"));
         assert_eq!(recipes.len(), 2);
 
-        let recipes = project.recipes_by_name(":build");
+        let recipes = project.recipes(RecipeSearch::ByPattern(":build"));
         assert_eq!(recipes.len(), 2);
+
+        let recipes = project.recipes(RecipeSearch::ByPattern(":test"));
+        assert_eq!(recipes.len(), 2);
+
+        let recipes = project.recipes(RecipeSearch::All);
+        assert_eq!(recipes.len(), 5);
     }
 }

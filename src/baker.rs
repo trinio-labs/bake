@@ -8,6 +8,7 @@ use std::{
 
 use console::{style, Color};
 use indicatif::{MultiProgress, ProgressBar};
+use log::debug;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::{ChildStderr, ChildStdout},
@@ -16,7 +17,7 @@ use tokio::{
     time,
 };
 
-use crate::project::{BakeProject, Recipe};
+use crate::project::{BakeProject, Recipe, RecipeSearch};
 
 type RecipeQueue = Arc<Mutex<Vec<Recipe>>>;
 type StatusMap = Arc<Mutex<HashMap<String, RunStatus>>>;
@@ -32,12 +33,30 @@ struct RunStatus {
     output: String,
 }
 
+/// Bakes a project by running all recipes and their dependencies
+///
+/// # Arguments
+/// * `project` - The project to bake
+/// * `filter` - Optional recipe pattern to filter such as `foo:`
+///
 pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), String> {
     let filtered_recipes: Vec<&Recipe> = if let Some(filter) = filter {
-        project.recipes_by_name(filter)
+        project.recipes(RecipeSearch::ByPattern(filter))
     } else {
-        project.recipes(None, None)
+        project.recipes(RecipeSearch::All)
     };
+
+    // // Also get dependent recipes recursively
+    // fn get_dependency_recipes(recipes: &Recipe) -> Vec<&Recipe> {
+    //     if let Some(dependencies) = recipes.dependencies.as_ref() {
+    //
+    //     } else {
+    //         Vec::new()
+    //     }
+    // }
+    //
+    // let mut dependent_recipes = HashMap::new();
+
     let all_status = filtered_recipes
         .iter()
         .map(|recipe| {
@@ -89,6 +108,17 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
     Ok(())
 }
 
+/// Runners are spawned in parallel to run recipes that were added to the queue
+///
+/// runner also handles printing the progress bar to the console if needed
+///
+/// # Arguments
+/// * `project` - The project to bake
+/// * `recipe_queue` - The shared queue of recipes
+/// * `status_map` - The shared status map
+/// * `shutdown_tx` - The channel to send shutdown signals
+/// * `multi_progress` - The multi progress bar
+///
 async fn runner(
     project: Arc<BakeProject>,
     recipe_queue: RecipeQueue,
@@ -99,16 +129,20 @@ async fn runner(
     loop {
         let mut next_recipe: Option<Recipe> = None;
         if let Ok(mut queue) = recipe_queue.lock() {
+            // If there are no more recipes to process, quit runner loop
             if queue.is_empty() {
                 break;
             }
             let next_recipe_pos = queue.iter().position(|recipe| {
                 if let Some(dependencies) = recipe.dependencies.as_ref() {
                     let pending = dependencies.iter().any(|dep_name| {
-                        matches!(
-                            status_map.lock().unwrap().get(dep_name).unwrap().status,
-                            Status::Running | Status::Idle
-                        )
+                        // If the dependency isn't in the status map, allow it to "run" anyway as we will
+                        // filter it later
+                        if let Some(rec_status) = status_map.lock().unwrap().get(dep_name) {
+                            matches!(rec_status.status, Status::Running | Status::Idle)
+                        } else {
+                            false
+                        }
                     });
                     !pending
                 } else {
@@ -116,6 +150,32 @@ async fn runner(
                 }
             });
             if let Some(pos) = next_recipe_pos {
+                if let Some(dependencies) = queue[pos].dependencies.clone().as_ref() {
+                    // If any of the dependencies aren't in the status map add it to the queue and
+                    // status map
+                    let mut untracked_dep = false;
+                    dependencies.iter().for_each(|dep_name| {
+                        if status_map.lock().unwrap().get(dep_name).is_none() {
+                            debug!(
+                                "Dependency {} not in status map, adding it to queue",
+                                dep_name
+                            );
+                            let dep_recipe = project.get_recipe_by_name(dep_name).unwrap();
+                            queue.push(dep_recipe.clone());
+                            status_map.lock().unwrap().insert(
+                                dep_name.to_string(),
+                                RunStatus {
+                                    status: Status::Idle,
+                                    output: String::new(),
+                                },
+                            );
+                            untracked_dep = true;
+                        }
+                    });
+                    if untracked_dep {
+                        continue;
+                    }
+                }
                 next_recipe = Some(queue.remove(pos));
             }
         }
@@ -130,7 +190,9 @@ async fn runner(
                     ),
                 );
             }
+            // Run async tasks until one of them finishes
             tokio::select! {
+                // Update progress bar if present
                 _ = async {
                     loop {
                         if let Some(progress_bar) = progress_bar.as_ref() {
@@ -139,6 +201,7 @@ async fn runner(
                         time::sleep(time::Duration::from_millis(100)).await;
                     }
                 } => {},
+                // Update status and run recipe asynchronously, awaiting for the result
                 _ = async {
                     {
                         let mut status_mutex = status_map.lock().unwrap();
@@ -186,6 +249,13 @@ async fn runner(
     Ok(())
 }
 
+/// Runs a single recipe as a system process and handles the output
+///
+/// # Arguments
+/// * `recipe` - The recipe to run
+/// * `project_root` - The root path of the project
+/// * `verbose` - Whether to print verbose output
+///
 pub async fn run_recipe(recipe: &Recipe, project_root: &Path, verbose: bool) -> Result<(), String> {
     // TODO: Implement cache strategy
     let result = tokio::process::Command::new("sh")
@@ -245,6 +315,16 @@ fn name_to_term_color(string: &str) -> Color {
     Color::Color256(color_num as u8)
 }
 
+/// Processes the output of a process saving it to a file and printing to console if in verbose
+/// mode
+///
+/// # Arguments
+/// * `stdout` - The stdout of the process
+/// * `stderr` - The stderr of the process
+/// * `recipe_name` - The name of the recipe
+/// * `project_root` - The root path of the project
+/// * `verbose` - Whether to print verbose output
+///
 async fn process_output(
     stdout: ChildStdout,
     stderr: ChildStderr,

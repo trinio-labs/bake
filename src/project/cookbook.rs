@@ -56,7 +56,7 @@ impl Cookbook {
 
     /// Gets all cookbooks recursively in a directory
     ///
-    /// vec_from recursively searches for all cookbooks in a directory respecting .gitignore and
+    /// map_from recursively searches for all cookbooks in a directory respecting .gitignore and
     /// .bakeignore files
     ///
     /// # Arguments
