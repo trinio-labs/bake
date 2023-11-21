@@ -46,17 +46,6 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
         project.recipes(RecipeSearch::All)
     };
 
-    // // Also get dependent recipes recursively
-    // fn get_dependency_recipes(recipes: &Recipe) -> Vec<&Recipe> {
-    //     if let Some(dependencies) = recipes.dependencies.as_ref() {
-    //
-    //     } else {
-    //         Vec::new()
-    //     }
-    // }
-    //
-    // let mut dependent_recipes = HashMap::new();
-
     let all_status = filtered_recipes
         .iter()
         .map(|recipe| {
@@ -103,6 +92,15 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
             // Wait for joinset to finish running
             while (join_set.join_next().await).is_some() {}
         } => {}
+    }
+
+    if status_map
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, status)| matches!(status.status, Status::Error))
+    {
+        return Err("Some recipes failed to run".to_string());
     }
 
     Ok(())
@@ -246,6 +244,7 @@ async fn runner(
             time::sleep(time::Duration::from_millis(100)).await;
         }
     }
+
     Ok(())
 }
 
@@ -278,17 +277,20 @@ pub async fn run_recipe(recipe: &Recipe, project_root: &Path, verbose: bool) -> 
                 verbose,
             ));
             if let Ok(exit_code) = child.wait().await {
-                if exit_code.success() {}
+                if !exit_code.success() {
+                    return Err(format!(
+                        "Recipe {} failed with exit code {}",
+                        recipe.full_name(),
+                        exit_code
+                    ));
+                }
             }
             if let Err(err) = process_handle.await {
-                return Err(format!(
-                    "Could wait for process output thread: {}",
-                    err.to_string()
-                ));
+                return Err(format!("Could wait for process output thread: {}", err));
             }
         }
         Err(err) => {
-            return Err(format!("Could not spawn process: {}", err.to_string()));
+            return Err(format!("Could not spawn process: {}", err));
         }
     }
 
@@ -413,10 +415,24 @@ mod tests {
 
     #[tokio::test]
     async fn run_bar_recipes() {
-        // TODO: Make sure dependencies of filtered modules are also run even though they are not
-        // filtered
-        let project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
+        let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
+        project.config.verbose = false;
         let res = super::bake(project, Some("bar:")).await;
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_error_recipes() {
+        let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
+        project
+            .cookbooks
+            .get_mut("bar")
+            .unwrap()
+            .recipes
+            .get_mut("test")
+            .unwrap()
+            .run = String::from("ex12123123");
+        let res = super::bake(project, Some("bar:")).await;
+        assert!(res.is_err());
     }
 }

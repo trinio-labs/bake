@@ -1,3 +1,10 @@
 name: test
 config:
   verbose: true
+  cache:
+    local:
+      path: bake
+
+    remotes:
+      s3:
+        bucket: s3-bake

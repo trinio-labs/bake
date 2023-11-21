@@ -1,9 +1,17 @@
 name: foo
 recipes:
-  build: 
+  post-test:
+    run: |
+      echo "Hello Foo Post Test!"
+    dependencies:
+      - test
+
+  build:
     run: |
       echo "Hello Foo Build!"
-  
+
   test:
     run: |
       echo "Hello Foo Test!"
+    dependencies:
+      - build

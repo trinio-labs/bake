@@ -1,6 +1,7 @@
 #![feature(let_chains)]
 
 mod baker;
+mod cache;
 mod project;
 
 use project::BakeProject;

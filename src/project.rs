@@ -1,9 +1,13 @@
+mod config;
 mod cookbook;
 mod recipe;
 
+pub use config::*;
 pub use cookbook::*;
 pub use recipe::*;
 use regex::Regex;
+
+pub use validator::Validate;
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -12,33 +16,9 @@ use std::{
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-pub struct ToolConfig {
-    #[serde(default = "max_parallel_default")]
-    pub max_parallel: usize,
+use self::config::ToolConfig;
 
-    #[serde(default)]
-    pub fast_fail: bool,
-
-    #[serde(default)]
-    pub verbose: bool,
-}
-
-impl Default for ToolConfig {
-    fn default() -> Self {
-        Self {
-            max_parallel: max_parallel_default(),
-            fast_fail: true,
-            verbose: false,
-        }
-    }
-}
-
-fn max_parallel_default() -> usize {
-    std::thread::available_parallelism().unwrap().get() - 1
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct BakeProject {
     pub name: String,
 
@@ -47,10 +27,14 @@ pub struct BakeProject {
     pub description: Option<String>,
 
     #[serde(default)]
+    #[validate]
     pub config: ToolConfig,
 
     #[serde(skip)]
     pub root_path: PathBuf,
+
+    #[serde(skip)]
+    pub dependency_map: BTreeMap<String, HashSet<String>>,
 }
 
 pub enum RecipeSearch<'a> {
@@ -93,6 +77,9 @@ impl BakeProject {
 
         match serde_yaml::from_str::<Self>(&config_str) {
             Ok(mut parsed) => {
+                if let Err(err) = parsed.validate() {
+                    return Err(format!("Could not parse config file: {}", err));
+                }
                 parsed.root_path = file_path.parent().unwrap().to_path_buf();
                 project = parsed;
             }
@@ -134,18 +121,56 @@ impl BakeProject {
             ));
         }
 
-        // Validate if project doesn't have dependencies
-        let circular_dependency = project.get_circular_dependencies();
-        if !circular_dependency.is_empty() {
-            let message = circular_dependency.iter().fold("".to_owned(), |acc, x| {
-                format!("{}\n{}", acc, x.join(" => "))
-            });
-            return Err(format!("Circular dependencies detected:\n{:}", message));
+        // Validate if project doesn't have circular dependencies
+        match project.get_dependencies() {
+            Ok(deps) => {
+                project.dependency_map = deps;
+            }
+            Err(circular_dependency) => {
+                let message = circular_dependency.iter().fold("".to_owned(), |acc, x| {
+                    format!("{}\n{}", acc, x.join(" => "))
+                });
+                return Err(format!("Circular dependencies detected:\n{:}", message));
+            }
         }
 
         Ok(project)
     }
 
+    /// Build dependency list for all recipes
+    // fn build_dependency_list(&self) -> BTreeMap<String, Vec<String>> {
+    //     let mut memo = BTreeMap::new();
+    //
+    //     fn get_deps(
+    //         name: &str,
+    //         project: &BakeProject,
+    //         &mut memo: &mut BTreeMap<String, Vec<String>>,
+    //     ) -> Result<HashSet<String>, String> {
+    //         let mut return_deps = HashSet::new();
+    //         match project.get_recipe_by_name(name) {
+    //             Ok(recipe) => {
+    //                 if let Some(deps) = recipe.dependencies.as_ref() {
+    //                     for dep in deps {
+    //                         if !memo.contains_key(dep) {
+    //                             let deps = get_deps(dep, project, memo)?;
+    //                             memo.insert(dep.clone(), deps);
+    //                             return_deps.extend(deps);
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //             Err(err) => {
+    //                 return Err(format!("Dependency not found: {}", err));
+    //             }
+    //         }
+    //         Ok(deps)
+    //     }
+    //
+    //     for recipe in self.recipes(RecipeSearch::All) {
+    //         if !ctx.deps.contains_key(&recipe.name) {}
+    //     }
+    // }
+    //
     /// Recursively find a config file in a directory or its parent up until /
     /// or until the git repo root.
     fn find_config_file_in_dir(dir: &Path) -> Result<PathBuf, String> {
@@ -160,7 +185,9 @@ impl BakeProject {
             let parent = dir.parent();
 
             // Stop if directory is root in the file system or in a git repository
-            if let Some(parent) = parent && !dir.join(".git").is_dir() {
+            if let Some(parent) = parent
+                && !dir.join(".git").is_dir()
+            {
                 return Self::find_config_file_in_dir(&PathBuf::from(parent));
             } else {
                 return Err("Could not find bake.yml".to_owned());
@@ -283,16 +310,15 @@ impl BakeProject {
         recipes
     }
 
-    /// Returns a list of all circular dependencies found in cookbooks
-    ///
-    /// If there are no circular dependencies, an empty vector is returned
-    fn get_circular_dependencies(&self) -> Vec<Vec<String>> {
+    /// Returns a map of all direct and indirect dependencies of all recipes or a list of all circular dependencies found in cookbooks
+    fn get_dependencies(&self) -> Result<BTreeMap<String, HashSet<String>>, Vec<Vec<String>>> {
         struct Context<'a> {
             // recipes: &'a HashMap<String, Recipe>,
             project: &'a BakeProject,
             visited: HashSet<String>,
             cur_path: Vec<String>,
             result: Vec<Vec<String>>,
+            deps: BTreeMap<String, HashSet<String>>,
         }
 
         let mut ctx = Context {
@@ -301,18 +327,24 @@ impl BakeProject {
             visited: HashSet::new(),
             cur_path: Vec::new(),
             result: Vec::new(),
+            deps: BTreeMap::new(),
         };
 
         for recipe in self.recipes(RecipeSearch::All) {
             if !ctx.visited.contains(&recipe.name) {
                 ctx.cur_path = Vec::new();
                 check_cycle(&recipe.full_name(), &mut ctx);
+                // ctx.deps.insert(recipe.full_name(), deps);
             }
         }
 
         fn check_cycle(cur_node_name: &str, ctx: &mut Context) {
-            ctx.visited.insert(cur_node_name.to_string());
             ctx.cur_path.push(cur_node_name.to_string());
+            ctx.visited.insert(cur_node_name.to_string());
+            if !ctx.deps.contains_key(cur_node_name) {
+                ctx.deps.insert(cur_node_name.to_string(), HashSet::new());
+            }
+
             if let Some(dependencies) = ctx
                 .project
                 .get_recipe_by_name(cur_node_name)
@@ -329,11 +361,19 @@ impl BakeProject {
                     if !ctx.visited.contains(dep_name) {
                         check_cycle(dep_name, ctx);
                     }
+                    let mut deps = HashSet::new();
+                    deps.insert(dep_name.clone());
+                    deps.extend(ctx.deps.get(dep_name).unwrap().clone());
+                    ctx.deps.get_mut(cur_node_name).unwrap().extend(deps);
                 })
             }
         }
 
-        ctx.result
+        if !ctx.result.is_empty() {
+            Err(ctx.result)
+        } else {
+            Ok(ctx.deps)
+        }
     }
 }
 
@@ -357,10 +397,20 @@ mod tests {
     }
 
     #[test]
-    fn get_circular_dependencies() {
+    fn get_dependencies() {
         let project = super::BakeProject::from(&PathBuf::from(config_path("/invalid/circular")));
 
         assert!(project.unwrap_err().contains("Circular dependencies"));
+
+        let project = super::BakeProject::from(&PathBuf::from(config_path("/valid")));
+        assert!(project.is_ok());
+        let project = project.unwrap();
+        assert_eq!(project.dependency_map.len(), 6);
+        assert_eq!(project.dependency_map.get("bar:test").unwrap().len(), 1);
+        assert_eq!(
+            project.dependency_map.get("foo:post-test").unwrap().len(),
+            2
+        );
     }
 
     #[test_case(config_path("/valid/foo") => using validate_project; "Valid subdir")]
@@ -401,7 +451,7 @@ mod tests {
         assert_eq!(recipes[0].name, "build");
 
         let recipes = project.recipes(RecipeSearch::ByPattern("foo:"));
-        assert_eq!(recipes.len(), 2);
+        assert_eq!(recipes.len(), 3);
 
         let recipes = project.recipes(RecipeSearch::ByPattern(":build"));
         assert_eq!(recipes.len(), 2);
@@ -410,6 +460,6 @@ mod tests {
         assert_eq!(recipes.len(), 2);
 
         let recipes = project.recipes(RecipeSearch::All);
-        assert_eq!(recipes.len(), 5);
+        assert_eq!(recipes.len(), 6);
     }
 }

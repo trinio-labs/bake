@@ -1,0 +1,86 @@
+use std::path::PathBuf;
+
+use serde::Deserialize;
+
+use validator::{Validate, ValidationError};
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LocalCacheConfig {
+    #[serde(default = "bool_true_default")]
+    pub enabled: bool,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteCacheConfig {
+    pub s3: Option<S3CacheConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct S3CacheConfig {
+    #[serde(default = "bool_true_default")]
+    pub enabled: bool,
+    pub bucket: String,
+    pub region: Option<String>,
+    pub access_key: Option<String>,
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default, Validate)]
+pub struct CacheConfig {
+    #[serde(default)]
+    pub local: LocalCacheConfig,
+
+    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    pub remotes: Option<RemoteCacheConfig>,
+
+    #[validate(custom = "validate_order")]
+    #[serde(default)]
+    pub order: Vec<String>,
+}
+
+fn validate_order(value: &[String]) -> Result<(), ValidationError> {
+    let valid = value.iter().all(|v| matches!(v.as_str(), "local" | "s3"));
+    if !valid {
+        Err(ValidationError::new(
+            "string must be one of 'local' or 's3'",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct ToolConfig {
+    #[serde(default = "max_parallel_default")]
+    pub max_parallel: usize,
+
+    #[serde(default)]
+    pub fast_fail: bool,
+
+    #[serde(default)]
+    pub verbose: bool,
+
+    #[serde(default)]
+    #[validate]
+    pub cache: CacheConfig,
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel: max_parallel_default(),
+            fast_fail: true,
+            verbose: false,
+            cache: CacheConfig::default(),
+        }
+    }
+}
+
+fn bool_true_default() -> bool {
+    true
+}
+
+fn max_parallel_default() -> usize {
+    std::thread::available_parallelism().unwrap().get() - 1
+}
