@@ -4,7 +4,22 @@ use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use log::warn;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
+pub enum Status {
+    Done,
+    Error,
+    #[default]
+    Idle,
+    Running,
+}
+
+#[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
+pub struct RunStatus {
+    pub status: Status,
+    pub output: String,
+}
+
+#[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct Recipe {
     #[serde(skip)]
     pub name: String,
@@ -22,12 +37,25 @@ pub struct Recipe {
 
     #[serde(skip)]
     pub recipe_hash: String,
+
+    #[serde(skip)]
+    pub run_status: RunStatus,
 }
 
 impl Recipe {
     pub fn full_name(&self) -> String {
         format!("{}:{}", self.cookbook, self.name)
     }
+
+    // pub fn relative_outputs(&self) -> Vec<String> {
+    //     if let Some(outputs) = &self.outputs {
+    //         return outputs
+    //             .iter()
+    //             .map(|output| output.replace(&self.cookbook, ""))
+    //             .collect();
+    //     }
+    //     Vec::new()
+    // }
 
     pub fn get_recipe_hash(&self) -> Result<String, String> {
         let mut walk_builder = WalkBuilder::new(self.config_path.clone());
@@ -81,11 +109,12 @@ impl Recipe {
                 }
             }
         }
+
+        let mut cache_data = BTreeMap::new();
+        cache_data.insert("file_hashes", file_hashes);
+
         let mut hasher = blake3::Hasher::new();
-        for (path, hash) in file_hashes {
-            hasher.update(path.display().to_string().as_bytes());
-            hasher.update(hash.as_bytes());
-        }
+        hasher.update(serde_json::to_string(&cache_data).unwrap().as_bytes());
         let hash = hasher.finalize();
         Ok(hash.to_string())
     }
@@ -93,13 +122,11 @@ impl Recipe {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
 
     use super::*;
 
     #[test]
     fn test_hash() {
-        let start = Instant::now();
         let recipe = Recipe {
             name: String::from("test"),
             cookbook: String::from("test"),
@@ -110,9 +137,9 @@ mod tests {
             recipe_hash: String::from("test"),
             inputs: None,
             outputs: None,
+            run_status: RunStatus::default(),
         };
         let hash = recipe.get_recipe_hash();
-        let duration = start.elapsed().as_millis();
         assert!(hash.is_ok());
     }
 }

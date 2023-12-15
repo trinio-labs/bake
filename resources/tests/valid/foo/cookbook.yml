@@ -7,8 +7,12 @@ recipes:
       - test
 
   build:
+    inputs:
+      - build.sh
+    outputs:
+      - target
     run: |
-      echo "Hello Foo Build!"
+      ./build.sh
 
   test:
     run: |

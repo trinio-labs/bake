@@ -1,4 +1,5 @@
-/target
+target
 
 *.profraw
 .bake
+lcov.info

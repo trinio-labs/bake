@@ -1,14 +1,13 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fs::File,
-    io::prelude::*,
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use console::{style, Color};
 use indicatif::{MultiProgress, ProgressBar};
-use log::debug;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::{ChildStderr, ChildStdout},
@@ -17,21 +16,9 @@ use tokio::{
     time,
 };
 
-use crate::project::{BakeProject, Recipe, RecipeSearch};
+use crate::project::{self, BakeProject, Recipe, Status};
 
-type RecipeQueue = Arc<Mutex<Vec<Recipe>>>;
-type StatusMap = Arc<Mutex<HashMap<String, RunStatus>>>;
-
-enum Status {
-    Done,
-    Error,
-    Idle,
-    Running,
-}
-struct RunStatus {
-    status: Status,
-    output: String,
-}
+type RecipeQueue = Arc<Mutex<BTreeMap<String, Recipe>>>;
 
 /// Bakes a project by running all recipes and their dependencies
 ///
@@ -40,25 +27,36 @@ struct RunStatus {
 /// * `filter` - Optional recipe pattern to filter such as `foo:`
 ///
 pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), String> {
-    let filtered_recipes: Vec<&Recipe> = if let Some(filter) = filter {
-        project.recipes(RecipeSearch::ByPattern(filter))
+    // Create .bake directories
+    project.create_project_bake_dirs()?;
+
+    let filtered_recipes: BTreeMap<String, Recipe> = if let Some(filter) = filter {
+        project.get_recipes(filter)
     } else {
-        project.recipes(RecipeSearch::All)
+        project.recipes.clone()
     };
 
-    let all_status = filtered_recipes
+    let mut recipes = filtered_recipes
         .iter()
-        .map(|recipe| {
-            let status = RunStatus {
-                status: Status::Idle,
-                output: String::new(),
-            };
-            (recipe.full_name().clone(), status)
+        .flat_map(|(name, _)| {
+            project
+                .dependency_map
+                .get(name)
+                .unwrap()
+                .iter()
+                .map(|dep| {
+                    let dep_recipe = project.recipes.get(dep).unwrap().clone();
+                    (dep.clone(), dep_recipe)
+                })
+                .collect::<Vec<(String, Recipe)>>()
         })
-        .collect();
-    let status_map: StatusMap = Arc::new(Mutex::new(all_status));
-    let recipe_queue =
-        RecipeQueue::new(Mutex::new(filtered_recipes.into_iter().cloned().collect()));
+        .collect::<BTreeMap<String, Recipe>>();
+
+    recipes.extend(filtered_recipes.clone());
+
+    println!("Recipes: {:?}", recipes.keys());
+
+    let recipe_queue = RecipeQueue::new(Mutex::new(recipes));
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
     let mut join_set = JoinSet::new();
     let arc_project = Arc::new(project);
@@ -69,13 +67,11 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
         let shutdown_tx = shutdown_tx.clone();
         let arc_project = arc_project.clone();
         let recipe_queue = recipe_queue.clone();
-        let status_map = status_map.clone();
         let multi_progress = multi_progress.clone();
 
         join_set.spawn(runner(
             arc_project,
             recipe_queue,
-            status_map,
             shutdown_tx,
             multi_progress,
         ));
@@ -94,11 +90,11 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
         } => {}
     }
 
-    if status_map
+    if recipe_queue
         .lock()
         .unwrap()
         .iter()
-        .any(|(_, status)| matches!(status.status, Status::Error))
+        .any(|(_, recipe)| matches!(recipe.run_status.status, Status::Error))
     {
         return Err("Some recipes failed to run".to_string());
     }
@@ -120,71 +116,55 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
 async fn runner(
     project: Arc<BakeProject>,
     recipe_queue: RecipeQueue,
-    status_map: StatusMap,
     shutdown_tx: mpsc::UnboundedSender<()>,
     multi_progress: Arc<MultiProgress>,
 ) -> Result<(), String> {
     loop {
-        let mut next_recipe: Option<Recipe> = None;
-        if let Ok(mut queue) = recipe_queue.lock() {
+        let mut next_recipe_name: Option<String> = None;
+        if let Ok(queue) = recipe_queue.lock() {
             // If there are no more recipes to process, quit runner loop
             if queue.is_empty() {
                 break;
             }
-            let next_recipe_pos = queue.iter().position(|recipe| {
-                if let Some(dependencies) = recipe.dependencies.as_ref() {
-                    let pending = dependencies.iter().any(|dep_name| {
-                        // If the dependency isn't in the status map, allow it to "run" anyway as we will
-                        // filter it later
-                        if let Some(rec_status) = status_map.lock().unwrap().get(dep_name) {
-                            matches!(rec_status.status, Status::Running | Status::Idle)
-                        } else {
-                            false
-                        }
-                    });
-                    !pending
+
+            let result = queue.iter().find(|(_, recipe)| {
+                if recipe.run_status.status == Status::Idle {
+                    if let Some(dependencies) = recipe.dependencies.as_ref() {
+                        let pending = dependencies.iter().any(|dep_name| {
+                            // If the dependency isn't in the status map, allow it to "run" anyway as we will
+                            // filter it later
+                            if let Some(dep_rec) = queue.get(dep_name) {
+                                matches!(dep_rec.run_status.status, Status::Running | Status::Idle)
+                            } else {
+                                false
+                            }
+                        });
+                        !pending
+                    } else {
+                        true
+                    }
                 } else {
-                    true
+                    false
                 }
             });
-            if let Some(pos) = next_recipe_pos {
-                if let Some(dependencies) = queue[pos].dependencies.clone().as_ref() {
-                    // If any of the dependencies aren't in the status map add it to the queue and
-                    // status map
-                    let mut untracked_dep = false;
-                    dependencies.iter().for_each(|dep_name| {
-                        if status_map.lock().unwrap().get(dep_name).is_none() {
-                            debug!(
-                                "Dependency {} not in status map, adding it to queue",
-                                dep_name
-                            );
-                            let dep_recipe = project.get_recipe_by_name(dep_name).unwrap();
-                            queue.push(dep_recipe.clone());
-                            status_map.lock().unwrap().insert(
-                                dep_name.to_string(),
-                                RunStatus {
-                                    status: Status::Idle,
-                                    output: String::new(),
-                                },
-                            );
-                            untracked_dep = true;
-                        }
-                    });
-                    if untracked_dep {
-                        continue;
-                    }
-                }
-                next_recipe = Some(queue.remove(pos));
+
+            if let Some((recipe_name, _)) = result {
+                next_recipe_name = Some(recipe_name.clone());
+            } else if queue
+                .iter()
+                .all(|(_, recipe)| matches!(recipe.run_status.status, Status::Done | Status::Error))
+            {
+                break;
             }
         }
 
-        if let Some(next_recipe) = next_recipe {
+        if let Some(next_recipe_name) = next_recipe_name {
             let mut progress_bar: Option<ProgressBar> = None;
             if !project.config.verbose {
                 progress_bar = Some(
                     multi_progress.add(
                         ProgressBar::new_spinner()
-                            .with_message(format!("Baking recipe {}...", next_recipe.full_name())),
+                            .with_message(format!("Baking recipe {}...", next_recipe_name)),
                     ),
                 );
             }
@@ -201,24 +181,32 @@ async fn runner(
                 } => {},
                 // Update status and run recipe asynchronously, awaiting for the result
                 _ = async {
+                    let next_recipe: Recipe;
                     {
-                        let mut status_mutex = status_map.lock().unwrap();
-                        let status = status_mutex.get_mut(&next_recipe.full_name()).unwrap();
-                        status.status = Status::Running;
+                        let mut queue_mutex = recipe_queue.lock().unwrap();
+                        let recipe = queue_mutex.get_mut(&next_recipe_name).unwrap();
+                        if recipe.run_status.status == Status::Idle {
+                            recipe.run_status.status = Status::Running;
+                            next_recipe = recipe.clone();
+                        } else {
+                            return;
+                        }
                     }
 
-                    let result = run_recipe(&next_recipe, &project.root_path, project.config.verbose).await;
+                    let result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await;
 
-                    let mut status_mutex = status_map.lock().unwrap();
-                    let status = status_mutex.get_mut(&next_recipe.full_name()).unwrap();
+                    // let mut status_mutex = status_map.lock().unwrap();
+                    // let status = status_mutex.get_mut(&next_recipe.full_name()).unwrap();
+                    let mut queue_mutex = recipe_queue.lock().unwrap();
+                    let recipe = queue_mutex.get_mut(&next_recipe_name).unwrap();
 
                     match result {
                         Ok(_) => {
-                            status.status = Status::Done;
+                            recipe.run_status.status = Status::Done;
                             if let Some(progress_bar) = progress_bar.as_ref() {
                             progress_bar.finish_with_message(format!(
                                 "Baking recipe {}... {}",
-                                next_recipe.full_name(),
+                                next_recipe_name,
                                 console::style("✓").green()
                             ));
                             }
@@ -227,15 +215,15 @@ async fn runner(
                             if let Some(progress_bar) = progress_bar.as_ref() {
                             progress_bar.finish_with_message(format!(
                                 "Baking recipe {}... {}",
-                                next_recipe.full_name(),
+                                next_recipe_name,
                                 console::style("✗").red()
                             ));
                             }
                             if project.config.fast_fail {
                                 shutdown_tx.send(()).unwrap();
                             }
-                            status.status = Status::Error;
-                            status.output = err;
+                            recipe.run_status.status = Status::Error;
+                            recipe.run_status.output = err;
                         }
                     }
                 } => {}
@@ -255,7 +243,11 @@ async fn runner(
 /// * `project_root` - The root path of the project
 /// * `verbose` - Whether to print verbose output
 ///
-pub async fn run_recipe(recipe: &Recipe, project_root: &Path, verbose: bool) -> Result<(), String> {
+pub async fn run_recipe(
+    recipe: &Recipe,
+    log_file_path: PathBuf,
+    verbose: bool,
+) -> Result<(), String> {
     // TODO: Implement cache strategy
     let result = tokio::process::Command::new("sh")
         .current_dir(recipe.config_path.parent().unwrap())
@@ -273,7 +265,7 @@ pub async fn run_recipe(recipe: &Recipe, project_root: &Path, verbose: bool) -> 
                 stdout,
                 stderr,
                 recipe.full_name(),
-                project_root.to_path_buf(),
+                log_file_path,
                 verbose,
             ));
             if let Ok(exit_code) = child.wait().await {
@@ -331,7 +323,7 @@ async fn process_output(
     stdout: ChildStdout,
     stderr: ChildStderr,
     recipe_name: String,
-    project_root: PathBuf,
+    log_file_path: PathBuf,
     verbose: bool,
 ) -> Result<(), String> {
     let mut join_set = JoinSet::new();
@@ -373,16 +365,11 @@ async fn process_output(
 
     while (join_set.join_next().await).is_some() {}
 
-    if let Err(err) = std::fs::create_dir_all(project_root.join(".bake")) {
-        return Err(format!("Could not create directory .bake: {}", err));
-    };
-    let log_file_path = project_root.join(format!(".bake/{}.log", recipe_name.replace(':', ".")));
-
     match File::create(log_file_path.clone()) {
         Ok(mut file) => {
             if let Err(err) = file.write_all(output_str.lock().unwrap().as_bytes()) {
                 return Err(format!(
-                    "Could not write log file {}: {}",
+                    "could not write log file {}: {}",
                     log_file_path.display(),
                     err
                 ));
@@ -390,7 +377,7 @@ async fn process_output(
         }
         Err(err) => {
             return Err(format!(
-                "Could not create log file {}: {}",
+                "could not create log file {}: {}",
                 log_file_path.display(),
                 err
             ));
@@ -424,14 +411,7 @@ mod tests {
     #[tokio::test]
     async fn run_error_recipes() {
         let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
-        project
-            .cookbooks
-            .get_mut("bar")
-            .unwrap()
-            .recipes
-            .get_mut("test")
-            .unwrap()
-            .run = String::from("ex12123123");
+        project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
         let res = super::bake(project, Some("bar:")).await;
         assert!(res.is_err());
     }

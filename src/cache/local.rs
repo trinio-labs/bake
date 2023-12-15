@@ -12,7 +12,7 @@ impl CacheStrategy for LocalCacheStrategy {
     fn get(&self, key: &str) -> Option<CacheResult> {
         None
     }
-    fn put(&mut self, key: &str, value: super::CacheResult) -> Result<(), String> {
+    fn put(&mut self, key: &str, archive_path: PathBuf) -> Result<(), String> {
         Ok(())
     }
 }

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::project::S3CacheConfig;
 
 use super::{CacheResult, CacheStrategy};
@@ -13,7 +15,7 @@ impl CacheStrategy for S3CacheStrategy {
     fn get(&self, key: &str) -> Option<CacheResult> {
         None
     }
-    fn put(&mut self, key: &str, value: CacheResult) -> Result<(), String> {
+    fn put(&mut self, key: &str, archive_path: PathBuf) -> Result<(), String> {
         Ok(())
     }
 }

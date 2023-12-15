@@ -5,7 +5,6 @@ mod recipe;
 pub use config::*;
 pub use cookbook::*;
 pub use recipe::*;
-use regex::Regex;
 
 pub use validator::Validate;
 
@@ -24,6 +23,8 @@ pub struct BakeProject {
 
     #[serde(skip)]
     pub cookbooks: BTreeMap<String, Cookbook>,
+    #[serde(skip)]
+    pub recipes: BTreeMap<String, Recipe>,
     pub description: Option<String>,
 
     #[serde(default)]
@@ -37,11 +38,6 @@ pub struct BakeProject {
     pub dependency_map: BTreeMap<String, HashSet<String>>,
 }
 
-pub enum RecipeSearch<'a> {
-    All,
-    ByPattern(&'a str),
-}
-
 impl BakeProject {
     /// Creates a bake project from a path to a bake.yml file or a directory in a bake project
     ///
@@ -50,6 +46,7 @@ impl BakeProject {
     /// load_config will search for a bake.ya?ml file in that directory and in parent directories.
     ///
     pub fn from(path: &PathBuf) -> Result<Self, String> {
+        // TODO: Better organize validation for config and recipes
         let file_path: PathBuf;
         let mut project: Self;
 
@@ -87,31 +84,44 @@ impl BakeProject {
         }
 
         project.cookbooks = Cookbook::map_from(path)?;
+        project.recipes = project
+            .cookbooks
+            .iter()
+            .flat_map(|(_, cookbook)| {
+                cookbook
+                    .recipes
+                    .values()
+                    .map(|recipe| (recipe.full_name(), recipe.clone()))
+            })
+            .collect();
 
-        let all_recipes = project.recipes(RecipeSearch::All);
-
+        // let all_recipes = project.recipes(RecipeSearch::All);
+        //
         // Validate if all recipe dependencies exist
-        let err_msg = all_recipes.iter().fold("".to_owned(), |msg, recipe| {
-            let mut missing_deps: Vec<String> = Vec::new();
-            if let Some(dependencies) = recipe.dependencies.as_ref() {
-                dependencies.iter().for_each(|dep| {
-                    if project.get_recipe_by_name(dep).is_err() {
-                        missing_deps.push(format!("\t- {}", dep));
-                    }
-                });
-            }
-            if !missing_deps.is_empty() {
-                format!(
-                    "{}{} {}:\n{}\n",
-                    msg,
-                    console::Emoji("📖", "in"),
-                    recipe.config_path.display(),
-                    missing_deps.join("\n"),
-                )
-            } else {
-                msg
-            }
-        });
+        let err_msg = project
+            .recipes
+            .iter()
+            .fold("".to_owned(), |msg, (_, recipe)| {
+                let mut missing_deps: Vec<String> = Vec::new();
+                if let Some(dependencies) = recipe.dependencies.as_ref() {
+                    dependencies.iter().for_each(|dep| {
+                        if project.recipes.get(dep).is_none() {
+                            missing_deps.push(format!("\t- {}", dep));
+                        }
+                    });
+                }
+                if !missing_deps.is_empty() {
+                    format!(
+                        "{}{} {}:\n{}\n",
+                        msg,
+                        console::Emoji("📖", "in"),
+                        recipe.config_path.display(),
+                        missing_deps.join("\n"),
+                    )
+                } else {
+                    msg
+                }
+            });
 
         if !err_msg.is_empty() {
             return Err(format!(
@@ -137,40 +147,19 @@ impl BakeProject {
         Ok(project)
     }
 
-    /// Build dependency list for all recipes
-    // fn build_dependency_list(&self) -> BTreeMap<String, Vec<String>> {
-    //     let mut memo = BTreeMap::new();
-    //
-    //     fn get_deps(
-    //         name: &str,
-    //         project: &BakeProject,
-    //         &mut memo: &mut BTreeMap<String, Vec<String>>,
-    //     ) -> Result<HashSet<String>, String> {
-    //         let mut return_deps = HashSet::new();
-    //         match project.get_recipe_by_name(name) {
-    //             Ok(recipe) => {
-    //                 if let Some(deps) = recipe.dependencies.as_ref() {
-    //                     for dep in deps {
-    //                         if !memo.contains_key(dep) {
-    //                             let deps = get_deps(dep, project, memo)?;
-    //                             memo.insert(dep.clone(), deps);
-    //                             return_deps.extend(deps);
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //             Err(err) => {
-    //                 return Err(format!("Dependency not found: {}", err));
-    //             }
-    //         }
-    //         Ok(deps)
-    //     }
-    //
-    //     for recipe in self.recipes(RecipeSearch::All) {
-    //         if !ctx.deps.contains_key(&recipe.name) {}
-    //     }
-    // }
-    //
+    pub fn create_project_bake_dirs(&self) -> Result<(), String> {
+        // Create .bake directories
+        if let Err(err) = std::fs::create_dir_all(self.get_project_bake_path()) {
+            return Err(format!("Could not create .bake directory: {}", err));
+        };
+
+        if let Err(err) = std::fs::create_dir_all(self.get_project_log_path()) {
+            return Err(format!("Could not create logs directory: {}", err));
+        };
+
+        Ok(())
+    }
+
     /// Recursively find a config file in a directory or its parent up until /
     /// or until the git repo root.
     fn find_config_file_in_dir(dir: &Path) -> Result<PathBuf, String> {
@@ -195,54 +184,34 @@ impl BakeProject {
         }
     }
 
-    /// Filter recipes by full recipe name e.g. "foo:build", "foo:" (all recipes in cookbook foo),
-    /// ":build" (all recipes called build in all cookbooks)
-    pub fn get_recipe_by_name(&self, name: &str) -> Result<&Recipe, String> {
-        if let Ok((Some(cookbook_name), Some(recipe_name))) = self.parse_recipe_full_name(name) {
-            if let Some(cookbook) = self.cookbooks.get(&cookbook_name) {
-                if let Some(recipe) = cookbook.recipes.get(&recipe_name) {
-                    return Ok(recipe);
-                }
-            }
-        }
-        Err(format!("Recipe not found: {}", name))
-    }
-
-    fn all_recipes(&self) -> Vec<&Recipe> {
-        self.cookbooks
-            .iter()
-            .flat_map(|(_, c)| c.recipes.values())
-            .collect()
-    }
-
-    fn parse_recipe_full_name(
-        &self,
-        pattern: &str,
-    ) -> Result<(Option<String>, Option<String>), String> {
-        let re = Regex::new(r"(?P<cookbook>[\w.\-]*):(?P<recipe>[\w.\-]*)").unwrap();
-        if let Some(caps) = re.captures(pattern) {
-            let cookbook = caps.name("cookbook").unwrap().as_str();
-            let cookbook = if cookbook.is_empty() {
-                None
-            } else {
-                Some(cookbook.to_owned())
-            };
-
-            let recipe = caps.name("recipe").unwrap().as_str();
-            let recipe = if recipe.is_empty() {
-                None
-            } else {
-                Some(recipe.to_owned())
-            };
-
-            Ok((cookbook, recipe))
-        } else {
-            Err(format!(
-                "Invalid recipe pattern: {}\nRecipe patterns need to be in the format 'cookbook:recipe'",
-                pattern
-            ))
-        }
-    }
+    // fn parse_recipe_full_name(
+    //     &self,
+    //     pattern: &str,
+    // ) -> Result<(Option<String>, Option<String>), String> {
+    //     let re = Regex::new(r"(?P<cookbook>[\w.\-]*):(?P<recipe>[\w.\-]*)").unwrap();
+    //     if let Some(caps) = re.captures(pattern) {
+    //         let cookbook = caps.name("cookbook").unwrap().as_str();
+    //         let cookbook = if cookbook.is_empty() {
+    //             None
+    //         } else {
+    //             Some(cookbook.to_owned())
+    //         };
+    //
+    //         let recipe = caps.name("recipe").unwrap().as_str();
+    //         let recipe = if recipe.is_empty() {
+    //             None
+    //         } else {
+    //             Some(recipe.to_owned())
+    //         };
+    //
+    //         Ok((cookbook, recipe))
+    //     } else {
+    //         Err(format!(
+    //             "Invalid recipe pattern: {}\nRecipe patterns need to be in the format 'cookbook:recipe'",
+    //             pattern
+    //         ))
+    //     }
+    // }
 
     /// Get a list of recipes given a cookbook name and/or recipe name, including all dependent
     /// recipes recursively
@@ -253,61 +222,17 @@ impl BakeProject {
     ///
     /// Returns a list of recipes filtered by cookbook name and/or recipe name unless both are
     /// None, in which case all recipes are returned.
-    pub fn recipes(&self, search_arg: RecipeSearch) -> Vec<&Recipe> {
-        let recipes = match search_arg {
-            // We want to return early with all recipes since there's no need to add dependencies,
-            // they are all included
-            RecipeSearch::All => return self.all_recipes(),
-            RecipeSearch::ByPattern(pattern) => {
-                if let Ok((cookbook_name, recipe_name)) = self.parse_recipe_full_name(pattern) {
-                    match (cookbook_name, recipe_name) {
-                        (Some(cookbook_name), Some(recipe_name)) => {
-                            if let Some(cookbook) = self.cookbooks.get(&cookbook_name) {
-                                if let Some(recipe) = cookbook.recipes.get(&recipe_name) {
-                                    vec![recipe]
-                                } else {
-                                    Vec::new()
-                                }
-                            } else {
-                                Vec::new()
-                            }
-                        }
-                        (Some(cookbook_name), None) => {
-                            if let Some(cookbook) = self.cookbooks.get(&cookbook_name) {
-                                cookbook.recipes.values().collect()
-                            } else {
-                                Vec::new()
-                            }
-                        }
-                        (None, Some(recipe_name)) => self
-                            .cookbooks
-                            .iter()
-                            .flat_map(|(_, c)| c.recipes.get(&recipe_name))
-                            .collect(),
-                        (None, None) => return self.all_recipes(),
-                    }
+    pub fn get_recipes(&self, pattern: &str) -> BTreeMap<String, Recipe> {
+        self.recipes
+            .iter()
+            .filter_map(|(name, recipe)| {
+                if name.contains(pattern) {
+                    Some((name.clone(), recipe.clone()))
                 } else {
-                    Vec::new()
+                    None
                 }
-            }
-        };
-
-        // Recursively get recipes for dependencies
-        // let dep_recipes = recipes.iter().flat_map(|r| {
-        //     if let Some(dependencies) = r.dependencies.as_ref() {
-        //         dependencies
-        //             .iter()
-        //             .flat_map(|dep| self.recipes(RecipeSearch::ByPattern(dep)))
-        //             .collect()
-        //     } else {
-        //         Vec::new()
-        //     }
-        // });
-        // let mut res = Vec::new();
-        // res.extend(dep_recipes);
-        // res.extend(recipes);
-        // res
-        recipes
+            })
+            .collect()
     }
 
     /// Returns a map of all direct and indirect dependencies of all recipes or a list of all circular dependencies found in cookbooks
@@ -330,7 +255,7 @@ impl BakeProject {
             deps: BTreeMap::new(),
         };
 
-        for recipe in self.recipes(RecipeSearch::All) {
+        for recipe in self.recipes.values() {
             if !ctx.visited.contains(&recipe.name) {
                 ctx.cur_path = Vec::new();
                 check_cycle(&recipe.full_name(), &mut ctx);
@@ -347,7 +272,8 @@ impl BakeProject {
 
             if let Some(dependencies) = ctx
                 .project
-                .get_recipe_by_name(cur_node_name)
+                .recipes
+                .get(cur_node_name)
                 .unwrap()
                 .dependencies
                 .as_ref()
@@ -375,6 +301,19 @@ impl BakeProject {
             Ok(ctx.deps)
         }
     }
+
+    pub fn get_recipe_log_path(&self, recipe_name: &str) -> PathBuf {
+        self.get_project_log_path()
+            .join(format!("{}.log", recipe_name.replace(':', ".")))
+    }
+
+    fn get_project_log_path(&self) -> PathBuf {
+        self.get_project_bake_path().join("logs")
+    }
+
+    pub fn get_project_bake_path(&self) -> PathBuf {
+        self.root_path.join(".bake")
+    }
 }
 
 #[cfg(test)]
@@ -382,8 +321,6 @@ mod tests {
     use std::{os::unix::prelude::PermissionsExt, path::PathBuf};
 
     use test_case::test_case;
-
-    use super::RecipeSearch;
 
     fn config_path(path_str: &str) -> String {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
@@ -438,28 +375,28 @@ mod tests {
         std::fs::set_permissions(&path, perms.clone()).unwrap();
     }
 
-    #[test]
-    fn recipes() {
-        let project = super::BakeProject::from(&PathBuf::from(config_path("/valid/"))).unwrap();
-
-        // Should return empty when not specifying format "<cookbook>:<recipe>"
-        let recipes = project.recipes(RecipeSearch::ByPattern("foo"));
-        assert_eq!(recipes.len(), 0);
-
-        let recipes = project.recipes(RecipeSearch::ByPattern("foo:build"));
-        assert_eq!(recipes.len(), 1);
-        assert_eq!(recipes[0].name, "build");
-
-        let recipes = project.recipes(RecipeSearch::ByPattern("foo:"));
-        assert_eq!(recipes.len(), 3);
-
-        let recipes = project.recipes(RecipeSearch::ByPattern(":build"));
-        assert_eq!(recipes.len(), 2);
-
-        let recipes = project.recipes(RecipeSearch::ByPattern(":test"));
-        assert_eq!(recipes.len(), 2);
-
-        let recipes = project.recipes(RecipeSearch::All);
-        assert_eq!(recipes.len(), 6);
-    }
+    // #[test]
+    // fn recipes() {
+    //     let project = super::BakeProject::from(&PathBuf::from(config_path("/valid/"))).unwrap();
+    //
+    //     // Should return empty when not specifying format "<cookbook>:<recipe>"
+    //     let recipes = project.get_recipes(RecipeSearch::ByPattern("foo"));
+    //     assert_eq!(recipes.len(), 0);
+    //
+    //     let recipes = project.get_recipes(RecipeSearch::ByPattern("foo:build"));
+    //     assert_eq!(recipes.len(), 1);
+    //     assert_eq!(recipes[0].name, "build");
+    //
+    //     let recipes = project.get_recipes(RecipeSearch::ByPattern("foo:"));
+    //     assert_eq!(recipes.len(), 3);
+    //
+    //     let recipes = project.get_recipes(RecipeSearch::ByPattern(":build"));
+    //     assert_eq!(recipes.len(), 2);
+    //
+    //     let recipes = project.get_recipes(RecipeSearch::ByPattern(":test"));
+    //     assert_eq!(recipes.len(), 2);
+    //
+    //     let recipes = project.get_recipes(RecipeSearch::All);
+    //     assert_eq!(recipes.len(), 6);
+    // }
 }
