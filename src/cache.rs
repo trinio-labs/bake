@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     path::PathBuf,
+    sync::Arc,
 };
 
 use flate2::{write::GzEncoder, Compression, GzBuilder};
@@ -13,19 +14,20 @@ use serde::Serialize;
 
 use crate::project::BakeProject;
 
-pub trait CacheStrategy {
-    fn get(&self, key: &str) -> Option<CacheResult>;
-    fn put(&mut self, key: &str, archive_path: PathBuf) -> Result<(), String>;
+pub trait CacheStrategy: Send + Sync {
+    fn get(&self, key: &str) -> CacheResult;
+    fn put(&self, key: &str, archive_path: PathBuf) -> Result<(), String>;
 }
 
+#[derive(Debug, PartialEq)]
 pub struct CacheResultData {
-    stdout: String,
-    files: BTreeMap<String, String>,
+    pub stdout: String,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum CacheResult {
     Hit(CacheResultData),
-    Miss(),
+    Miss,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,14 +36,23 @@ struct CacheData {
     deps: BTreeMap<String, String>,
 }
 
-pub struct Cache<'a> {
-    project: &'a BakeProject,
-    strategies: Vec<Box<dyn CacheStrategy>>,
-    hashes: HashMap<String, String>,
+/// Cache manages caching of bake outputs by using caching strategies defined in
+/// configuration files
+pub struct Cache {
+    /// Reference to the project so we can get recipes and their dependencies
+    pub project: Arc<BakeProject>,
+
+    /// List of cache strategies
+    pub strategies: Vec<Box<dyn CacheStrategy>>,
+
+    /// Map of recipe hashes so we don't have to recompute them
+    pub hashes: HashMap<String, String>,
 }
 
-impl<'a> Cache<'a> {
-    pub fn new(project: &'a BakeProject) -> Self {
+impl Cache {
+    /// Creates a new instance of the Cache using the recipe_list to only calculate the hashes of
+    /// required recipes
+    pub fn new(project: Arc<BakeProject>, filter: Option<&str>) -> Self {
         let mut strategies: Vec<Box<dyn CacheStrategy>>;
         let local_path = project
             .config
@@ -110,57 +121,46 @@ impl<'a> Cache<'a> {
             .collect();
         }
 
+        let hashes = project
+            .get_recipes(filter)
+            .iter()
+            .map(|(key, recipe)| (key.to_owned(), recipe.get_recipe_hash().unwrap()))
+            .collect();
+
         Self {
             project,
             strategies,
-            hashes: HashMap::new(),
+            hashes,
         }
     }
 
-    pub fn get(&mut self, recipe_name: &str) -> CacheResult {
+    // Tries to get a cached result for the given recipe
+    pub fn get(&self, recipe_name: &str) -> CacheResult {
         let hash = self.calculate_total_hash(recipe_name);
-        if let Some(cache_hit) = self
-            .strategies
-            .iter()
-            .find_map(|strategy| strategy.get(&hash))
-        {
-            return cache_hit;
-        }
-
-        CacheResult::Miss()
-    }
-
-    fn get_cached_hash(&mut self, recipe_name: &str) -> Result<String, String> {
-        if let Some(recipe_hash) = self.hashes.get(recipe_name) {
-            Ok(recipe_hash.clone())
-        } else {
-            let res = self
-                .project
-                .recipes
-                .get(recipe_name)
-                .unwrap()
-                .get_recipe_hash();
-            if let Ok(hash) = res.clone() {
-                self.hashes.insert(recipe_name.to_owned(), hash.clone());
+        for strategy in &self.strategies {
+            if let CacheResult::Hit(data) = strategy.get(&hash) {
+                return CacheResult::Hit(data);
             }
-            res
         }
+
+        CacheResult::Miss
     }
 
-    fn calculate_total_hash(&mut self, recipe_name: &str) -> String {
+    // Calculates the hash for the given recipe given all its dependencies
+    fn calculate_total_hash(&self, recipe_name: &str) -> String {
         let mut cache_data = CacheData {
             recipe: recipe_name.to_owned(),
             deps: BTreeMap::new(),
         };
 
-        if let Ok(recipe_hash) = self.get_cached_hash(recipe_name) {
-            cache_data.recipe = recipe_hash;
+        if let Some(recipe_hash) = self.hashes.get(recipe_name) {
+            cache_data.recipe = recipe_hash.clone();
         };
 
-        if let Some(deps) = self.project.dependency_map.get(recipe_name) {
+        if let Some(deps) = self.project.clone().dependency_map.get(recipe_name) {
             cache_data.deps = deps.iter().fold(BTreeMap::new(), |mut acc, x| {
-                if let Ok(hash) = self.get_cached_hash(x) {
-                    acc.insert(x.clone(), hash);
+                if let Some(hash) = self.hashes.get(x) {
+                    acc.insert(x.clone(), hash.clone());
                 }
                 acc
             });
@@ -171,7 +171,8 @@ impl<'a> Cache<'a> {
         hasher.finalize().to_hex().to_string()
     }
 
-    pub fn put(&mut self, recipe_name: &str) -> Result<(), String> {
+    // Puts the given recipe's outputs in the cache
+    pub fn put(&self, recipe_name: &str) -> Result<(), String> {
         // Create archive in temp dir
         let archive_path =
             std::env::temp_dir().join(format!("{}.tar.gz", recipe_name.replace(':', ".")));
@@ -258,8 +259,9 @@ impl<'a> Cache<'a> {
             }
         }
 
-        for strategy in self.strategies.iter_mut() {
-            strategy.put(recipe_name, archive_path.clone())?;
+        let hash = self.calculate_total_hash(recipe_name);
+        for strategy in self.strategies.iter() {
+            strategy.put(&hash, archive_path.clone())?;
         }
 
         Ok(())
@@ -268,22 +270,36 @@ impl<'a> Cache<'a> {
 
 #[cfg(test)]
 mod test {
-    use std::{cell::RefCell, io::Write, path::PathBuf, rc::Rc};
+    use std::{
+        io::Write,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
-    use crate::project::BakeProject;
+    use crate::{
+        cache::{CacheResult, CacheResultData},
+        project::BakeProject,
+    };
 
     use super::{Cache, CacheStrategy};
 
+    const FOO_BUILD_HASH: &str = "e4db81f19d6e6ef8ffc889c3c58eed00c24cf18255409aa8ca2fa9f4c83a9997";
+
     struct TestCacheStrategy {
-        cache: Rc<RefCell<String>>,
+        cache: Arc<Mutex<String>>,
     }
 
     impl CacheStrategy for TestCacheStrategy {
-        fn get(&self, _key: &str) -> Option<super::CacheResult> {
-            None
+        fn get(&self, key: &str) -> super::CacheResult {
+            if key == FOO_BUILD_HASH {
+                return CacheResult::Hit(CacheResultData {
+                    stdout: "foo".to_string(),
+                });
+            }
+            CacheResult::Miss
         }
-        fn put(&mut self, key: &str, _: PathBuf) -> Result<(), String> {
-            self.cache.borrow_mut().push_str(key);
+        fn put(&self, key: &str, _: PathBuf) -> Result<(), String> {
+            self.cache.lock().unwrap().push_str(key);
             Ok(())
         }
     }
@@ -296,40 +312,90 @@ mod test {
     fn new() {
         let project_path = PathBuf::from(config_path("/valid"));
         let project = BakeProject::from(&project_path).unwrap();
-        let cache = Cache::new(&project);
+        let cache = Cache::new(Arc::new(project), Some("invalid_filter"));
         assert!(cache.hashes.is_empty());
         assert_eq!(cache.strategies.len(), 2);
     }
 
     #[test]
-    fn get() {}
+    fn get() {
+        let project_path = PathBuf::from(config_path("/valid"));
+        let project = Arc::new(BakeProject::from(&project_path).unwrap());
+
+        // Create test cache
+        let cache_str = Arc::new(Mutex::new(String::new()));
+        let strategy = TestCacheStrategy {
+            cache: cache_str.clone(),
+        };
+        let mut cache = Cache::new(project, Some("foo:build"));
+        cache.strategies = vec![Box::new(TestCacheStrategy {
+            cache: cache_str.clone(),
+        })];
+
+        // Test hit
+        let result = cache.get("foo:build");
+        assert!(matches!(result, CacheResult::Hit(_)));
+
+        // Miss if recipe command changes
+        let mut project = BakeProject::from(&project_path).unwrap();
+        project.recipes.get_mut("foo:build").unwrap().run = "asdfasdfasd".to_owned();
+        let project = Arc::new(project);
+        let mut cache = Cache::new(project, Some("foo:build"));
+        cache.strategies = vec![Box::new(TestCacheStrategy {
+            cache: cache_str.clone(),
+        })];
+        let result = cache.get("foo:build");
+        assert!(matches!(result, CacheResult::Miss));
+
+        // Miss if dependency changes
+        let mut project = BakeProject::from(&project_path).unwrap();
+        project.recipes.get_mut("foo:build-dep").unwrap().run = "asdfasdfasd".to_owned();
+        let project = Arc::new(project);
+
+        let mut cache = Cache::new(project, Some("foo:build"));
+        cache.strategies = vec![Box::new(TestCacheStrategy {
+            cache: cache_str.clone(),
+        })];
+        let result = cache.get("foo:build");
+        assert!(matches!(result, CacheResult::Miss));
+    }
 
     #[test]
     fn put() {
         let project_path = PathBuf::from(config_path("/valid"));
-        let project = BakeProject::from(&project_path).unwrap();
+        let project = Arc::new(BakeProject::from(&project_path).unwrap());
         _ = project.create_project_bake_dirs();
+
+        // Clean all output directories and logs
+        let _ = std::fs::remove_dir_all(project.root_path.join("foo/target"));
+        let _ = std::fs::remove_file(project.get_recipe_log_path("foo:build"));
+
+        // Create test cache
+        let cache_str = Arc::new(Mutex::new(String::new()));
+        let strategy = TestCacheStrategy {
+            cache: cache_str.clone(),
+        };
+        let mut cache = Cache::new(project.clone(), Some("foo:build"));
+        cache.strategies = vec![Box::new(strategy)];
+
+        // Should error without existing output files
+        let res = cache.put("foo:build");
+        assert!(res.is_err());
 
         // Create log and output files
         let mut log_file = std::fs::File::create(project.get_recipe_log_path("foo:build")).unwrap();
         log_file.write_all(b"foo").unwrap();
 
+        // Create target dir
+        std::fs::create_dir(project.root_path.join("foo/target")).unwrap();
+
+        // Create output file
         let mut output_file =
-            std::fs::File::create(project.root_path.join("target/foo_test.txt")).unwrap();
+            std::fs::File::create(project.root_path.join("foo/target/foo_test.txt")).unwrap();
         output_file.write_all(b"foo").unwrap();
 
-        let cache_str = Rc::new(RefCell::new(String::new()));
-        let strategy = TestCacheStrategy {
-            cache: cache_str.clone(),
-        };
-
-        let mut cache = Cache::new(&project);
-        cache.strategies = vec![Box::new(strategy)];
-
         let res = cache.put("foo:build");
-        println!("{:?}", res);
         assert!(res.is_ok());
-
-        assert!(cache_str.borrow().contains("foo"));
+        assert_eq!(cache_str.lock().unwrap().as_str(), FOO_BUILD_HASH);
     }
 }

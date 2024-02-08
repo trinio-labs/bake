@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -16,7 +16,10 @@ use tokio::{
     time,
 };
 
-use crate::project::{self, BakeProject, Recipe, Status};
+use crate::{
+    cache::{Cache, CacheResult},
+    project::{BakeProject, Recipe, Status},
+};
 
 type RecipeQueue = Arc<Mutex<BTreeMap<String, Recipe>>>;
 
@@ -26,52 +29,33 @@ type RecipeQueue = Arc<Mutex<BTreeMap<String, Recipe>>>;
 /// * `project` - The project to bake
 /// * `filter` - Optional recipe pattern to filter such as `foo:`
 ///
-pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), String> {
+pub async fn bake(
+    project: Arc<BakeProject>,
+    cache: Cache,
+    filter: Option<&str>,
+) -> Result<(), String> {
     // Create .bake directories
     project.create_project_bake_dirs()?;
 
-    let filtered_recipes: BTreeMap<String, Recipe> = if let Some(filter) = filter {
-        project.get_recipes(filter)
-    } else {
-        project.recipes.clone()
-    };
-
-    let mut recipes = filtered_recipes
-        .iter()
-        .flat_map(|(name, _)| {
-            project
-                .dependency_map
-                .get(name)
-                .unwrap()
-                .iter()
-                .map(|dep| {
-                    let dep_recipe = project.recipes.get(dep).unwrap().clone();
-                    (dep.clone(), dep_recipe)
-                })
-                .collect::<Vec<(String, Recipe)>>()
-        })
-        .collect::<BTreeMap<String, Recipe>>();
-
-    recipes.extend(filtered_recipes.clone());
-
-    println!("Recipes: {:?}", recipes.keys());
-
+    let recipes = project.get_recipes(filter);
     let recipe_queue = RecipeQueue::new(Mutex::new(recipes));
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
     let mut join_set = JoinSet::new();
-    let arc_project = Arc::new(project);
+    let arc_cache = Arc::new(cache);
 
     let multi_progress = Arc::new(MultiProgress::new());
 
-    (0..arc_project.config.max_parallel).for_each(|_| {
+    (0..project.config.max_parallel).for_each(|_| {
         let shutdown_tx = shutdown_tx.clone();
-        let arc_project = arc_project.clone();
+        let arc_project = project.clone();
         let recipe_queue = recipe_queue.clone();
         let multi_progress = multi_progress.clone();
+        let cache = arc_cache.clone();
 
         join_set.spawn(runner(
             arc_project,
             recipe_queue,
+            cache,
             shutdown_tx,
             multi_progress,
         ));
@@ -116,6 +100,7 @@ pub async fn bake(project: BakeProject, filter: Option<&str>) -> Result<(), Stri
 async fn runner(
     project: Arc<BakeProject>,
     recipe_queue: RecipeQueue,
+    cache: Arc<Cache>,
     shutdown_tx: mpsc::UnboundedSender<()>,
     multi_progress: Arc<MultiProgress>,
 ) -> Result<(), String> {
@@ -193,7 +178,17 @@ async fn runner(
                         }
                     }
 
-                    let result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await;
+                    // let result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await;
+                    let result = match cache.get(&next_recipe.full_name()) {
+                       CacheResult::Hit(_) => {
+                            println!("{}: {} (cached)", next_recipe_name, console::style("✓").green());
+                            Ok(())
+                        },
+
+                       CacheResult::Miss => {
+                            run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await
+                        },
+                    };
 
                     // let mut status_mutex = status_map.lock().unwrap();
                     // let status = status_mutex.get_mut(&next_recipe.full_name()).unwrap();
@@ -389,14 +384,37 @@ async fn process_output(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
 
-    use crate::project::BakeProject;
+    use crate::{
+        cache::{Cache, CacheResult, CacheResultData, CacheStrategy},
+        project::BakeProject,
+    };
+
+    struct TestCacheStrategy {
+        pub hit: bool,
+    }
+    impl CacheStrategy for TestCacheStrategy {
+        fn get(&self, _: &str) -> CacheResult {
+            if self.hit {
+                CacheResult::Hit(CacheResultData {
+                    stdout: "foo".to_string(),
+                })
+            } else {
+                CacheResult::Miss
+            }
+        }
+        fn put(&self, _: &str, _: PathBuf) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn run_all_recipes() {
-        let project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
-        let res = super::bake(project, None).await;
+        let project = Arc::new(BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap());
+        let mut cache = Cache::new(project.clone(), None);
+        cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
+        let res = super::bake(project.clone(), cache, None).await;
         assert!(res.is_ok());
     }
 
@@ -404,7 +422,10 @@ mod tests {
     async fn run_bar_recipes() {
         let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
         project.config.verbose = false;
-        let res = super::bake(project, Some("bar:")).await;
+        let project = Arc::new(project);
+        let mut cache = Cache::new(project.clone(), None);
+        cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
+        let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_ok());
     }
 
@@ -412,7 +433,10 @@ mod tests {
     async fn run_error_recipes() {
         let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
         project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
-        let res = super::bake(project, Some("bar:")).await;
+        let project = Arc::new(project);
+        let mut cache = Cache::new(project.clone(), None);
+        cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
+        let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_err());
     }
 }

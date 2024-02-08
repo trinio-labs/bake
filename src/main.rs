@@ -5,11 +5,13 @@ mod cache;
 mod project;
 
 use project::BakeProject;
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use console::Term;
 use env_logger::Env;
+
+use crate::cache::Cache;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const WELCOME_MSG: &str = "
@@ -61,8 +63,11 @@ async fn main() -> Result<(), io::Error> {
     match BakeProject::from(&bake_path) {
         Ok(project) => {
             println!("Loading project... {}", console::style("✓").green());
+            let recipe_filter = args.recipe.as_deref();
+            let arc_project = Arc::new(project);
+            let cache = Cache::new(arc_project.clone(), recipe_filter);
 
-            match baker::bake(project, args.recipe.as_deref()).await {
+            match baker::bake(arc_project.clone(), cache, args.recipe.as_deref()).await {
                 Ok(_) => {}
                 Err(err) => {
                     println!("{}", err);

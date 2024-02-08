@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io::Read, path::PathBuf};
 
 use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use log::warn;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
 pub enum Status {
@@ -42,20 +42,16 @@ pub struct Recipe {
     pub run_status: RunStatus,
 }
 
+#[derive(Serialize)]
+struct RecipeHashData {
+    file_hashes: BTreeMap<PathBuf, String>,
+    run: String,
+}
+
 impl Recipe {
     pub fn full_name(&self) -> String {
         format!("{}:{}", self.cookbook, self.name)
     }
-
-    // pub fn relative_outputs(&self) -> Vec<String> {
-    //     if let Some(outputs) = &self.outputs {
-    //         return outputs
-    //             .iter()
-    //             .map(|output| output.replace(&self.cookbook, ""))
-    //             .collect();
-    //     }
-    //     Vec::new()
-    // }
 
     pub fn get_recipe_hash(&self) -> Result<String, String> {
         let mut walk_builder = WalkBuilder::new(self.config_path.clone());
@@ -110,11 +106,13 @@ impl Recipe {
             }
         }
 
-        let mut cache_data = BTreeMap::new();
-        cache_data.insert("file_hashes", file_hashes);
+        let hash_data = RecipeHashData {
+            file_hashes,
+            run: self.run.clone(),
+        };
 
         let mut hasher = blake3::Hasher::new();
-        hasher.update(serde_json::to_string(&cache_data).unwrap().as_bytes());
+        hasher.update(serde_json::to_string(&hash_data).unwrap().as_bytes());
         let hash = hasher.finalize();
         Ok(hash.to_string())
     }

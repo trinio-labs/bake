@@ -12,10 +12,10 @@ pub struct S3CacheStrategy {
 }
 
 impl CacheStrategy for S3CacheStrategy {
-    fn get(&self, key: &str) -> Option<CacheResult> {
-        None
+    fn get(&self, key: &str) -> CacheResult {
+        CacheResult::Miss
     }
-    fn put(&mut self, key: &str, archive_path: PathBuf) -> Result<(), String> {
+    fn put(&self, key: &str, archive_path: PathBuf) -> Result<(), String> {
         Ok(())
     }
 }

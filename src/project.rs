@@ -19,22 +19,31 @@ use self::config::ToolConfig;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct BakeProject {
+    /// Project name
     pub name: String,
 
     #[serde(skip)]
+    /// Map of all cookbooks in the project
     pub cookbooks: BTreeMap<String, Cookbook>,
+
     #[serde(skip)]
+    /// Map of all recipes by fully qualified name (eg. my-cookbook:my-recipe)
     pub recipes: BTreeMap<String, Recipe>,
+
+    /// Project description
     pub description: Option<String>,
 
     #[serde(default)]
     #[validate]
+    /// Main configuration of the project
     pub config: ToolConfig,
 
     #[serde(skip)]
+    /// Root path of the project
     pub root_path: PathBuf,
 
     #[serde(skip)]
+    /// Maps all dependencies, direct and indirect of each recipe in the project
     pub dependency_map: BTreeMap<String, HashSet<String>>,
 }
 
@@ -213,32 +222,55 @@ impl BakeProject {
     //     }
     // }
 
-    /// Get a list of recipes given a cookbook name and/or recipe name, including all dependent
+    /// Returns a list of recipes given a recipe name pattern, including all dependent
     /// recipes recursively
     ///
     /// # Arguments
     /// * `cookbook_name` - Cookbook name
     /// * `recipe_name` - Recipe name
     ///
-    /// Returns a list of recipes filtered by cookbook name and/or recipe name unless both are
-    /// None, in which case all recipes are returned.
-    pub fn get_recipes(&self, pattern: &str) -> BTreeMap<String, Recipe> {
-        self.recipes
-            .iter()
-            .filter_map(|(name, recipe)| {
-                if name.contains(pattern) {
-                    Some((name.clone(), recipe.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect()
+    pub fn get_recipes(&self, pattern: Option<&str>) -> BTreeMap<String, Recipe> {
+        if let Some(pattern) = pattern {
+            let filtered_recipes: BTreeMap<String, Recipe> = self
+                .recipes
+                .iter()
+                .filter_map(|(name, recipe)| {
+                    if name.contains(pattern) {
+                        Some((name.clone(), recipe.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let mut recipes = filtered_recipes
+                .iter()
+                .flat_map(|(name, _)| {
+                    self.dependency_map
+                        .get(name)
+                        .unwrap()
+                        .iter()
+                        .map(|dep| {
+                            let dep_recipe = self.recipes.get(dep).unwrap().clone();
+                            (dep.clone(), dep_recipe)
+                        })
+                        .collect::<Vec<(String, Recipe)>>()
+                })
+                .collect::<BTreeMap<String, Recipe>>();
+
+            recipes.extend(filtered_recipes.clone());
+
+            recipes
+        } else {
+            self.recipes.clone()
+        }
     }
 
-    /// Returns a map of all direct and indirect dependencies of all recipes or a list of all circular dependencies found in cookbooks
+    /// Returns a map of all direct and indirect dependencies of all recipes if there are no circular dependencies
+    /// or a list of all circular dependencies found
     fn get_dependencies(&self) -> Result<BTreeMap<String, HashSet<String>>, Vec<Vec<String>>> {
+        // Context struct used for memoization during recursion
         struct Context<'a> {
-            // recipes: &'a HashMap<String, Recipe>,
             project: &'a BakeProject,
             visited: HashSet<String>,
             cur_path: Vec<String>,
@@ -279,17 +311,26 @@ impl BakeProject {
                 .as_ref()
             {
                 dependencies.iter().for_each(|dep_name| {
+                    // If current path contains dep_name, then it has a circular dependency.
+                    // Add it to the result variable of Context
                     if ctx.cur_path.contains(dep_name) {
                         let mut path = ctx.cur_path.clone();
                         path.push(dep_name.to_string());
                         ctx.result.push(path);
                     }
+                    // Check cycle for this dependencies dependency if we haven't visited it yet
                     if !ctx.visited.contains(dep_name) {
                         check_cycle(dep_name, ctx);
                     }
+
+                    // Create a set of dependencies by getting all the deps of the current
+                    // dependency being checked.
                     let mut deps = HashSet::new();
                     deps.insert(dep_name.clone());
                     deps.extend(ctx.deps.get(dep_name).unwrap().clone());
+
+                    // Extend the set of dependencies for the current node with the deps of this
+                    // dependency
                     ctx.deps.get_mut(cur_node_name).unwrap().extend(deps);
                 })
             }
@@ -342,11 +383,11 @@ mod tests {
         let project = super::BakeProject::from(&PathBuf::from(config_path("/valid")));
         assert!(project.is_ok());
         let project = project.unwrap();
-        assert_eq!(project.dependency_map.len(), 6);
-        assert_eq!(project.dependency_map.get("bar:test").unwrap().len(), 1);
+        assert_eq!(project.dependency_map.len(), 7);
+        assert_eq!(project.dependency_map.get("bar:test").unwrap().len(), 2);
         assert_eq!(
             project.dependency_map.get("foo:post-test").unwrap().len(),
-            2
+            3
         );
     }
 
