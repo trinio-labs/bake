@@ -179,9 +179,11 @@ async fn runner(
                     }
 
                     // let result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await;
+                    let mut cached = false;
                     let result = match cache.get(&next_recipe.full_name()) {
                        CacheResult::Hit(_) => {
                             println!("{}: {} (cached)", next_recipe_name, console::style("✓").green());
+                            cached = true;
                             Ok(())
                         },
 
@@ -198,21 +200,35 @@ async fn runner(
                     match result {
                         Ok(_) => {
                             recipe.run_status.status = Status::Done;
+                            let mut cached_str = String::new();
+                            if !cached {
+                                match cache.put(&next_recipe_name) {
+                                    Ok(_) => {},
+                                    Err(err) => {
+                                        println!("Error saving output to cache: {}", err);
+                                    }
+                                }
+                            }
+                            else {
+                                cached_str = " (cached)".to_owned();
+                            }
+
                             if let Some(progress_bar) = progress_bar.as_ref() {
-                            progress_bar.finish_with_message(format!(
-                                "Baking recipe {}... {}",
-                                next_recipe_name,
-                                console::style("✓").green()
-                            ));
+                                progress_bar.finish_with_message(format!(
+                                    "Baking recipe {}... {}{}",
+                                    next_recipe_name,
+                                    console::style("✓").green(),
+                                    cached_str
+                                ));
                             }
                         }
                         Err(err) => {
                             if let Some(progress_bar) = progress_bar.as_ref() {
-                            progress_bar.finish_with_message(format!(
-                                "Baking recipe {}... {}",
-                                next_recipe_name,
-                                console::style("✗").red()
-                            ));
+                                progress_bar.finish_with_message(format!(
+                                    "Baking recipe {}... {}",
+                                    next_recipe_name,
+                                    console::style("✗").red()
+                                ));
                             }
                             if project.config.fast_fail {
                                 shutdown_tx.send(()).unwrap();

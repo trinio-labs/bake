@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
 };
 
-use flate2::{write::GzEncoder, Compression, GzBuilder};
+use flate2::{write::GzEncoder, Compression};
 use log::warn;
 use serde::Serialize;
 
@@ -60,13 +60,16 @@ impl Cache {
             .local
             .path
             .clone()
-            .unwrap_or(project.root_path.clone());
+            .unwrap_or(project.get_project_bake_path().join("cache"));
 
         // If there's no cache order, use local then s3 if configured
         if project.config.cache.order.is_empty() {
             strategies = Vec::new();
             if project.config.cache.local.enabled {
-                strategies.push(Box::new(local::LocalCacheStrategy { path: local_path }))
+                strategies.push(Box::new(local::LocalCacheStrategy {
+                    path: local_path,
+                    base_path: project.root_path.clone(),
+                }));
             }
             if let Some(remotes) = project.config.cache.remotes.as_ref() {
                 if let Some(s3_config) = remotes.s3.as_ref() {
@@ -87,7 +90,8 @@ impl Cache {
                             None
                         } else {
                             Some(Box::new(local::LocalCacheStrategy {
-                                path: project.root_path.clone(),
+                                path: local_path.clone(),
+                                base_path: project.root_path.clone(),
                             }))
                         }
                     }
@@ -198,22 +202,21 @@ impl Cache {
                             Ok(path) => path,
                             Err(err) => {
                                 return Err(format!(
-                                    "Failed to get canonical path for output {}: {}",
-                                    output, err
+                                    "Failed to get canonical path for output {output}: {err}",
                                 ));
                             }
                         };
 
-                        let relative_output_path =
-                            match full_output_path.strip_prefix(&self.project.root_path) {
-                                Ok(path) => path,
-                                Err(err) => {
-                                    return Err(format!(
-                                        "Failed to get relative path for output {}: {}",
-                                        output, err
-                                    ));
-                                }
-                            };
+                        let relative_output_path = match full_output_path
+                            .strip_prefix(&self.project.root_path.canonicalize().unwrap())
+                        {
+                            Ok(path) => path,
+                            Err(err) => {
+                                return Err(format!(
+                                    "Failed to get relative path for output {output}: {err}",
+                                ));
+                            }
+                        };
 
                         let res = if full_output_path.is_dir() {
                             tar.append_dir_all(relative_output_path, full_output_path.clone())
@@ -324,9 +327,6 @@ mod test {
 
         // Create test cache
         let cache_str = Arc::new(Mutex::new(String::new()));
-        let strategy = TestCacheStrategy {
-            cache: cache_str.clone(),
-        };
         let mut cache = Cache::new(project, Some("foo:build"));
         cache.strategies = vec![Box::new(TestCacheStrategy {
             cache: cache_str.clone(),

@@ -4,11 +4,20 @@ use serde::Deserialize;
 
 use validator::{Validate, ValidationError};
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct LocalCacheConfig {
     #[serde(default = "bool_true_default")]
     pub enabled: bool,
     pub path: Option<PathBuf>,
+}
+
+impl Default for LocalCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,7 +35,7 @@ pub struct S3CacheConfig {
     pub secret_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default, Validate)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct CacheConfig {
     #[serde(default)]
     pub local: LocalCacheConfig,
@@ -37,6 +46,17 @@ pub struct CacheConfig {
     #[validate(custom = "validate_order")]
     #[serde(default)]
     pub order: Vec<String>,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        println!("Using default cache config");
+        Self {
+            local: LocalCacheConfig::default(),
+            remotes: None,
+            order: vec![],
+        }
+    }
 }
 
 fn validate_order(value: &[String]) -> Result<(), ValidationError> {
