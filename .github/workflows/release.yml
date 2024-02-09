@@ -79,7 +79,7 @@ jobs:
         id: tag_name
       - uses: taiki-e/install-action@parse-changelog
       - run: |
-          echo parsed=$(parse-changelog ./CHANGELOG.md --json | jq -r '."'${GITHUB_REF#refs/tags/v}'"') >> $GITHUB_OUTPUT
+          echo "changes=$(parse-changelog ./CHANGELOG.md ${GITHUB_REF#refs/tags/v})" >> $GITHUB_OUTPUT
         shell: bash
         id: changelog
       - uses: ncipollo/release-action@v1
@@ -87,7 +87,7 @@ jobs:
           body: |
             # Release Notes
 
-            ${{ steps.changelog.outputs.parsed }}
+            ${{ steps.changelog.outputs.changes }}
 
             ## Installing Bake [${{ steps.tag_name.outputs.current_version }}](https://github.com/axodotdev/bake/releases/tag/${{ steps.tag_name.outputs.current_tag }})
 
