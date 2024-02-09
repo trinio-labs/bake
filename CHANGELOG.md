@@ -1,3 +1,5 @@
-# [v0.1.0]
+# Bake
+
+## v0.1.0
 
 Initial release.

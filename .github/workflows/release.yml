@@ -86,9 +86,9 @@ jobs:
           body: |
             # Release Notes
 
-            ${{ steps.changelog.outputs.latestBody }}
+            ${{ steps.changelog.outputs.parsed.${{ steps.tag_name.outputs.current_version }}.notes }} }}
 
-            ## Installing Bake [${{ steps.changelog.outputs.latestVersion }}](https://github.com/axodotdev/bake/releases/tag/${{ steps.changelog.outputs.latestVersion }})
+            ## Installing Bake [${{ steps.tag_name.outputs.current_version }}](https://github.com/axodotdev/bake/releases/tag/${GITHUB_REF#refs/tags/})
 
             ### MacOS
             ```bash
