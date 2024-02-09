@@ -73,14 +73,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          echo ::set-output name=current_version::${GITHUB_REF#refs/tags/}
+          echo "current_version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
         shell: bash
         id: tag_name
-      - uses: mindsers/changelog-reader-action@v2
-        with:
-          validation_level: warn
-          version: ${{ steps.tag_name.outputs.current_version }}
-          path: ./CHANGELOG.md
+      - uses: taiki-e/install-action@parse-changelog
+      - run: |
+          echo "parsed=$(parse-changelog ./CHANGELOG.md --json ${{ steps.tag_name.outputs.current_version }})" >> $GITHUB_ENV
+        shell: bash
         id: changelog
       - uses: ncipollo/release-action@v1
         with:
