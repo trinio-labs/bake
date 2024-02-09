@@ -73,7 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          echo ::set-output name=current_version::${GITHUB_REF#refs/tags/v}
+          echo ::set-output name=current_version::${GITHUB_REF#refs/tags/}
         shell: bash
         id: tag_name
       - uses: mindsers/changelog-reader-action@v2
