@@ -87,7 +87,7 @@ jobs:
           body: |
             # Release Notes
 
-            ${{ steps.changelog.outputs.parsed.notes }} }}
+            ${{ steps.changelog.outputs.parsed }}
 
             ## Installing Bake [${{ steps.tag_name.outputs.current_version }}](https://github.com/axodotdev/bake/releases/tag/${{ steps.tag_name.outputs.current_tag }})
 
