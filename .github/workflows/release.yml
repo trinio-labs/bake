@@ -40,7 +40,7 @@ permissions:
 on:
   push:
     tags:
-      - "**[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
   lint:
@@ -72,7 +72,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ocavue/changelog-parser-action@v1
+      - run: |
+          echo ::set-output name=current_version::${GITHUB_REF#refs/tags/v}
+        shell: bash
+        id: tag_name
+      - uses: mindsers/changelog-reader-action@v2
+        with:
+          validation_level: warn
+          version: ${{ steps.tag_name.outputs.current_version }}
+          path: ./CHANGELOG.md
         id: changelog
       - uses: ncipollo/release-action@v1
         with:
