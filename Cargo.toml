@@ -64,8 +64,5 @@ targets = [
 ]
 # Publish jobs to run in CI
 pr-run-mode = "plan"
-# A GitHub repo to push Homebrew formulas to
-tap = "trinio-labs/homebrew-bake"
 # Publish jobs to run in CI
-publish-jobs = ["homebrew"]
 allow-dirty = ["ci"]
