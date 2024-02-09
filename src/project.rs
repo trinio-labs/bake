@@ -183,13 +183,13 @@ impl BakeProject {
             let parent = dir.parent();
 
             // Stop if directory is root in the file system or in a git repository
-            if let Some(parent) = parent
-                && !dir.join(".git").is_dir()
-            {
-                return Self::find_config_file_in_dir(&PathBuf::from(parent));
-            } else {
-                return Err("Could not find bake.yml".to_owned());
+            if let Some(parent) = parent {
+                if !dir.join(".git").is_dir() {
+                    return Self::find_config_file_in_dir(&PathBuf::from(parent));
+                }
             }
+
+            return Err("Could not find bake.yml".to_owned());
         }
     }
 
