@@ -73,12 +73,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          echo "current_version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+          echo "current_version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         shell: bash
         id: tag_name
       - uses: taiki-e/install-action@parse-changelog
       - run: |
-          echo parsed=$(parse-changelog ./CHANGELOG.md --json | jq -r '."'${GITHUB_REF#refs/tags/v}'"') >> $GITHUB_ENV
+          echo parsed=$(parse-changelog ./CHANGELOG.md --json | jq -r '."'${GITHUB_REF#refs/tags/v}'"') >> $GITHUB_OUTPUT
         shell: bash
         id: changelog
       - uses: ncipollo/release-action@v1
@@ -88,7 +89,7 @@ jobs:
 
             ${{ steps.changelog.outputs.parsed.notes }} }}
 
-            ## Installing Bake [${{ steps.tag_name.outputs.current_version }}](https://github.com/axodotdev/bake/releases/tag/${GITHUB_REF#refs/tags/})
+            ## Installing Bake [${{ steps.tag_name.outputs.current_version }}](https://github.com/axodotdev/bake/releases/tag/${{ steps.tag_name.outputs.current_tag }})
 
             ### MacOS
             ```bash
