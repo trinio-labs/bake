@@ -68,7 +68,7 @@ jobs:
   #     - run: cargo publish
   release:
     name: Release
-    needs: [lint, test, publish]
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
