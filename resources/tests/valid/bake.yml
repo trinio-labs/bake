@@ -4,4 +4,5 @@ config:
   cache:
     remotes:
       s3:
-        bucket: s3-bake
+        bucket: trinio-bake
+        region: us-east-2

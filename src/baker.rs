@@ -33,7 +33,7 @@ pub async fn bake(
     project: Arc<BakeProject>,
     cache: Cache,
     filter: Option<&str>,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     // Create .bake directories
     project.create_project_bake_dirs()?;
 
@@ -80,7 +80,7 @@ pub async fn bake(
         .iter()
         .any(|(_, recipe)| matches!(recipe.run_status.status, Status::Error))
     {
-        return Err("Some recipes failed to run".to_string());
+        return Err(anyhow::anyhow!("Some recipes failed to run"));
     }
 
     Ok(())
@@ -180,7 +180,7 @@ async fn runner(
 
                     // let result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await;
                     let mut cached = false;
-                    let result = match cache.get(&next_recipe.full_name()) {
+                    let result = match cache.get(&next_recipe.full_name()).await {
                        CacheResult::Hit(_) => {
                             println!("{}: {} (cached)", next_recipe_name, console::style("✓").green());
                             cached = true;
@@ -194,15 +194,17 @@ async fn runner(
 
                     // let mut status_mutex = status_map.lock().unwrap();
                     // let status = status_mutex.get_mut(&next_recipe.full_name()).unwrap();
-                    let mut queue_mutex = recipe_queue.lock().unwrap();
-                    let recipe = queue_mutex.get_mut(&next_recipe_name).unwrap();
 
                     match result {
                         Ok(_) => {
-                            recipe.run_status.status = Status::Done;
+                            {
+                                let mut queue_mutex = recipe_queue.lock().unwrap();
+                                let recipe = queue_mutex.get_mut(&next_recipe_name).unwrap();
+                                recipe.run_status.status = Status::Done;
+                            }
                             let mut cached_str = String::new();
                             if !cached {
-                                match cache.put(&next_recipe_name) {
+                                match cache.put(&next_recipe_name).await {
                                     Ok(_) => {},
                                     Err(err) => {
                                         println!("Error saving output to cache: {}", err);
@@ -233,6 +235,9 @@ async fn runner(
                             if project.config.fast_fail {
                                 shutdown_tx.send(()).unwrap();
                             }
+                            let mut queue_mutex = recipe_queue.lock().unwrap();
+                            let recipe = queue_mutex.get_mut(&next_recipe_name).unwrap();
+
                             recipe.run_status.status = Status::Error;
                             recipe.run_status.output = err;
                         }
@@ -402,6 +407,8 @@ async fn process_output(
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
+    use async_trait::async_trait;
+
     use crate::{
         cache::{Cache, CacheResult, CacheResultData, CacheStrategy},
         project::BakeProject,
@@ -410,17 +417,19 @@ mod tests {
     struct TestCacheStrategy {
         pub hit: bool,
     }
+
+    #[async_trait]
     impl CacheStrategy for TestCacheStrategy {
-        fn get(&self, _: &str) -> CacheResult {
+        async fn get(&self, _: &str) -> CacheResult {
             if self.hit {
                 CacheResult::Hit(CacheResultData {
-                    stdout: "foo".to_string(),
+                    archive_path: PathBuf::from("foo.tar.gz"),
                 })
             } else {
                 CacheResult::Miss
             }
         }
-        fn put(&self, _: &str, _: PathBuf) -> Result<(), String> {
+        async fn put(&self, _: &str, _: PathBuf) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -428,7 +437,7 @@ mod tests {
     #[tokio::test]
     async fn run_all_recipes() {
         let project = Arc::new(BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap());
-        let mut cache = Cache::new(project.clone(), None);
+        let mut cache = Cache::new(project.clone(), None).await;
         cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
         let res = super::bake(project.clone(), cache, None).await;
         assert!(res.is_ok());
@@ -439,7 +448,7 @@ mod tests {
         let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
         project.config.verbose = false;
         let project = Arc::new(project);
-        let mut cache = Cache::new(project.clone(), None);
+        let mut cache = Cache::new(project.clone(), None).await;
         cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_ok());
@@ -450,7 +459,7 @@ mod tests {
         let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
         project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
         let project = Arc::new(project);
-        let mut cache = Cache::new(project.clone(), None);
+        let mut cache = Cache::new(project.clone(), None).await;
         cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_err());

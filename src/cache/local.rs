@@ -1,8 +1,8 @@
-use std::fs::File;
 use std::path::PathBuf;
 
-use flate2::read::GzDecoder;
-use log::{debug, warn};
+use anyhow::anyhow;
+use async_trait::async_trait;
+use log::debug;
 
 use crate::cache::CacheResultData;
 
@@ -13,32 +13,25 @@ pub struct LocalCacheStrategy {
     pub base_path: PathBuf,
 }
 
+#[async_trait]
 impl CacheStrategy for LocalCacheStrategy {
-    fn get(&self, key: &str) -> CacheResult {
+    async fn get(&self, key: &str) -> CacheResult {
         let file_name = key.to_owned() + ".tar.gz";
+        let archive_path = self.path.join(file_name.clone());
         debug!("Checking local cache for key {}", key);
-        if let Ok(tar_gz) = File::open(self.path.join(file_name.clone())) {
-            let tar = GzDecoder::new(tar_gz);
-            let mut archive = tar::Archive::new(tar);
-            if archive.unpack(self.base_path.clone()).is_err() {
-                warn!("Failed to unpack tar.gz file: {file_name}");
-                return CacheResult::Miss;
-            }
-
+        if archive_path.is_file() {
             debug!("Cache hit for key {}", key);
-            return CacheResult::Hit(CacheResultData {
-                stdout: "".to_string(),
-            });
+            return CacheResult::Hit(CacheResultData { archive_path });
         }
         CacheResult::Miss
     }
-    fn put(&self, key: &str, archive_path: PathBuf) -> Result<(), String> {
+    async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
         // Create cache dir if it doesn't exist
         if !self.path.exists() {
             match std::fs::create_dir_all(&self.path) {
                 Ok(_) => (),
                 Err(err) => {
-                    return Err(format!(
+                    return Err(anyhow!(
                         "Failed to create cache dir {}: {}",
                         self.path.display(),
                         err
@@ -56,7 +49,7 @@ impl CacheStrategy for LocalCacheStrategy {
 
         // Copy archive to cache folder
         if let Err(err) = std::fs::copy(archive_path, cache_path.clone()) {
-            Err(format!(
+            Err(anyhow!(
                 "Failed to copy archive to cache folder {}: {}",
                 cache_path.display(),
                 err

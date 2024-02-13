@@ -2,6 +2,7 @@ mod config;
 mod cookbook;
 mod recipe;
 
+use anyhow::anyhow;
 pub use config::*;
 pub use cookbook::*;
 pub use recipe::*;
@@ -54,13 +55,13 @@ impl BakeProject {
     /// * `path` - Path to either a config file or a directory. If a directory is passed,
     /// load_config will search for a bake.ya?ml file in that directory and in parent directories.
     ///
-    pub fn from(path: &PathBuf) -> Result<Self, String> {
+    pub fn from(path: &PathBuf) -> anyhow::Result<Self> {
         // TODO: Better organize validation for config and recipes
         let file_path: PathBuf;
         let mut project: Self;
 
         if !path.exists() {
-            return Err(format!("Path does not exist: {}", path.display()));
+            return Err(anyhow!("Path does not exist: {}", path.display()));
         }
 
         if path.is_dir() {
@@ -68,13 +69,13 @@ impl BakeProject {
         } else if path.is_file() {
             file_path = path.clone();
         } else {
-            return Err("Invalid path".to_owned());
+            return Err(anyhow!("Invalid path"));
         }
 
         let config_str = match std::fs::read_to_string(&file_path) {
             Ok(contents) => contents,
             Err(_) => {
-                return Err(format!(
+                return Err(anyhow!(
                     "Could not read config file: {}",
                     file_path.display()
                 ));
@@ -84,12 +85,12 @@ impl BakeProject {
         match serde_yaml::from_str::<Self>(&config_str) {
             Ok(mut parsed) => {
                 if let Err(err) = parsed.validate() {
-                    return Err(format!("Could not parse config file: {}", err));
+                    return Err(anyhow!("Could not parse config file: {}", err));
                 }
                 parsed.root_path = file_path.parent().unwrap().to_path_buf();
                 project = parsed;
             }
-            Err(err) => return Err(format!("Could not parse config file: {}", err)),
+            Err(err) => return Err(anyhow!("Could not parse config file: {}", err)),
         }
 
         project.cookbooks = Cookbook::map_from(path)?;
@@ -133,7 +134,7 @@ impl BakeProject {
             });
 
         if !err_msg.is_empty() {
-            return Err(format!(
+            return Err(anyhow!(
                 "{}:\n{}",
                 console::style("Recipe dependencies not found").bold(),
                 err_msg
@@ -149,21 +150,21 @@ impl BakeProject {
                 let message = circular_dependency.iter().fold("".to_owned(), |acc, x| {
                     format!("{}\n{}", acc, x.join(" => "))
                 });
-                return Err(format!("Circular dependencies detected:\n{:}", message));
+                return Err(anyhow!("Circular dependencies detected:\n{:}", message));
             }
         }
 
         Ok(project)
     }
 
-    pub fn create_project_bake_dirs(&self) -> Result<(), String> {
+    pub fn create_project_bake_dirs(&self) -> anyhow::Result<()> {
         // Create .bake directories
         if let Err(err) = std::fs::create_dir_all(self.get_project_bake_path()) {
-            return Err(format!("Could not create .bake directory: {}", err));
+            return Err(anyhow!("Could not create .bake directory: {}", err));
         };
 
         if let Err(err) = std::fs::create_dir_all(self.get_project_log_path()) {
-            return Err(format!("Could not create logs directory: {}", err));
+            return Err(anyhow!("Could not create logs directory: {}", err));
         };
 
         Ok(())
@@ -171,7 +172,7 @@ impl BakeProject {
 
     /// Recursively find a config file in a directory or its parent up until /
     /// or until the git repo root.
-    fn find_config_file_in_dir(dir: &Path) -> Result<PathBuf, String> {
+    fn find_config_file_in_dir(dir: &Path) -> anyhow::Result<PathBuf> {
         let file_yml = dir.join("bake.yml");
         let file_yaml = dir.join("bake.yaml");
 
@@ -189,38 +190,9 @@ impl BakeProject {
                 }
             }
 
-            return Err("Could not find bake.yml".to_owned());
+            return Err(anyhow!("Could not find bake.yml"));
         }
     }
-
-    // fn parse_recipe_full_name(
-    //     &self,
-    //     pattern: &str,
-    // ) -> Result<(Option<String>, Option<String>), String> {
-    //     let re = Regex::new(r"(?P<cookbook>[\w.\-]*):(?P<recipe>[\w.\-]*)").unwrap();
-    //     if let Some(caps) = re.captures(pattern) {
-    //         let cookbook = caps.name("cookbook").unwrap().as_str();
-    //         let cookbook = if cookbook.is_empty() {
-    //             None
-    //         } else {
-    //             Some(cookbook.to_owned())
-    //         };
-    //
-    //         let recipe = caps.name("recipe").unwrap().as_str();
-    //         let recipe = if recipe.is_empty() {
-    //             None
-    //         } else {
-    //             Some(recipe.to_owned())
-    //         };
-    //
-    //         Ok((cookbook, recipe))
-    //     } else {
-    //         Err(format!(
-    //             "Invalid recipe pattern: {}\nRecipe patterns need to be in the format 'cookbook:recipe'",
-    //             pattern
-    //         ))
-    //     }
-    // }
 
     /// Returns a list of recipes given a recipe name pattern, including all dependent
     /// recipes recursively
@@ -367,7 +339,7 @@ mod tests {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
     }
 
-    fn validate_project(project: Result<super::BakeProject, String>) {
+    fn validate_project(project: anyhow::Result<super::BakeProject>) {
         let project = project.unwrap();
         assert_eq!(project.name, "test");
         // assert_eq!(project.recipes.len(), 5);
@@ -378,7 +350,10 @@ mod tests {
     fn get_dependencies() {
         let project = super::BakeProject::from(&PathBuf::from(config_path("/invalid/circular")));
 
-        assert!(project.unwrap_err().contains("Circular dependencies"));
+        assert!(project
+            .unwrap_err()
+            .to_string()
+            .contains("Circular dependencies"));
 
         let project = super::BakeProject::from(&PathBuf::from(config_path("/valid")));
         assert!(project.is_ok());
@@ -399,7 +374,7 @@ mod tests {
     #[test_case(config_path("/invalid/recipes") => matches Err(_); "Inexistent recipes")]
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid config")]
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
-    fn read_config(path_str: String) -> Result<super::BakeProject, String> {
+    fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
         super::BakeProject::from(&PathBuf::from(path_str))
     }
 

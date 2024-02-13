@@ -63,7 +63,7 @@ async fn main() -> Result<(), io::Error> {
             println!("Loading project... {}", console::style("✓").green());
             let recipe_filter = args.recipe.as_deref();
             let arc_project = Arc::new(project);
-            let cache = Cache::new(arc_project.clone(), recipe_filter);
+            let cache = Cache::new(arc_project.clone(), recipe_filter).await;
 
             match baker::bake(arc_project.clone(), cache, args.recipe.as_deref()).await {
                 Ok(_) => {}

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::project::Recipe;
+use anyhow::anyhow;
 use ignore::WalkBuilder;
 use log::debug;
 use serde::Deserialize;
@@ -20,12 +21,12 @@ impl Cookbook {
     /// # Arguments
     /// * `path` - Path to a cookbook file or directory containing a cookbook.ya?ml file
     ///
-    pub fn from(path: &PathBuf) -> Result<Self, String> {
+    pub fn from(path: &PathBuf) -> anyhow::Result<Self> {
         let config: Cookbook;
 
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(_) => return Err(format!("Could not read config file: {}", path.display())),
+            Err(_) => return Err(anyhow!("Could not read config file: {}", path.display())),
         };
 
         match serde_yaml::from_str::<Self>(&config_str) {
@@ -48,7 +49,7 @@ impl Cookbook {
                 });
                 config = parsed;
             }
-            Err(err) => return Err(format!("Could not parse cookbook file: {}", err)),
+            Err(err) => return Err(anyhow!("Could not parse cookbook file: {}", err)),
         }
 
         Ok(config)
@@ -62,7 +63,7 @@ impl Cookbook {
     /// # Arguments
     /// * `path` - Path to a directory
     ///
-    pub fn map_from(path: &PathBuf) -> Result<BTreeMap<String, Self>, String> {
+    pub fn map_from(path: &PathBuf) -> anyhow::Result<BTreeMap<String, Self>> {
         let all_files = WalkBuilder::new(path)
             .add_custom_ignore_filename(".bakeignore")
             .build();
@@ -97,24 +98,24 @@ mod test {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
     }
 
-    fn validate_cookbook_foo(actual: Result<super::Cookbook, String>) {
+    fn validate_cookbook_foo(actual: anyhow::Result<super::Cookbook>) {
         assert_eq!(actual.unwrap().name, "foo")
     }
 
-    fn validate_cookbook_vec(actual: Result<BTreeMap<String, super::Cookbook>, String>) {
+    fn validate_cookbook_vec(actual: anyhow::Result<BTreeMap<String, super::Cookbook>>) {
         assert_eq!(actual.unwrap().len(), 2)
     }
 
     #[test_case(config_path("/valid/foo/cookbook.yml") => using validate_cookbook_foo; "Valid cookbook file")]
     #[test_case(config_path("/invalid/config/cookbook.yml") => matches Err(_); "Invalid cookbook file")]
     #[test_case(config_path("/invalid/config") => matches Err(_); "Cant read directory")]
-    fn read_cookbook(path_str: String) -> Result<super::Cookbook, String> {
+    fn read_cookbook(path_str: String) -> anyhow::Result<super::Cookbook> {
         super::Cookbook::from(&PathBuf::from(path_str))
     }
 
     #[test_case(config_path("/valid/") => using validate_cookbook_vec; "Root dir")]
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid dir")]
-    fn read_all_cookbooks(path_str: String) -> Result<BTreeMap<String, super::Cookbook>, String> {
+    fn read_all_cookbooks(path_str: String) -> anyhow::Result<BTreeMap<String, super::Cookbook>> {
         super::Cookbook::map_from(&PathBuf::from(path_str))
     }
 }

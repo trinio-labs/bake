@@ -8,20 +8,26 @@ use std::{
     sync::Arc,
 };
 
-use flate2::{write::GzEncoder, Compression};
+use anyhow::anyhow;
+use async_trait::async_trait;
+use flate2::{
+    write::{GzDecoder, GzEncoder},
+    Compression,
+};
 use log::warn;
 use serde::Serialize;
 
 use crate::project::BakeProject;
 
+#[async_trait]
 pub trait CacheStrategy: Send + Sync {
-    fn get(&self, key: &str) -> CacheResult;
-    fn put(&self, key: &str, archive_path: PathBuf) -> Result<(), String>;
+    async fn get(&self, key: &str) -> CacheResult;
+    async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()>;
 }
 
 #[derive(Debug, PartialEq)]
 pub struct CacheResultData {
-    pub stdout: String,
+    pub archive_path: PathBuf,
 }
 
 #[derive(Debug, PartialEq)]
@@ -52,8 +58,8 @@ pub struct Cache {
 impl Cache {
     /// Creates a new instance of the Cache using the recipe_list to only calculate the hashes of
     /// required recipes
-    pub fn new(project: Arc<BakeProject>, filter: Option<&str>) -> Self {
-        let mut strategies: Vec<Box<dyn CacheStrategy>>;
+    pub async fn new(project: Arc<BakeProject>, filter: Option<&str>) -> Self {
+        let mut strategies: Vec<Box<dyn CacheStrategy>> = Vec::new();
         let local_path = project
             .config
             .cache
@@ -73,26 +79,23 @@ impl Cache {
             }
             if let Some(remotes) = project.config.cache.remotes.as_ref() {
                 if let Some(s3_config) = remotes.s3.as_ref() {
-                    strategies.push(Box::new(s3::S3CacheStrategy::from_config(s3_config)))
+                    strategies.push(Box::new(s3::S3CacheStrategy::from_config(s3_config).await))
                 }
             }
         } else {
-            strategies = project
-            .config
-            .cache
-            .order
-            .iter()
-            .filter_map(|item| -> Option<Box<dyn CacheStrategy>> {
-                match item.as_str() {
+            for item in &project.config.cache.order {
+                let strategy = match item.as_str() {
                     "local" => {
                         if !project.config.cache.local.enabled {
-                            warn!("Local is listed in cache order but disabled in config. Ignoring.");
+                            warn!(
+                                "Local is listed in cache order but disabled in config. Ignoring."
+                            );
                             None
                         } else {
                             Some(Box::new(local::LocalCacheStrategy {
                                 path: local_path.clone(),
                                 base_path: project.root_path.clone(),
-                            }))
+                            }) as Box<dyn CacheStrategy>)
                         }
                     }
                     "s3" => {
@@ -104,12 +107,10 @@ impl Cache {
                                     );
                                     None
                                 } else {
-                                    Some(Box::new(s3::S3CacheStrategy {
-                                        bucket: s3_config.bucket.clone(),
-                                        region: s3_config.region.clone(),
-                                        access_key: s3_config.access_key.clone(),
-                                        secret_key: s3_config.secret_key.clone(),
-                                    }))
+                                    Some(
+                                        Box::new(s3::S3CacheStrategy::from_config(s3_config).await)
+                                            as Box<dyn CacheStrategy>,
+                                    )
                                 }
                             } else {
                                 warn!("S3 cache is listed in cache order but no S3 config found. Ignoring.");
@@ -120,9 +121,11 @@ impl Cache {
                         }
                     }
                     _ => None,
+                };
+                if let Some(strategy) = strategy {
+                    strategies.push(strategy);
                 }
-            })
-            .collect();
+            }
         }
 
         let hashes = project
@@ -139,10 +142,22 @@ impl Cache {
     }
 
     // Tries to get a cached result for the given recipe
-    pub fn get(&self, recipe_name: &str) -> CacheResult {
+    pub async fn get(&self, recipe_name: &str) -> CacheResult {
         let hash = self.calculate_total_hash(recipe_name);
         for strategy in &self.strategies {
-            if let CacheResult::Hit(data) = strategy.get(&hash) {
+            if let CacheResult::Hit(data) = strategy.get(&hash).await {
+                if let Ok(tar_gz) = File::open(&data.archive_path) {
+                    let tar = GzDecoder::new(tar_gz);
+                    let mut archive = tar::Archive::new(tar);
+                    if archive.unpack(self.project.root_path.clone()).is_err() {
+                        warn!(
+                            "Failed to unpack tar.gz file: {}",
+                            &data.archive_path.display()
+                        );
+                        return CacheResult::Miss;
+                    }
+                }
+
                 return CacheResult::Hit(data);
             }
         }
@@ -176,7 +191,7 @@ impl Cache {
     }
 
     // Puts the given recipe's outputs in the cache
-    pub fn put(&self, recipe_name: &str) -> Result<(), String> {
+    pub async fn put(&self, recipe_name: &str) -> anyhow::Result<()> {
         // Create archive in temp dir
         let archive_path =
             std::env::temp_dir().join(format!("{}.tar.gz", recipe_name.replace(':', ".")));
@@ -201,7 +216,7 @@ impl Cache {
                         {
                             Ok(path) => path,
                             Err(err) => {
-                                return Err(format!(
+                                return Err(anyhow!(
                                     "Failed to get canonical path for output {output}: {err}",
                                 ));
                             }
@@ -212,7 +227,7 @@ impl Cache {
                         {
                             Ok(path) => path,
                             Err(err) => {
-                                return Err(format!(
+                                return Err(anyhow!(
                                     "Failed to get relative path for output {output}: {err}",
                                 ));
                             }
@@ -228,9 +243,11 @@ impl Cache {
                         };
 
                         if let Err(err) = res {
-                            return Err(format!(
+                            return Err(anyhow!(
                                 "Failed to add {} to tar file in temp dir for recipe {}: {}",
-                                output, recipe_name, err
+                                output,
+                                recipe_name,
+                                err
                             ));
                         }
                     }
@@ -240,31 +257,34 @@ impl Cache {
                 let log_path = self.project.get_recipe_log_path(recipe_name);
                 let relative_log_path = log_path.strip_prefix(&self.project.root_path).unwrap();
                 if let Err(err) = tar.append_path_with_name(log_path.clone(), relative_log_path) {
-                    return Err(format!(
+                    return Err(anyhow!(
                         "Failed to add log file to tar file in temp dir for recipe {}: {}",
-                        recipe_name, err
+                        recipe_name,
+                        err
                     ));
                 }
 
                 // Finish archive
                 if let Err(err) = tar.finish() {
-                    return Err(format!(
+                    return Err(anyhow!(
                         "Failed to finish tar file in temp dir for recipe {}: {}",
-                        recipe_name, err
+                        recipe_name,
+                        err
                     ));
                 }
             }
             Err(err) => {
-                return Err(format!(
+                return Err(anyhow!(
                     "Failed to create tar file in temp dir for recipe {}: {}",
-                    recipe_name, err
+                    recipe_name,
+                    err
                 ))
             }
         }
 
         let hash = self.calculate_total_hash(recipe_name);
         for strategy in self.strategies.iter() {
-            strategy.put(&hash, archive_path.clone())?;
+            strategy.put(&hash, archive_path.clone()).await?;
         }
 
         Ok(())
@@ -279,6 +299,8 @@ mod test {
         sync::{Arc, Mutex},
     };
 
+    use async_trait::async_trait;
+
     use crate::{
         cache::{CacheResult, CacheResultData},
         project::BakeProject,
@@ -292,16 +314,17 @@ mod test {
         cache: Arc<Mutex<String>>,
     }
 
+    #[async_trait]
     impl CacheStrategy for TestCacheStrategy {
-        fn get(&self, key: &str) -> super::CacheResult {
+        async fn get(&self, key: &str) -> super::CacheResult {
             if key == FOO_BUILD_HASH {
                 return CacheResult::Hit(CacheResultData {
-                    stdout: "foo".to_string(),
+                    archive_path: PathBuf::from(format!("{}.tar.gz", key)),
                 });
             }
             CacheResult::Miss
         }
-        fn put(&self, key: &str, _: PathBuf) -> Result<(), String> {
+        async fn put(&self, key: &str, _: PathBuf) -> anyhow::Result<()> {
             self.cache.lock().unwrap().push_str(key);
             Ok(())
         }
@@ -311,40 +334,40 @@ mod test {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
     }
 
-    #[test]
-    fn new() {
+    #[tokio::test]
+    async fn new() {
         let project_path = PathBuf::from(config_path("/valid"));
         let project = BakeProject::from(&project_path).unwrap();
-        let cache = Cache::new(Arc::new(project), Some("invalid_filter"));
+        let cache = Cache::new(Arc::new(project), Some("invalid_filter")).await;
         assert!(cache.hashes.is_empty());
         assert_eq!(cache.strategies.len(), 2);
     }
 
-    #[test]
-    fn get() {
+    #[tokio::test]
+    async fn get() {
         let project_path = PathBuf::from(config_path("/valid"));
         let project = Arc::new(BakeProject::from(&project_path).unwrap());
 
         // Create test cache
         let cache_str = Arc::new(Mutex::new(String::new()));
-        let mut cache = Cache::new(project, Some("foo:build"));
+        let mut cache = Cache::new(project, Some("foo:build")).await;
         cache.strategies = vec![Box::new(TestCacheStrategy {
             cache: cache_str.clone(),
         })];
 
         // Test hit
-        let result = cache.get("foo:build");
+        let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Hit(_)));
 
         // Miss if recipe command changes
         let mut project = BakeProject::from(&project_path).unwrap();
         project.recipes.get_mut("foo:build").unwrap().run = "asdfasdfasd".to_owned();
         let project = Arc::new(project);
-        let mut cache = Cache::new(project, Some("foo:build"));
+        let mut cache = Cache::new(project, Some("foo:build")).await;
         cache.strategies = vec![Box::new(TestCacheStrategy {
             cache: cache_str.clone(),
         })];
-        let result = cache.get("foo:build");
+        let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
 
         // Miss if dependency changes
@@ -352,16 +375,16 @@ mod test {
         project.recipes.get_mut("foo:build-dep").unwrap().run = "asdfasdfasd".to_owned();
         let project = Arc::new(project);
 
-        let mut cache = Cache::new(project, Some("foo:build"));
+        let mut cache = Cache::new(project, Some("foo:build")).await;
         cache.strategies = vec![Box::new(TestCacheStrategy {
             cache: cache_str.clone(),
         })];
-        let result = cache.get("foo:build");
+        let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
     }
 
-    #[test]
-    fn put() {
+    #[tokio::test]
+    async fn put() {
         let project_path = PathBuf::from(config_path("/valid"));
         let project = Arc::new(BakeProject::from(&project_path).unwrap());
         _ = project.create_project_bake_dirs();
@@ -375,11 +398,11 @@ mod test {
         let strategy = TestCacheStrategy {
             cache: cache_str.clone(),
         };
-        let mut cache = Cache::new(project.clone(), Some("foo:build"));
+        let mut cache = Cache::new(project.clone(), Some("foo:build")).await;
         cache.strategies = vec![Box::new(strategy)];
 
         // Should error without existing output files
-        let res = cache.put("foo:build");
+        let res = cache.put("foo:build").await;
         assert!(res.is_err());
 
         // Create log and output files
@@ -394,7 +417,7 @@ mod test {
             std::fs::File::create(project.root_path.join("foo/target/foo_test.txt")).unwrap();
         output_file.write_all(b"foo").unwrap();
 
-        let res = cache.put("foo:build");
+        let res = cache.put("foo:build").await;
         assert!(res.is_ok());
         assert_eq!(cache_str.lock().unwrap().as_str(), FOO_BUILD_HASH);
     }
