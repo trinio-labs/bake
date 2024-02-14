@@ -2,7 +2,7 @@ mod config;
 mod cookbook;
 mod recipe;
 
-use anyhow::anyhow;
+use anyhow::bail;
 pub use config::*;
 pub use cookbook::*;
 pub use recipe::*;
@@ -61,7 +61,7 @@ impl BakeProject {
         let mut project: Self;
 
         if !path.exists() {
-            return Err(anyhow!("Path does not exist: {}", path.display()));
+            bail!("Path does not exist: {}", path.display());
         }
 
         if path.is_dir() {
@@ -69,28 +69,25 @@ impl BakeProject {
         } else if path.is_file() {
             file_path = path.clone();
         } else {
-            return Err(anyhow!("Invalid path"));
+            bail!("Invalid path");
         }
 
         let config_str = match std::fs::read_to_string(&file_path) {
             Ok(contents) => contents,
             Err(_) => {
-                return Err(anyhow!(
-                    "Could not read config file: {}",
-                    file_path.display()
-                ));
+                bail!("Could not read config file: {}", file_path.display());
             }
         };
 
         match serde_yaml::from_str::<Self>(&config_str) {
             Ok(mut parsed) => {
                 if let Err(err) = parsed.validate() {
-                    return Err(anyhow!("Could not parse config file: {}", err));
+                    bail!("Could not parse config file: {}", err);
                 }
                 parsed.root_path = file_path.parent().unwrap().to_path_buf();
                 project = parsed;
             }
-            Err(err) => return Err(anyhow!("Could not parse config file: {}", err)),
+            Err(err) => bail!("Could not parse config file: {}", err),
         }
 
         project.cookbooks = Cookbook::map_from(path)?;
@@ -134,11 +131,11 @@ impl BakeProject {
             });
 
         if !err_msg.is_empty() {
-            return Err(anyhow!(
+            bail!(
                 "{}:\n{}",
                 console::style("Recipe dependencies not found").bold(),
                 err_msg
-            ));
+            );
         }
 
         // Validate if project doesn't have circular dependencies
@@ -150,7 +147,7 @@ impl BakeProject {
                 let message = circular_dependency.iter().fold("".to_owned(), |acc, x| {
                     format!("{}\n{}", acc, x.join(" => "))
                 });
-                return Err(anyhow!("Circular dependencies detected:\n{:}", message));
+                bail!("Circular dependencies detected:\n{:}", message);
             }
         }
 
@@ -160,11 +157,11 @@ impl BakeProject {
     pub fn create_project_bake_dirs(&self) -> anyhow::Result<()> {
         // Create .bake directories
         if let Err(err) = std::fs::create_dir_all(self.get_project_bake_path()) {
-            return Err(anyhow!("Could not create .bake directory: {}", err));
+            bail!("Could not create .bake directory: {}", err);
         };
 
         if let Err(err) = std::fs::create_dir_all(self.get_project_log_path()) {
-            return Err(anyhow!("Could not create logs directory: {}", err));
+            bail!("Could not create logs directory: {}", err);
         };
 
         Ok(())
@@ -190,7 +187,7 @@ impl BakeProject {
                 }
             }
 
-            return Err(anyhow!("Could not find bake.yml"));
+            bail!("Could not find bake.yml");
         }
     }
 

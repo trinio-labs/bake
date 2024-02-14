@@ -23,6 +23,7 @@ impl Default for LocalCacheConfig {
 #[derive(Debug, Deserialize)]
 pub struct RemoteCacheConfig {
     pub s3: Option<S3CacheConfig>,
+    pub gcs: Option<GcsCacheConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +34,13 @@ pub struct S3CacheConfig {
     pub region: Option<String>,
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GcsCacheConfig {
+    #[serde(default = "bool_true_default")]
+    pub enabled: bool,
+    pub bucket: String,
 }
 
 #[derive(Debug, Deserialize, Validate)]

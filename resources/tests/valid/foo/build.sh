@@ -1,1 +1,2 @@
-echo "Hello Foo Build!"
+touch ./target/foo.txt
+echo "Foo built" >./target/foo.txt

@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use anyhow::bail;
 use console::{style, Color};
 use indicatif::{MultiProgress, ProgressBar};
 use tokio::{
@@ -80,7 +81,7 @@ pub async fn bake(
         .iter()
         .any(|(_, recipe)| matches!(recipe.run_status.status, Status::Error))
     {
-        return Err(anyhow::anyhow!("Some recipes failed to run"));
+        bail!("Some recipes failed to run");
     }
 
     Ok(())
@@ -434,10 +435,14 @@ mod tests {
         }
     }
 
+    fn config_path(path_str: &str) -> String {
+        env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
+    }
+
     #[tokio::test]
     async fn run_all_recipes() {
-        let project = Arc::new(BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap());
-        let mut cache = Cache::new(project.clone(), None).await;
+        let project = Arc::new(BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap());
+        let mut cache = Cache::new(project.clone(), None).await.unwrap();
         cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
         let res = super::bake(project.clone(), cache, None).await;
         assert!(res.is_ok());
@@ -445,10 +450,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_bar_recipes() {
-        let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
+        let mut project = BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap();
         project.config.verbose = false;
         let project = Arc::new(project);
-        let mut cache = Cache::new(project.clone(), None).await;
+        let mut cache = Cache::new(project.clone(), None).await.unwrap();
         cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_ok());
@@ -456,10 +461,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_error_recipes() {
-        let mut project = BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap();
+        let mut project = BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap();
         project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
         let project = Arc::new(project);
-        let mut cache = Cache::new(project.clone(), None).await;
+        let mut cache = Cache::new(project.clone(), None).await.unwrap();
         cache.strategies = vec![Box::new(TestCacheStrategy { hit: false })];
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_err());

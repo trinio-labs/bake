@@ -89,7 +89,7 @@ impl CacheStrategy for S3CacheStrategy {
 }
 
 impl S3CacheStrategy {
-    pub async fn from_config(config: &S3CacheConfig) -> Self {
+    pub async fn from_config(config: &S3CacheConfig) -> anyhow::Result<Self> {
         let region_provider =
             RegionProviderChain::first_try(config.region.clone().map(Region::new))
                 .or_default_provider()
@@ -99,10 +99,10 @@ impl S3CacheStrategy {
             .load()
             .await;
 
-        Self {
+        Ok(Self {
             bucket: config.bucket.clone(),
             region: config.region.clone(),
             client: Client::new(&aws_config),
-        }
+        })
     }
 }

@@ -3,7 +3,7 @@ mod cache;
 mod project;
 
 use project::BakeProject;
-use std::{io, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use console::Term;
@@ -41,7 +41,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), io::Error> {
+async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
 
     let term = Term::stdout();
@@ -63,18 +63,25 @@ async fn main() -> Result<(), io::Error> {
             println!("Loading project... {}", console::style("✓").green());
             let recipe_filter = args.recipe.as_deref();
             let arc_project = Arc::new(project);
-            let cache = Cache::new(arc_project.clone(), recipe_filter).await;
+            let cache = match Cache::new(arc_project.clone(), recipe_filter).await {
+                Ok(cache) => cache,
+                Err(err) => {
+                    println!("Error creating cache: {}", err);
+                    return Err(err);
+                }
+            };
 
             match baker::bake(arc_project.clone(), cache, args.recipe.as_deref()).await {
                 Ok(_) => {}
                 Err(err) => {
                     println!("{}", err);
+                    return Err(err);
                 }
             }
         }
         Err(err) => {
             println!("Loading project... {}", console::style("✗").red());
-            println!("{}", err);
+            return Err(err);
         }
     }
 

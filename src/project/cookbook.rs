@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::project::Recipe;
-use anyhow::anyhow;
+use anyhow::bail;
 use ignore::WalkBuilder;
 use log::debug;
 use serde::Deserialize;
@@ -26,7 +26,7 @@ impl Cookbook {
 
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(_) => return Err(anyhow!("Could not read config file: {}", path.display())),
+            Err(_) => bail!("Could not read config file: {}", path.display()),
         };
 
         match serde_yaml::from_str::<Self>(&config_str) {
@@ -49,7 +49,7 @@ impl Cookbook {
                 });
                 config = parsed;
             }
-            Err(err) => return Err(anyhow!("Could not parse cookbook file: {}", err)),
+            Err(err) => bail!("Could not parse cookbook file: {}", err),
         }
 
         Ok(config)

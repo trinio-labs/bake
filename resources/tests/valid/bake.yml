@@ -2,7 +2,10 @@ name: test
 config:
   verbose: true
   cache:
+    local:
+      enabled: true
     remotes:
       s3:
-        bucket: trinio-bake
-        region: us-east-2
+        bucket: trinio-bake-cache
+      gcs:
+        bucket: trinio-bake-cache
