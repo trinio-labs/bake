@@ -3,7 +3,7 @@ mod cookbook;
 mod recipe;
 
 use anyhow::bail;
-pub use config::*;
+
 pub use cookbook::*;
 pub use recipe::*;
 

@@ -1,17 +1,19 @@
 use std::io::Write;
+use std::sync::Arc;
 use std::{fs::File, path::PathBuf};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use log::{debug, warn};
 
-use crate::project::S3CacheConfig;
+use crate::project::BakeProject;
 
 use super::{CacheResult, CacheResultData, CacheStrategy};
 
+#[derive(Clone, Debug)]
 pub struct S3CacheStrategy {
     pub bucket: String,
     pub region: Option<String>,
@@ -86,23 +88,25 @@ impl CacheStrategy for S3CacheStrategy {
             )),
         }
     }
-}
+    async fn from_config(config: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>> {
+        if let Some(remotes) = &config.config.cache.remotes {
+            if let Some(s3) = &remotes.s3 {
+                let region_provider =
+                    RegionProviderChain::first_try(s3.region.clone().map(Region::new))
+                        .or_default_provider()
+                        .or_else("us-east-1");
+                let aws_config = aws_config::defaults(BehaviorVersion::latest())
+                    .region(region_provider)
+                    .load()
+                    .await;
+                return Ok(Box::new(Self {
+                    bucket: s3.bucket.clone(),
+                    region: s3.region.clone(),
+                    client: Client::new(&aws_config),
+                }));
+            }
+        }
 
-impl S3CacheStrategy {
-    pub async fn from_config(config: &S3CacheConfig) -> anyhow::Result<Self> {
-        let region_provider =
-            RegionProviderChain::first_try(config.region.clone().map(Region::new))
-                .or_default_provider()
-                .or_else("us-east-1");
-        let aws_config = aws_config::defaults(BehaviorVersion::latest())
-            .region(region_provider)
-            .load()
-            .await;
-
-        Ok(Self {
-            bucket: config.bucket.clone(),
-            region: config.region.clone(),
-            client: Client::new(&aws_config),
-        })
+        bail!("Failed to create S3 Cache Strategy")
     }
 }

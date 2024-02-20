@@ -9,7 +9,7 @@ use clap::Parser;
 use console::Term;
 use env_logger::Env;
 
-use crate::cache::Cache;
+use crate::cache::CacheBuilder;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const WELCOME_MSG: &str = "
@@ -63,7 +63,14 @@ async fn main() -> anyhow::Result<()> {
             println!("Loading project... {}", console::style("✓").green());
             let recipe_filter = args.recipe.as_deref();
             let arc_project = Arc::new(project);
-            let cache = match Cache::new(arc_project.clone(), recipe_filter).await {
+
+            // Build cache using project and Local, S3 and GCS strategies
+            let mut cache_builder = CacheBuilder::new(arc_project.clone());
+            if let Some(recipe_filter) = recipe_filter {
+                cache_builder.filter(recipe_filter);
+            }
+
+            let cache = match cache_builder.default_strategies().build().await {
                 Ok(cache) => cache,
                 Err(err) => {
                     println!("Error creating cache: {}", err);

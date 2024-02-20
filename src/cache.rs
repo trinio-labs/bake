@@ -1,26 +1,26 @@
-mod gcs;
-mod local;
-mod s3;
+pub mod builder;
+pub mod gcs;
+pub mod local;
+pub mod s3;
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs::File,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, fmt::Debug, fs::File, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
-use log::{debug, warn};
-use serde::Serialize;
+use log::warn;
 
 use crate::project::BakeProject;
+
+pub use builder::CacheBuilder;
 
 #[async_trait]
 pub trait CacheStrategy: Send + Sync {
     async fn get(&self, key: &str) -> CacheResult;
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()>;
+    async fn from_config(config: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>>
+    where
+        Self: Sized;
 }
 
 #[derive(Debug, PartialEq)]
@@ -34,12 +34,6 @@ pub enum CacheResult {
     Miss,
 }
 
-#[derive(Debug, Serialize)]
-struct CacheData {
-    recipe: String,
-    deps: BTreeMap<String, String>,
-}
-
 /// Cache manages caching of bake outputs by using caching strategies defined in
 /// configuration files
 pub struct Cache {
@@ -47,131 +41,18 @@ pub struct Cache {
     pub project: Arc<BakeProject>,
 
     /// List of cache strategies
-    pub strategies: Vec<Box<dyn CacheStrategy>>,
+    pub strategies: Vec<Arc<Box<dyn CacheStrategy>>>,
 
     /// Map of recipe hashes so we don't have to recompute them
     pub hashes: HashMap<String, String>,
 }
 
 impl Cache {
-    /// Creates a new instance of the Cache using the recipe_list to only calculate the hashes of
-    /// required recipes
-    pub async fn new(project: Arc<BakeProject>, filter: Option<&str>) -> anyhow::Result<Self> {
-        let mut strategies: Vec<Box<dyn CacheStrategy>> = Vec::new();
-        let local_path = project
-            .config
-            .cache
-            .local
-            .path
-            .clone()
-            .unwrap_or(project.get_project_bake_path().join("cache"));
-
-        // If there's no cache order, use local then s3, then gcs if configured
-        if project.config.cache.order.is_empty() {
-            strategies = Vec::new();
-            if project.config.cache.local.enabled {
-                strategies.push(Box::new(local::LocalCacheStrategy {
-                    path: local_path,
-                    base_path: project.root_path.clone(),
-                }));
-            }
-            if let Some(remotes) = project.config.cache.remotes.as_ref() {
-                if let Some(s3_config) = remotes.s3.as_ref() {
-                    strategies.push(Box::new(s3::S3CacheStrategy::from_config(s3_config).await?))
-                }
-
-                if let Some(gcs_config) = remotes.gcs.as_ref() {
-                    strategies.push(Box::new(
-                        gcs::GcsCacheStrategy::from_config(gcs_config).await?,
-                    ))
-                }
-            }
-        } else {
-            for item in &project.config.cache.order {
-                let strategy = match item.as_str() {
-                    "local" => {
-                        if !project.config.cache.local.enabled {
-                            warn!(
-                                "Local is listed in cache order but disabled in config. Ignoring."
-                            );
-                            None
-                        } else {
-                            Some(Box::new(local::LocalCacheStrategy {
-                                path: local_path.clone(),
-                                base_path: project.root_path.clone(),
-                            }) as Box<dyn CacheStrategy>)
-                        }
-                    }
-                    "s3" => {
-                        if let Some(config) = project.config.cache.remotes.as_ref() {
-                            if let Some(s3_config) = config.s3.as_ref() {
-                                if !s3_config.enabled {
-                                    warn!(
-                                        "S3 cache listed in cache order but disabled in config. Ignoring."
-                                    );
-                                    None
-                                } else {
-                                    Some(Box::new(
-                                        s3::S3CacheStrategy::from_config(s3_config).await?,
-                                    )
-                                        as Box<dyn CacheStrategy>)
-                                }
-                            } else {
-                                warn!("S3 cache is listed in cache order but no S3 config found. Ignoring.");
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    "gcs" => {
-                        if let Some(config) = project.config.cache.remotes.as_ref() {
-                            if let Some(gcs_config) = config.gcs.as_ref() {
-                                if !gcs_config.enabled {
-                                    warn!(
-                                        "GCS cache listed in cache order but disabled in config. Ignoring."
-                                    );
-                                    None
-                                } else {
-                                    Some(Box::new(
-                                        gcs::GcsCacheStrategy::from_config(gcs_config).await?,
-                                    )
-                                        as Box<dyn CacheStrategy>)
-                                }
-                            } else {
-                                warn!("GCS cache is listed in cache order but no GCS config found. Ignoring.");
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(strategy) = strategy {
-                    strategies.push(strategy);
-                }
-            }
-        }
-
-        let hashes = project
-            .get_recipes(filter)
-            .iter()
-            .map(|(key, recipe)| (key.to_owned(), recipe.get_recipe_hash().unwrap()))
-            .collect();
-
-        Ok(Self {
-            project,
-            strategies,
-            hashes,
-        })
-    }
-
     // Tries to get a cached result for the given recipe
     pub async fn get(&self, recipe_name: &str) -> CacheResult {
-        let hash = self.calculate_total_hash(recipe_name);
+        let hash = self.hashes.get(recipe_name).unwrap();
         for strategy in &self.strategies {
-            if let CacheResult::Hit(data) = strategy.get(&hash).await {
+            if let CacheResult::Hit(data) = strategy.get(hash).await {
                 if let Ok(tar_gz) = File::open(&data.archive_path) {
                     let tar = GzDecoder::new(tar_gz);
                     let mut archive = tar::Archive::new(tar);
@@ -184,40 +65,11 @@ impl Cache {
                         return CacheResult::Miss;
                     }
                 }
-
                 return CacheResult::Hit(data);
             }
         }
 
         CacheResult::Miss
-    }
-
-    // Calculates the hash for the given recipe given all its dependencies
-    fn calculate_total_hash(&self, recipe_name: &str) -> String {
-        debug!("Calculating total hash for {}", recipe_name);
-        let mut cache_data = CacheData {
-            recipe: recipe_name.to_owned(),
-            deps: BTreeMap::new(),
-        };
-
-        if let Some(recipe_hash) = self.hashes.get(recipe_name) {
-            cache_data.recipe = recipe_hash.clone();
-        };
-
-        if let Some(deps) = self.project.clone().dependency_map.get(recipe_name) {
-            cache_data.deps = deps.iter().fold(BTreeMap::new(), |mut acc, x| {
-                if let Some(hash) = self.hashes.get(x) {
-                    acc.insert(x.clone(), hash.clone());
-                }
-                acc
-            });
-        }
-
-        debug!("Total cache data: {:?}", cache_data);
-
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(serde_json::to_string(&cache_data).unwrap().as_bytes());
-        hasher.finalize().to_hex().to_string()
     }
 
     // Puts the given recipe's outputs in the cache
@@ -310,9 +162,9 @@ impl Cache {
             }
         }
 
-        let hash = self.calculate_total_hash(recipe_name);
+        let hash = self.hashes.get(recipe_name).unwrap();
         for strategy in self.strategies.iter() {
-            strategy.put(&hash, archive_path.clone()).await?;
+            strategy.put(hash, archive_path.clone()).await?;
         }
 
         Ok(())
@@ -322,6 +174,7 @@ impl Cache {
 #[cfg(test)]
 mod test {
     use std::{
+        env,
         io::Write,
         path::PathBuf,
         sync::{Arc, Mutex},
@@ -330,14 +183,15 @@ mod test {
     use async_trait::async_trait;
 
     use crate::{
-        cache::{CacheResult, CacheResultData},
+        cache::{CacheBuilder, CacheResult, CacheResultData},
         project::BakeProject,
     };
 
-    use super::{Cache, CacheStrategy};
+    use super::CacheStrategy;
 
     const FOO_BUILD_HASH: &str = "9d602944fa0575fa5a18d7b0e6396703866a9a24141bb6761e37afb4bc026f2d";
 
+    #[derive(Clone, Debug)]
     struct TestCacheStrategy {
         cache: Arc<Mutex<String>>,
     }
@@ -356,21 +210,15 @@ mod test {
             self.cache.lock().unwrap().push_str(key);
             Ok(())
         }
+        async fn from_config(_: Arc<BakeProject>) -> anyhow::Result<Box<dyn super::CacheStrategy>> {
+            Ok(Box::new(TestCacheStrategy {
+                cache: Arc::new(Mutex::new(String::new())),
+            }))
+        }
     }
 
     fn config_path(path_str: &str) -> String {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
-    }
-
-    #[tokio::test]
-    async fn new() {
-        let project_path = PathBuf::from(config_path("/valid"));
-        let project = BakeProject::from(&project_path).unwrap();
-        let cache = Cache::new(Arc::new(project), Some("invalid_filter"))
-            .await
-            .unwrap();
-        assert!(cache.hashes.is_empty());
-        assert_eq!(cache.strategies.len(), 3);
     }
 
     #[tokio::test]
@@ -380,10 +228,14 @@ mod test {
 
         // Create test cache
         let cache_str = Arc::new(Mutex::new(String::new()));
-        let mut cache = Cache::new(project, Some("foo:build")).await.unwrap();
-        cache.strategies = vec![Box::new(TestCacheStrategy {
+        let mut cache = CacheBuilder::new(project.clone())
+            .filter("foo:build")
+            .build()
+            .await
+            .unwrap();
+        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy {
             cache: cache_str.clone(),
-        })];
+        }))];
 
         // Test hit
         let result = cache.get("foo:build").await;
@@ -393,10 +245,14 @@ mod test {
         let mut project = BakeProject::from(&project_path).unwrap();
         project.recipes.get_mut("foo:build").unwrap().run = "asdfasdfasd".to_owned();
         let project = Arc::new(project);
-        let mut cache = Cache::new(project, Some("foo:build")).await.unwrap();
-        cache.strategies = vec![Box::new(TestCacheStrategy {
+        let mut cache = CacheBuilder::new(project.clone())
+            .filter("foo:build")
+            .build()
+            .await
+            .unwrap();
+        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy {
             cache: cache_str.clone(),
-        })];
+        }))];
         let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
 
@@ -405,10 +261,14 @@ mod test {
         project.recipes.get_mut("foo:build-dep").unwrap().run = "asdfasdfasd".to_owned();
         let project = Arc::new(project);
 
-        let mut cache = Cache::new(project, Some("foo:build")).await.unwrap();
-        cache.strategies = vec![Box::new(TestCacheStrategy {
+        let mut cache = CacheBuilder::new(project.clone())
+            .filter("foo:build")
+            .build()
+            .await
+            .unwrap();
+        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy {
             cache: cache_str.clone(),
-        })];
+        }))];
         let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
     }
@@ -428,10 +288,12 @@ mod test {
         let strategy = TestCacheStrategy {
             cache: cache_str.clone(),
         };
-        let mut cache = Cache::new(project.clone(), Some("foo:build"))
+        let mut cache = CacheBuilder::new(project.clone())
+            .filter("foo:build")
+            .build()
             .await
             .unwrap();
-        cache.strategies = vec![Box::new(strategy)];
+        cache.strategies = vec![Arc::new(Box::new(strategy))];
 
         // Should error without existing output files
         let res = cache.put("foo:build").await;

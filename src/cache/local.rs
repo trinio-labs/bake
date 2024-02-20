@@ -1,16 +1,16 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use log::debug;
 
-use crate::cache::CacheResultData;
+use crate::{cache::CacheResultData, project::BakeProject};
 
 use super::{CacheResult, CacheStrategy};
 
+#[derive(Clone, Debug)]
 pub struct LocalCacheStrategy {
     pub path: PathBuf,
-    pub base_path: PathBuf,
 }
 
 #[async_trait]
@@ -18,7 +18,7 @@ impl CacheStrategy for LocalCacheStrategy {
     async fn get(&self, key: &str) -> CacheResult {
         let file_name = key.to_owned() + ".tar.gz";
         let archive_path = self.path.join(file_name.clone());
-        debug!("Checking local cache for key {}", key);
+        debug!("Checking local cache for key {}", archive_path.display());
         if archive_path.is_file() {
             debug!("Cache hit for key {}", key);
             return CacheResult::Hit(CacheResultData { archive_path });
@@ -57,5 +57,18 @@ impl CacheStrategy for LocalCacheStrategy {
         } else {
             Ok(())
         }
+    }
+
+    async fn from_config(project: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>> {
+        debug!("Building local cache");
+        let path = project
+            .config
+            .cache
+            .local
+            .path
+            .clone()
+            .unwrap_or(project.get_project_bake_path().join("cache"));
+        debug!("Local cache path: {}", path.display());
+        Ok(Box::new(LocalCacheStrategy { path }))
     }
 }

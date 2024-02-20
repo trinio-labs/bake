@@ -32,8 +32,6 @@ pub struct S3CacheConfig {
     pub enabled: bool,
     pub bucket: String,
     pub region: Option<String>,
-    pub access_key: Option<String>,
-    pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,10 +66,12 @@ impl Default for CacheConfig {
 }
 
 fn validate_order(value: &[String]) -> Result<(), ValidationError> {
-    let valid = value.iter().all(|v| matches!(v.as_str(), "local" | "s3"));
+    let valid = value
+        .iter()
+        .all(|v| matches!(v.as_str(), "local" | "s3" | "gcs"));
     if !valid {
         Err(ValidationError::new(
-            "string must be one of 'local' or 's3'",
+            "string must be one of 'local', 's3' or 'gcs'",
         ))
     } else {
         Ok(())

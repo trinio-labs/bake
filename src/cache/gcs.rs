@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
@@ -7,7 +7,7 @@ use anyhow::bail;
 use async_trait::async_trait;
 use log::{debug, warn};
 
-use crate::{cache::CacheResultData, project::GcsCacheConfig};
+use crate::{cache::CacheResultData, project::BakeProject};
 
 use google_cloud_storage::{
     client::{Client, ClientConfig},
@@ -20,9 +20,16 @@ use google_cloud_storage::{
 
 use super::{CacheResult, CacheStrategy};
 
+#[derive(Clone)]
 pub struct GcsCacheStrategy {
     pub bucket: String,
     client: Client,
+}
+
+impl std::fmt::Debug for GcsCacheStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Gcs")
+    }
 }
 
 #[async_trait]
@@ -101,14 +108,17 @@ impl CacheStrategy for GcsCacheStrategy {
             );
         }
     }
-}
-
-impl GcsCacheStrategy {
-    pub async fn from_config(config: &GcsCacheConfig) -> anyhow::Result<Self> {
+    async fn from_config(config: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>> {
         let client_config = ClientConfig::default().with_auth().await?;
-        Ok(Self {
-            bucket: config.bucket.clone(),
-            client: Client::new(client_config),
-        })
+        if let Some(remotes) = &config.config.cache.remotes {
+            if let Some(gcs) = &remotes.gcs {
+                return Ok(Box::new(Self {
+                    bucket: gcs.bucket.clone(),
+                    client: Client::new(client_config),
+                }) as Box<dyn CacheStrategy>);
+            }
+        }
+
+        bail!("Failed to create GCS Cache Strategy")
     }
 }
