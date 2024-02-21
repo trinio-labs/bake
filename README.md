@@ -11,13 +11,13 @@ recipe's inputs such as files or environment variables.
 ### Homebrew
 
 ```sh
-brew install bake
+brew install trinio-labs/tap/bake
 ```
 
 ### Cargo
 
 ```sh
-cargo install bake
+cargo install bake-cli
 ```
 
 ## A bake project
