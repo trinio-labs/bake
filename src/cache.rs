@@ -187,7 +187,7 @@ mod test {
         project::BakeProject,
     };
 
-    use super::CacheStrategy;
+    use super::{Cache, CacheStrategy};
 
     const FOO_BUILD_HASH: &str = "9d602944fa0575fa5a18d7b0e6396703866a9a24141bb6761e37afb4bc026f2d";
 
@@ -217,6 +217,17 @@ mod test {
         }
     }
 
+    async fn build_cache(project: Arc<BakeProject>, filter: &str) -> Cache {
+        CacheBuilder::new(project)
+            .filter(filter)
+            .add_strategy("local", TestCacheStrategy::from_config)
+            .add_strategy("s3", TestCacheStrategy::from_config)
+            .add_strategy("gcs", TestCacheStrategy::from_config)
+            .build()
+            .await
+            .unwrap()
+    }
+
     fn config_path(path_str: &str) -> String {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
     }
@@ -225,17 +236,7 @@ mod test {
     async fn get() {
         let project_path = PathBuf::from(config_path("/valid"));
         let project = Arc::new(BakeProject::from(&project_path).unwrap());
-
-        // Create test cache
-        let cache_str = Arc::new(Mutex::new(String::new()));
-        let mut cache = CacheBuilder::new(project.clone())
-            .filter("foo:build")
-            .build()
-            .await
-            .unwrap();
-        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy {
-            cache: cache_str.clone(),
-        }))];
+        let cache = build_cache(project.clone(), "foo:build").await;
 
         // Test hit
         let result = cache.get("foo:build").await;
@@ -244,15 +245,8 @@ mod test {
         // Miss if recipe command changes
         let mut project = BakeProject::from(&project_path).unwrap();
         project.recipes.get_mut("foo:build").unwrap().run = "asdfasdfasd".to_owned();
-        let project = Arc::new(project);
-        let mut cache = CacheBuilder::new(project.clone())
-            .filter("foo:build")
-            .build()
-            .await
-            .unwrap();
-        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy {
-            cache: cache_str.clone(),
-        }))];
+
+        let cache = build_cache(Arc::new(project), "foo:build").await;
         let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
 
@@ -261,14 +255,7 @@ mod test {
         project.recipes.get_mut("foo:build-dep").unwrap().run = "asdfasdfasd".to_owned();
         let project = Arc::new(project);
 
-        let mut cache = CacheBuilder::new(project.clone())
-            .filter("foo:build")
-            .build()
-            .await
-            .unwrap();
-        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy {
-            cache: cache_str.clone(),
-        }))];
+        let cache = build_cache(project.clone(), "foo:build").await;
         let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
     }
@@ -288,11 +275,7 @@ mod test {
         let strategy = TestCacheStrategy {
             cache: cache_str.clone(),
         };
-        let mut cache = CacheBuilder::new(project.clone())
-            .filter("foo:build")
-            .build()
-            .await
-            .unwrap();
+        let mut cache = build_cache(project.clone(), "foo:build").await;
         cache.strategies = vec![Arc::new(Box::new(strategy))];
 
         // Should error without existing output files

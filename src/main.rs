@@ -1,3 +1,4 @@
+#![feature(coverage_attribute)]
 mod baker;
 mod cache;
 mod project;

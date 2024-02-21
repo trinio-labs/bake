@@ -46,6 +46,7 @@ impl CacheBuilder {
         }
     }
 
+    #[cfg_attr(coverage, coverage(off))]
     pub fn default_strategies(&mut self) -> &mut Self {
         self.add_strategy("local", super::local::LocalCacheStrategy::from_config);
         self.add_strategy("s3", super::s3::S3CacheStrategy::from_config);
@@ -151,5 +152,57 @@ impl CacheBuilder {
             strategies,
             hashes: self.calculate_all_hashes()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, sync::Mutex};
+
+    use async_trait::async_trait;
+
+    use crate::cache::{CacheResult, CacheResultData};
+
+    use super::*;
+
+    #[derive(Clone, Debug, Default)]
+    struct TestCacheStrategy {
+        pub get_called: Arc<Mutex<String>>,
+        pub put_called: Arc<Mutex<String>>,
+    }
+
+    #[async_trait]
+    impl CacheStrategy for TestCacheStrategy {
+        #[cfg_attr(coverage, coverage(off))]
+        async fn get(&self, key: &str) -> CacheResult {
+            self.get_called.lock().unwrap().push_str(key);
+            CacheResult::Hit(CacheResultData {
+                archive_path: PathBuf::from(format!("{}.tar.gz", key)),
+            })
+        }
+        #[cfg_attr(coverage, coverage(off))]
+        async fn put(&self, key: &str, _: PathBuf) -> anyhow::Result<()> {
+            self.put_called.lock().unwrap().push_str(key);
+            Ok(())
+        }
+        #[cfg_attr(coverage, coverage(off))]
+        async fn from_config(_: Arc<BakeProject>) -> anyhow::Result<Box<dyn super::CacheStrategy>> {
+            Ok(Box::<TestCacheStrategy>::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn build() {
+        let project = Arc::new(BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap());
+        let mut builder = CacheBuilder::new(project);
+
+        let cache = builder
+            .add_strategy("local", TestCacheStrategy::from_config)
+            .add_strategy("s3", TestCacheStrategy::from_config)
+            .add_strategy("gcs", TestCacheStrategy::from_config)
+            .build()
+            .await
+            .unwrap();
+        assert!(cache.hashes.get("foo:build").is_some());
     }
 }

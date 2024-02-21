@@ -411,7 +411,7 @@ mod tests {
     use async_trait::async_trait;
 
     use crate::{
-        cache::{CacheBuilder, CacheResult, CacheResultData, CacheStrategy},
+        cache::{Cache, CacheBuilder, CacheResult, CacheResultData, CacheStrategy},
         project::BakeProject,
     };
 
@@ -444,11 +444,20 @@ mod tests {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
     }
 
+    async fn build_cache(project: Arc<BakeProject>) -> Cache {
+        CacheBuilder::new(project)
+            .add_strategy("local", TestCacheStrategy::from_config)
+            .add_strategy("s3", TestCacheStrategy::from_config)
+            .add_strategy("gcs", TestCacheStrategy::from_config)
+            .build()
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn run_all_recipes() {
         let project = Arc::new(BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap());
-        let mut cache = CacheBuilder::new(project.clone()).build().await.unwrap();
-        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy { hit: false }))];
+        let cache = build_cache(project.clone()).await;
         let res = super::bake(project.clone(), cache, None).await;
         assert!(res.is_ok());
     }
@@ -458,8 +467,7 @@ mod tests {
         let mut project = BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap();
         project.config.verbose = false;
         let project = Arc::new(project);
-        let mut cache = CacheBuilder::new(project.clone()).build().await.unwrap();
-        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy { hit: false }))];
+        let cache = build_cache(project.clone()).await;
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_ok());
     }
@@ -469,8 +477,7 @@ mod tests {
         let mut project = BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap();
         project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
         let project = Arc::new(project);
-        let mut cache = CacheBuilder::new(project.clone()).build().await.unwrap();
-        cache.strategies = vec![Arc::new(Box::new(TestCacheStrategy { hit: false }))];
+        let cache = build_cache(project.clone()).await;
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
         assert!(res.is_err());
     }

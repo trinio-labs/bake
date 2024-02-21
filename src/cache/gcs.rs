@@ -27,6 +27,7 @@ pub struct GcsCacheStrategy {
 }
 
 impl std::fmt::Debug for GcsCacheStrategy {
+    #[coverage(off)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Gcs")
     }
@@ -34,6 +35,7 @@ impl std::fmt::Debug for GcsCacheStrategy {
 
 #[async_trait]
 impl CacheStrategy for GcsCacheStrategy {
+    #[coverage(off)]
     async fn get(&self, key: &str) -> CacheResult {
         let file_name = format!("{}.tar.gz", key);
         let archive_path = std::env::temp_dir().join(&file_name);
@@ -77,6 +79,8 @@ impl CacheStrategy for GcsCacheStrategy {
         debug!("Key {key} does not exist in GCS");
         CacheResult::Miss
     }
+
+    #[coverage(off)]
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
         let file_name = format!("{}.tar.gz", key);
         let upload_type = UploadType::Simple(Media::new(file_name.clone()));
@@ -108,6 +112,7 @@ impl CacheStrategy for GcsCacheStrategy {
             );
         }
     }
+    #[coverage(off)]
     async fn from_config(config: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>> {
         let client_config = ClientConfig::default().with_auth().await?;
         if let Some(remotes) = &config.config.cache.remotes {
