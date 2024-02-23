@@ -176,7 +176,7 @@ impl BakeProject {
         if file_yml.exists() {
             Ok(file_yml)
         } else if file_yaml.exists() {
-            return Ok(file_yaml);
+            Ok(file_yaml)
         } else {
             let parent = dir.parent();
 

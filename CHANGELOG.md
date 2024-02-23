@@ -4,6 +4,7 @@
 
 * Templated config files
 * Project, cookbook and recipe variables
+* Docker executors
 
 ## v0.1.2
 
