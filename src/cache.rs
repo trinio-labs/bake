@@ -189,7 +189,7 @@ mod test {
 
     use super::{Cache, CacheStrategy};
 
-    const FOO_BUILD_HASH: &str = "9d602944fa0575fa5a18d7b0e6396703866a9a24141bb6761e37afb4bc026f2d";
+    const FOO_BUILD_HASH: &str = "a046aaeb882a2f1d47c037ad78ef9455e7336576ed31c851804cac63ff2bf9ce";
 
     #[derive(Clone, Debug)]
     struct TestCacheStrategy {

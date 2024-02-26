@@ -66,7 +66,7 @@ impl BakeProject {
     /// * `path` - Path to either a config file or a directory. If a directory is passed,
     /// load_config will search for a bake.ya?ml file in that directory and in parent directories.
     ///
-    pub fn from(path: &PathBuf) -> anyhow::Result<Self> {
+    pub fn from(path: &Path) -> anyhow::Result<Self> {
         // TODO: Better organize validation for config and recipes
         let file_path: PathBuf;
         let mut project: Self;
@@ -78,7 +78,7 @@ impl BakeProject {
         if path.is_dir() {
             file_path = Self::find_config_file_in_dir(path)?;
         } else if path.is_file() {
-            file_path = path.clone();
+            file_path = PathBuf::from(path);
         } else {
             bail!("Invalid path");
         }
@@ -104,7 +104,8 @@ impl BakeProject {
         project.variables =
             parse_variable_list(project.environment.as_slice(), &project.variables)?;
 
-        project.cookbooks = Cookbook::map_from(path, &project.environment, &project.variables)?;
+        project.cookbooks =
+            Cookbook::map_from(&project.root_path, &project.environment, &project.variables)?;
 
         project.recipes = project
             .cookbooks
@@ -358,6 +359,7 @@ mod tests {
             project.variables.get("bake_project_var"),
             Some(&"bar".to_string())
         );
+        println!("{:?}", project.recipes);
         assert_eq!(
             project.recipes.get("foo:build").unwrap().variables["foo"],
             "build-bar"
