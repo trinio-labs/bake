@@ -6,6 +6,17 @@
 * Project, cookbook and recipe variables
 * Docker executors
 
+## v0.2.0
+
+This release adds support for variables in bake projects as well as using handlebar to define variables and run configurations.
+
+### Added
+
+* Templated variables and run configurations
+* Project, cookbook and recipe variables
+* Further documentation for config files
+* Execution environments with clean environment variables
+
 ## v0.1.2
 
 This release is the first stable version correcting a few bugs and adding remote caching on S3 and GCS.

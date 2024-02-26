@@ -2,6 +2,7 @@
 mod baker;
 mod cache;
 mod project;
+mod template;
 
 use project::BakeProject;
 use std::{path::PathBuf, sync::Arc};

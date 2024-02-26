@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, io::Read, path::PathBuf};
 
 use anyhow::bail;
 use ignore::{overrides::OverrideBuilder, WalkBuilder};
+use indexmap::IndexMap;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +21,7 @@ pub struct RunStatus {
     pub output: String,
 }
 
-#[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct Recipe {
     #[serde(skip)]
     pub name: String,
@@ -30,7 +31,15 @@ pub struct Recipe {
 
     #[serde(skip)]
     pub config_path: PathBuf,
+
     pub description: Option<String>,
+
+    #[serde(default)]
+    pub variables: IndexMap<String, String>,
+
+    #[serde(default)]
+    pub environment: Vec<String>,
+
     pub dependencies: Option<Vec<String>>,
     pub run: String,
     pub inputs: Option<Vec<String>>,
@@ -45,8 +54,10 @@ pub struct Recipe {
 
 #[derive(Serialize, Debug)]
 struct RecipeHashData {
+    environment: BTreeMap<String, String>,
     file_hashes: BTreeMap<PathBuf, String>,
     run: String,
+    variables: BTreeMap<String, String>,
 }
 
 impl Recipe {
@@ -128,9 +139,21 @@ impl Recipe {
             }
         }
 
+        // Add environment variables
+        let environment = self
+            .environment
+            .iter()
+            .map(|env| (env.clone(), std::env::var(env).unwrap_or_default()))
+            .collect::<BTreeMap<String, String>>();
+
+        // We need to sort the hashes so that the hash is always the same independently of the order which they are declared
+        let variables = BTreeMap::from_iter(self.variables.clone());
+
         // Create hash data structure and hash it
         let hash_data = RecipeHashData {
             file_hashes,
+            environment,
+            variables,
             run: self.run.clone(),
         };
 
@@ -146,6 +169,8 @@ impl Recipe {
 #[cfg(test)]
 mod tests {
 
+    use std::collections::HashSet;
+
     use super::*;
 
     fn config_path(path_str: &str) -> String {
@@ -160,12 +185,15 @@ mod tests {
             config_path: PathBuf::from(config_path("/valid/foo/bake.yml")),
             description: None,
             dependencies: None,
+            environment: vec!["FOO".to_owned()],
+            variables: IndexMap::new(),
             run: String::from("test"),
             recipe_hash: String::from("test"),
             inputs: Some(vec![String::from("build.sh")]),
             outputs: None,
             run_status: RunStatus::default(),
         };
+        std::env::set_var("FOO", "bar");
         let hash1 = recipe.get_recipe_hash().unwrap();
 
         recipe.run = "test2".to_owned();
@@ -174,7 +202,19 @@ mod tests {
 
         recipe.inputs = None;
         let hash3 = recipe.get_recipe_hash().unwrap();
-        assert_ne!(hash1, hash3);
-        assert_ne!(hash2, hash3);
+
+        recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);
+        let hash4 = recipe.get_recipe_hash().unwrap();
+
+        std::env::set_var("FOO", "not_bar");
+        let hash5 = recipe.get_recipe_hash().unwrap();
+
+        // All hashes should be unique
+        let mut set = HashSet::new();
+        assert!(set.insert(hash1));
+        assert!(set.insert(hash2));
+        assert!(set.insert(hash3));
+        assert!(set.insert(hash4));
+        assert!(set.insert(hash5));
     }
 }

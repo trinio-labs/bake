@@ -1,6 +1,6 @@
 [package]
 name = "bake-cli"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 authors = ["Theo Ribeiro <repitilian.intern@proton.me>"]
 license = "Apache-2.0"
@@ -27,7 +27,9 @@ console = "0.15.8"
 env_logger = "0.11.1"
 flate2 = "1.0.28"
 google-cloud-storage = "0.15.0"
+handlebars = "5.1.0"
 ignore = "0.4.22"
+indexmap = { version = "2.2.3", features = ["serde"] }
 indicatif = "0.17.7"
 log = "0.4.20"
 regex = "1.10.3"
@@ -61,7 +63,6 @@ targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
   "x86_64-unknown-linux-gnu",
-  "x86_64-pc-windows-msvc",
 ]
 # Publish jobs to run in CI
 pr-run-mode = "plan"

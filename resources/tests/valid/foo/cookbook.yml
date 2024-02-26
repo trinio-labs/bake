@@ -1,4 +1,8 @@
 name: foo
+variables:
+  foo: "{{ var.bake_project_var }}"
+  baz: "{{ var.foo }}"
+  env_var: "{{ env.TEST_BAKE_VAR }}"
 recipes:
   post-test:
     run: |
@@ -7,12 +11,14 @@ recipes:
       - test
 
   build:
+    variables:
+      foo: "build-bar"
     inputs:
       - build.sh
     outputs:
       - target
     run: |
-      ./build.sh
+      ./build.sh {{ var.foo }} {{ var.env_var }}
     dependencies:
       - build-dep
 

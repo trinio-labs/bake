@@ -265,8 +265,15 @@ pub async fn run_recipe(
     log_file_path: PathBuf,
     verbose: bool,
 ) -> Result<(), String> {
-    // TODO: Implement cache strategy
+    let env_values: Vec<(String, String)> = recipe
+        .environment
+        .iter()
+        .map(|name| (name.clone(), std::env::var(name).unwrap_or_default()))
+        .collect();
+
     let result = tokio::process::Command::new("sh")
+        .env_clear()
+        .envs(env_values)
         .current_dir(recipe.config_path.parent().unwrap())
         .arg("-c")
         .arg(recipe.run.clone())
@@ -465,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn run_bar_recipes() {
         let mut project = BakeProject::from(&PathBuf::from(config_path("/valid"))).unwrap();
-        project.config.verbose = false;
+        project.config.verbose = true;
         let project = Arc::new(project);
         let cache = build_cache(project.clone()).await;
         let res = super::bake(project.clone(), cache, Some("bar:")).await;

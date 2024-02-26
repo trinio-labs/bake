@@ -5,6 +5,7 @@ mod recipe;
 use anyhow::bail;
 
 pub use cookbook::*;
+use indexmap::IndexMap;
 pub use recipe::*;
 
 pub use validator::Validate;
@@ -15,6 +16,8 @@ use std::{
 };
 
 use serde::Deserialize;
+
+use crate::template::parse_variable_list;
 
 use self::config::ToolConfig;
 
@@ -33,6 +36,14 @@ pub struct BakeProject {
 
     /// Project description
     pub description: Option<String>,
+
+    /// Global project variables
+    #[serde(default)]
+    pub variables: IndexMap<String, String>,
+
+    /// List of environment variables that should be available to all recipes
+    #[serde(default)]
+    pub environment: Vec<String>,
 
     #[serde(default)]
     #[validate]
@@ -90,7 +101,11 @@ impl BakeProject {
             Err(err) => bail!("Could not parse config file: {}", err),
         }
 
-        project.cookbooks = Cookbook::map_from(path)?;
+        project.variables =
+            parse_variable_list(project.environment.as_slice(), &project.variables)?;
+
+        project.cookbooks = Cookbook::map_from(path, &project.environment, &project.variables)?;
+
         project.recipes = project
             .cookbooks
             .iter()
@@ -339,6 +354,26 @@ mod tests {
     fn validate_project(project: anyhow::Result<super::BakeProject>) {
         let project = project.unwrap();
         assert_eq!(project.name, "test");
+        assert_eq!(
+            project.variables.get("bake_project_var"),
+            Some(&"bar".to_string())
+        );
+        assert_eq!(
+            project.recipes.get("foo:build").unwrap().variables["foo"],
+            "build-bar"
+        );
+        assert_eq!(
+            project.recipes.get("foo:build").unwrap().variables["baz"],
+            "bar"
+        );
+        assert_eq!(
+            project.recipes.get("foo:build").unwrap().run.trim(),
+            "./build.sh build-bar test"
+        );
+        assert_eq!(
+            project.recipes.get("foo:post-test").unwrap().variables["foo"],
+            "bar"
+        );
         // assert_eq!(project.recipes.len(), 5);
         // assert_eq!(project.recipes["foo:build"].name, "build");
     }
@@ -372,6 +407,7 @@ mod tests {
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid config")]
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
+        std::env::set_var("TEST_BAKE_VAR", "test");
         super::BakeProject::from(&PathBuf::from(path_str))
     }
 
