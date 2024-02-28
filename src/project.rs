@@ -1,6 +1,6 @@
-mod config;
-mod cookbook;
-mod recipe;
+pub mod config;
+pub mod cookbook;
+pub mod recipe;
 
 use anyhow::bail;
 
@@ -359,7 +359,6 @@ mod tests {
             project.variables.get("bake_project_var"),
             Some(&"bar".to_string())
         );
-        println!("{:?}", project.recipes);
         assert_eq!(
             project.recipes.get("foo:build").unwrap().variables["foo"],
             "build-bar"

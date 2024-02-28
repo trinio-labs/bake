@@ -26,10 +26,10 @@ pub struct Cookbook {
     pub config_path: PathBuf,
 }
 impl Cookbook {
-    /// Creates a cookbook config from a path to a cookbook file or directory
+    /// Creates a cookbook config from a path to a cookbook file
     ///
     /// # Arguments
-    /// * `path` - Path to a cookbook file or directory containing a `cookbook.ya?ml` file
+    /// * `path` - Path to a cookbook file
     ///
     pub fn from(
         path: &PathBuf,

@@ -4,6 +4,9 @@ mod cache;
 mod project;
 mod template;
 
+#[cfg(test)]
+mod test_utils;
+
 use project::BakeProject;
 use std::{path::PathBuf, sync::Arc};
 

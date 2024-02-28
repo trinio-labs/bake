@@ -174,7 +174,6 @@ impl Cache {
 #[cfg(test)]
 mod test {
     use std::{
-        env,
         io::Write,
         path::PathBuf,
         sync::{Arc, Mutex},
@@ -185,11 +184,12 @@ mod test {
     use crate::{
         cache::{CacheBuilder, CacheResult, CacheResultData},
         project::BakeProject,
+        test_utils::TestProjectBuilder,
     };
 
     use super::{Cache, CacheStrategy};
 
-    const FOO_BUILD_HASH: &str = "a046aaeb882a2f1d47c037ad78ef9455e7336576ed31c851804cac63ff2bf9ce";
+    const FOO_BUILD_HASH: &str = "7d0ac2e376b5bb56bd6a1f283112bbcacba780c8fa58cec14149907a27083248";
 
     #[derive(Clone, Debug)]
     struct TestCacheStrategy {
@@ -228,14 +228,17 @@ mod test {
             .unwrap()
     }
 
-    fn config_path(path_str: &str) -> String {
-        env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
+    fn create_test_project() -> BakeProject {
+        TestProjectBuilder::new()
+            .with_cookbook("foo", &["build", "build-dep"])
+            .with_dependency("foo:build", "foo:build-dep")
+            .build()
     }
 
     #[tokio::test]
     async fn get() {
-        let project_path = PathBuf::from(config_path("/valid"));
-        let project = Arc::new(BakeProject::from(&project_path).unwrap());
+        let project = Arc::new(create_test_project());
+
         let cache = build_cache(project.clone(), "foo:build").await;
 
         // Test hit
@@ -243,7 +246,7 @@ mod test {
         assert!(matches!(result, CacheResult::Hit(_)));
 
         // Miss if recipe command changes
-        let mut project = BakeProject::from(&project_path).unwrap();
+        let mut project = create_test_project();
         project.recipes.get_mut("foo:build").unwrap().run = "asdfasdfasd".to_owned();
 
         let cache = build_cache(Arc::new(project), "foo:build").await;
@@ -251,19 +254,20 @@ mod test {
         assert!(matches!(result, CacheResult::Miss));
 
         // Miss if dependency changes
-        let mut project = BakeProject::from(&project_path).unwrap();
+        let mut project = create_test_project();
         project.recipes.get_mut("foo:build-dep").unwrap().run = "asdfasdfasd".to_owned();
-        let project = Arc::new(project);
 
-        let cache = build_cache(project.clone(), "foo:build").await;
+        let cache = build_cache(Arc::new(project), "foo:build").await;
         let result = cache.get("foo:build").await;
         assert!(matches!(result, CacheResult::Miss));
     }
 
     #[tokio::test]
     async fn put() {
-        let project_path = PathBuf::from(config_path("/valid"));
-        let project = Arc::new(BakeProject::from(&project_path).unwrap());
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let project = create_test_project();
+        let project = Arc::new(project);
         _ = project.create_project_bake_dirs();
 
         // Clean all output directories and logs
@@ -287,7 +291,7 @@ mod test {
         log_file.write_all(b"foo").unwrap();
 
         // Create target dir
-        std::fs::create_dir(project.root_path.join("foo/target")).unwrap();
+        std::fs::create_dir_all(project.root_path.join("foo/target")).unwrap();
 
         // Create output file
         let mut output_file =

@@ -161,7 +161,10 @@ mod tests {
 
     use async_trait::async_trait;
 
-    use crate::cache::{CacheResult, CacheResultData};
+    use crate::{
+        cache::{CacheResult, CacheResultData},
+        test_utils::TestProjectBuilder,
+    };
 
     use super::*;
 
@@ -193,7 +196,11 @@ mod tests {
 
     #[tokio::test]
     async fn build() {
-        let project = Arc::new(BakeProject::from(&PathBuf::from("resources/tests/valid")).unwrap());
+        let project = Arc::new(
+            TestProjectBuilder::new()
+                .with_cookbook("foo", &["build"])
+                .build(),
+        );
         let mut builder = CacheBuilder::new(project);
 
         let cache = builder

@@ -46,9 +46,6 @@ pub struct Recipe {
     pub outputs: Option<Vec<String>>,
 
     #[serde(skip)]
-    pub recipe_hash: String,
-
-    #[serde(skip)]
     pub run_status: RunStatus,
 }
 
@@ -188,7 +185,6 @@ mod tests {
             environment: vec!["FOO".to_owned()],
             variables: IndexMap::new(),
             run: String::from("test"),
-            recipe_hash: String::from("test"),
             inputs: Some(vec![String::from("build.sh")]),
             outputs: None,
             run_status: RunStatus::default(),

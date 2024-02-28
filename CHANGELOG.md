@@ -5,6 +5,16 @@
 * Templated config files
 * Project, cookbook and recipe variables
 * Docker executors
+* Change output and inputs to cache property in recipe config
+
+## v0.2.1
+
+Adds a way to pass variables via command line.
+
+### Added
+
+* Documentation
+* Command line option to override project variables
 
 ## v0.2.0
 
