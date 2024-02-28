@@ -21,6 +21,12 @@ pub struct RunStatus {
     pub output: String,
 }
 
+#[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
+pub struct RecipeCacheConfig {
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct Recipe {
     #[serde(skip)]
@@ -32,6 +38,9 @@ pub struct Recipe {
     #[serde(skip)]
     pub config_path: PathBuf,
 
+    #[serde(default)]
+    pub cache: RecipeCacheConfig,
+
     pub description: Option<String>,
 
     #[serde(default)]
@@ -42,8 +51,6 @@ pub struct Recipe {
 
     pub dependencies: Option<Vec<String>>,
     pub run: String,
-    pub inputs: Option<Vec<String>>,
-    pub outputs: Option<Vec<String>>,
 
     #[serde(skip)]
     pub run_status: RunStatus,
@@ -79,18 +86,16 @@ impl Recipe {
         }
 
         // For each input, add it to the overrides list
-        if let Some(inputs) = &self.inputs {
-            for input in inputs {
-                debug!("Adding input: {}", input);
-                if let Err(err) = overrides_builder.add(input) {
-                    bail!(
-                        "Failed to get hash for recipe {:?}. Error adding input: {:?}",
-                        self.name,
-                        err
-                    );
-                }
+        for input in &self.cache.inputs {
+            debug!("Adding input: {}", input);
+            if let Err(err) = overrides_builder.add(input) {
+                bail!(
+                    "Failed to get hash for recipe {:?}. Error adding input: {:?}",
+                    self.name,
+                    err
+                );
             }
-        };
+        }
 
         match overrides_builder.build() {
             Ok(overrides) => {
@@ -185,8 +190,10 @@ mod tests {
             environment: vec!["FOO".to_owned()],
             variables: IndexMap::new(),
             run: String::from("test"),
-            inputs: Some(vec![String::from("build.sh")]),
-            outputs: None,
+            cache: RecipeCacheConfig {
+                inputs: vec![String::from("build.sh")],
+                ..Default::default()
+            },
             run_status: RunStatus::default(),
         };
         std::env::set_var("FOO", "bar");
@@ -196,7 +203,7 @@ mod tests {
         let hash2 = recipe.get_recipe_hash().unwrap();
         assert_ne!(hash1, hash2);
 
-        recipe.inputs = None;
+        recipe.cache.inputs = vec![];
         let hash3 = recipe.get_recipe_hash().unwrap();
 
         recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);

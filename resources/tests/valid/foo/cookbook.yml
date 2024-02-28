@@ -13,12 +13,13 @@ recipes:
   build:
     variables:
       foo: "build-bar"
-    inputs:
-      - build.sh
-    outputs:
-      - target
+    cache:
+      inputs:
+        - build.sh
+      outputs:
+        - target
     run: |
-      ./build.sh {{ var.foo }} {{ var.env_var }}
+      ./build.sh {{ var.foo }} {{ var.env_var }} {{ project.root }}
     dependencies:
       - build-dep
 

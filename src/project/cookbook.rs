@@ -35,6 +35,8 @@ impl Cookbook {
         path: &PathBuf,
         project_environment: &[String],
         project_variables: &IndexMap<String, String>,
+        project_constants: &IndexMap<String, String>,
+        override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<Self> {
         let config: Cookbook;
 
@@ -55,7 +57,22 @@ impl Cookbook {
                 let mut cookbook_variables = project_variables.clone();
                 cookbook_variables.extend(parsed.variables.clone());
 
-                parsed.variables = parse_variable_list(&parsed.environment, &cookbook_variables)?;
+                let mut cookbook_constants =
+                    IndexMap::from([("project".to_owned(), project_constants.clone())]);
+                cookbook_constants.insert(
+                    "cookbook".to_owned(),
+                    IndexMap::from([(
+                        "root".to_owned(),
+                        path.parent().unwrap().display().to_string(),
+                    )]),
+                );
+
+                parsed.variables = parse_variable_list(
+                    &parsed.environment,
+                    &cookbook_variables,
+                    &cookbook_constants,
+                    &override_variables,
+                )?;
 
                 parsed.recipes.iter_mut().try_for_each(|(name, recipe)| {
                     recipe.name = name.clone();
@@ -69,16 +86,23 @@ impl Cookbook {
 
                     let mut recipe_variables = parsed.variables.clone();
                     recipe_variables.extend(recipe.variables.clone());
-                    if let Ok(variables) =
-                        parse_variable_list(recipe.environment.as_slice(), &recipe_variables)
-                    {
+                    if let Ok(variables) = parse_variable_list(
+                        recipe.environment.as_slice(),
+                        &recipe_variables,
+                        &cookbook_constants,
+                        &override_variables,
+                    ) {
                         recipe.variables = variables;
                     } else {
                         bail!("Could not parse recipe variables: {}", recipe.name)
                     }
 
-                    recipe.run =
-                        parse_template(&recipe.run, &recipe.environment, &recipe.variables)?;
+                    recipe.run = parse_template(
+                        &recipe.run,
+                        &recipe.environment,
+                        &recipe.variables,
+                        &cookbook_constants,
+                    )?;
 
                     if let Some(dependencies) = recipe.dependencies.as_ref() {
                         let new_deps = dependencies.iter().map(|dep| {
@@ -113,6 +137,8 @@ impl Cookbook {
         path: &PathBuf,
         project_environment: &[String],
         project_variables: &IndexMap<String, String>,
+        project_constants: &IndexMap<String, String>,
+        override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<BTreeMap<String, Self>> {
         let all_files = WalkBuilder::new(path)
             .add_custom_ignore_filename(".bakeignore")
@@ -122,8 +148,13 @@ impl Cookbook {
                 Ok(file) => {
                     let filename = file.file_name().to_str().unwrap();
                     if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::from(&file.into_path(), project_environment, project_variables)
-                        {
+                        match Self::from(
+                            &file.into_path(),
+                            project_environment,
+                            project_variables,
+                            project_constants,
+                            override_variables,
+                        ) {
                             Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
                             Err(err) => Some(Err(err)),
                         }
@@ -162,12 +193,24 @@ mod test {
     #[test_case(config_path("/invalid/config/cookbook.yml") => matches Err(_); "Invalid cookbook file")]
     #[test_case(config_path("/invalid/config") => matches Err(_); "Cant read directory")]
     fn read_cookbook(path_str: String) -> anyhow::Result<super::Cookbook> {
-        super::Cookbook::from(&PathBuf::from(path_str), &[], &IndexMap::new())
+        super::Cookbook::from(
+            &PathBuf::from(path_str),
+            &[],
+            &IndexMap::new(),
+            &IndexMap::new(),
+            &IndexMap::new(),
+        )
     }
 
     #[test_case(config_path("/valid/") => using validate_cookbook_vec; "Root dir")]
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid dir")]
     fn read_all_cookbooks(path_str: String) -> anyhow::Result<BTreeMap<String, super::Cookbook>> {
-        super::Cookbook::map_from(&PathBuf::from(path_str), &[], &IndexMap::new())
+        super::Cookbook::map_from(
+            &PathBuf::from(path_str),
+            &[],
+            &IndexMap::new(),
+            &IndexMap::new(),
+            &IndexMap::new(),
+        )
     }
 }

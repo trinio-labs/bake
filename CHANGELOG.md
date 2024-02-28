@@ -7,14 +7,18 @@
 * Docker executors
 * Change output and inputs to cache property in recipe config
 
-## v0.2.1
+## v0.3.0
 
-Adds a way to pass variables via command line.
+This release adds support for passing variables via command line and adds the concept of native project variables.
 
 ### Added
 
-* Documentation
 * Command line option to override project variables
+* Usage of `{{ project.root }}` and `{{ cookbook.root }}` in config files
+
+### Breaking changes
+
+* Output and inputs are moved to the cache property in recipes
 
 ## v0.2.0
 

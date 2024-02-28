@@ -7,6 +7,8 @@ mod template;
 #[cfg(test)]
 mod test_utils;
 
+use anyhow::bail;
+use indexmap::IndexMap;
 use project::BakeProject;
 use std::{path::PathBuf, sync::Arc};
 
@@ -43,6 +45,17 @@ struct Args {
     /// Path fo config file or directory containing a bake.yml file
     #[arg(short, long)]
     path: Option<String>,
+
+    /// Pass variable values
+    #[arg(long, num_args = 1, value_name = "VAR>=<VALUE")]
+    var: Vec<String>,
+}
+
+fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
+    match s.split_once('=') {
+        Some((key, value)) => Ok((key.trim().to_owned(), value.trim().to_owned())),
+        None => bail!("Expected key=value, got {}", s),
+    }
 }
 
 #[tokio::main]
@@ -63,7 +76,17 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Loading project...");
     term.move_cursor_up(1)?;
-    match BakeProject::from(&bake_path) {
+
+    let override_variables =
+        args.var
+            .iter()
+            .try_fold(IndexMap::new(), |mut acc, s| -> anyhow::Result<_> {
+                let (k, v) = parse_key_val(s)?;
+                acc.insert(k, v);
+                Ok(acc)
+            })?;
+
+    match BakeProject::from(&bake_path, override_variables) {
         Ok(project) => {
             println!("Loading project... {}", console::style("✓").green());
             let recipe_filter = args.recipe.as_deref();

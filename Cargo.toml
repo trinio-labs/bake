@@ -1,6 +1,6 @@
 [package]
 name = "bake-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Theo Ribeiro <repitilian.intern@proton.me>"]
 license = "Apache-2.0"
@@ -17,26 +17,26 @@ name = "bake"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.79"
+anyhow = "1.0.80"
 async-trait = "0.1.77"
-aws-config = "1.1.5"
-aws-sdk-s3 = "1.15.0"
+aws-config = "1.1.7"
+aws-sdk-s3 = "1.17.0"
 blake3 = "1.5.0"
-clap = { version = "4.5.0", features = ["derive"] }
+clap = { version = "4.5.1", features = ["derive"] }
 console = "0.15.8"
-env_logger = "0.11.1"
+env_logger = "0.11.2"
 flate2 = "1.0.28"
-google-cloud-storage = "0.15.0"
+google-cloud-storage = "0.16.0"
 handlebars = "5.1.0"
 ignore = "0.4.22"
 indexmap = { version = "2.2.3", features = ["serde"] }
-indicatif = "0.17.7"
+indicatif = "0.17.8"
 log = "0.4.20"
 rand = "0.8.5"
 regex = "1.10.3"
-serde = { version = "1.0.196", features = ["derive"] }
-serde_json = "1.0.113"
-serde_yaml = "0.9.31"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+serde_yaml = "0.9.32"
 tar = "0.4.40"
 tokio = { version = "1.36.0", features = ["full"] }
 tokio-stream = "0.1.14"
@@ -64,6 +64,10 @@ formula = "bake"
 # A GitHub repo to push Homebrew formulas to
 tap = "trinio-labs/tap"
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+]
 # Publish jobs to run in CI
 pr-run-mode = "plan"

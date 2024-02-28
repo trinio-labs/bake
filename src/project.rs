@@ -66,7 +66,7 @@ impl BakeProject {
     /// * `path` - Path to either a config file or a directory. If a directory is passed,
     /// load_config will search for a bake.ya?ml file in that directory and in parent directories.
     ///
-    pub fn from(path: &Path) -> anyhow::Result<Self> {
+    pub fn from(path: &Path, override_variables: IndexMap<String, String>) -> anyhow::Result<Self> {
         // TODO: Better organize validation for config and recipes
         let file_path: PathBuf;
         let mut project: Self;
@@ -101,11 +101,25 @@ impl BakeProject {
             Err(err) => bail!("Could not parse config file: {}", err),
         }
 
-        project.variables =
-            parse_variable_list(project.environment.as_slice(), &project.variables)?;
+        let project_constants = IndexMap::from([(
+            "root".to_owned(),
+            project.root_path.clone().display().to_string(),
+        )]);
 
-        project.cookbooks =
-            Cookbook::map_from(&project.root_path, &project.environment, &project.variables)?;
+        project.variables = parse_variable_list(
+            project.environment.as_slice(),
+            &project.variables,
+            &IndexMap::from([("project".to_owned(), project_constants.clone())]),
+            &override_variables,
+        )?;
+
+        project.cookbooks = Cookbook::map_from(
+            &project.root_path,
+            &project.environment,
+            &project.variables,
+            &project_constants,
+            &override_variables,
+        )?;
 
         project.recipes = project
             .cookbooks
@@ -346,6 +360,7 @@ impl BakeProject {
 mod tests {
     use std::{os::unix::prelude::PermissionsExt, path::PathBuf};
 
+    use indexmap::IndexMap;
     use test_case::test_case;
 
     fn config_path(path_str: &str) -> String {
@@ -369,7 +384,7 @@ mod tests {
         );
         assert_eq!(
             project.recipes.get("foo:build").unwrap().run.trim(),
-            "./build.sh build-bar test"
+            format!("./build.sh build-bar test {}", project.root_path.display())
         );
         assert_eq!(
             project.recipes.get("foo:post-test").unwrap().variables["foo"],
@@ -381,14 +396,18 @@ mod tests {
 
     #[test]
     fn get_dependencies() {
-        let project = super::BakeProject::from(&PathBuf::from(config_path("/invalid/circular")));
+        let project = super::BakeProject::from(
+            &PathBuf::from(config_path("/invalid/circular")),
+            IndexMap::new(),
+        );
 
         assert!(project
             .unwrap_err()
             .to_string()
             .contains("Circular dependencies"));
 
-        let project = super::BakeProject::from(&PathBuf::from(config_path("/valid")));
+        let project =
+            super::BakeProject::from(&PathBuf::from(config_path("/valid")), IndexMap::new());
         assert!(project.is_ok());
         let project = project.unwrap();
         assert_eq!(project.dependency_map.len(), 7);
@@ -409,7 +428,7 @@ mod tests {
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
         std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(&PathBuf::from(path_str))
+        super::BakeProject::from(&PathBuf::from(path_str), IndexMap::new())
     }
 
     #[test]
@@ -419,7 +438,10 @@ mod tests {
         let mode = perms.mode();
         perms.set_mode(0o200);
         std::fs::set_permissions(&path, perms.clone()).unwrap();
-        let project = super::BakeProject::from(&PathBuf::from(config_path("/invalid/permission")));
+        let project = super::BakeProject::from(
+            &PathBuf::from(config_path("/invalid/permission")),
+            IndexMap::new(),
+        );
         assert!(project.is_err());
         perms.set_mode(mode);
         std::fs::set_permissions(&path, perms.clone()).unwrap();
