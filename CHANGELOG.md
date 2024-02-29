@@ -7,6 +7,14 @@
 * Docker executors
 * Change output and inputs to cache property in recipe config
 
+## v0.3.1
+
+Bug fixes
+
+### Changes
+
+* Fixes [#1](https://github.com/trinio-labs/bake/issues/1)
+
 ## v0.3.0
 
 This release adds support for passing variables via command line and adds the concept of native project variables.

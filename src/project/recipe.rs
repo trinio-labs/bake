@@ -23,7 +23,10 @@ pub struct RunStatus {
 
 #[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
 pub struct RecipeCacheConfig {
+    #[serde(default)]
     pub inputs: Vec<String>,
+
+    #[serde(default)]
     pub outputs: Vec<String>,
 }
 

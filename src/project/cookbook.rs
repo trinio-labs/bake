@@ -71,7 +71,7 @@ impl Cookbook {
                     &parsed.environment,
                     &cookbook_variables,
                     &cookbook_constants,
-                    &override_variables,
+                    override_variables,
                 )?;
 
                 parsed.recipes.iter_mut().try_for_each(|(name, recipe)| {
@@ -90,7 +90,7 @@ impl Cookbook {
                         recipe.environment.as_slice(),
                         &recipe_variables,
                         &cookbook_constants,
-                        &override_variables,
+                        override_variables,
                     ) {
                         recipe.variables = variables;
                     } else {
