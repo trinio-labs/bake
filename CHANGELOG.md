@@ -3,9 +3,16 @@
 ## Unreleased
 
 * Templated config files
-* Project, cookbook and recipe variables
 * Docker executors
-* Change output and inputs to cache property in recipe config
+
+## v0.4.0
+
+This release changes the way bake executes recipes that use environment variables. Starting from now, bake will only execute
+in a clean environment if the clean_environment property is set to true in the project config file.
+
+### Added
+
+* Clean environment flag in project configuration file
 
 ## v0.3.1
 

@@ -92,6 +92,9 @@ pub struct ToolConfig {
     #[serde(default)]
     #[validate]
     pub cache: CacheConfig,
+
+    #[serde(default)]
+    pub clean_environment: bool,
 }
 
 impl Default for ToolConfig {
@@ -101,6 +104,7 @@ impl Default for ToolConfig {
             fast_fail: true,
             verbose: false,
             cache: CacheConfig::default(),
+            clean_environment: false,
         }
     }
 }

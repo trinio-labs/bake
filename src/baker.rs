@@ -19,7 +19,7 @@ use tokio::{
 
 use crate::{
     cache::{Cache, CacheResult},
-    project::{BakeProject, Recipe, Status},
+    project::{config::ToolConfig, BakeProject, Recipe, Status},
 };
 
 type RecipeQueue = Arc<Mutex<BTreeMap<String, Recipe>>>;
@@ -189,7 +189,7 @@ async fn runner(
                         },
 
                        CacheResult::Miss => {
-                            run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await
+                            run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), &project.config).await
                         },
                     };
 
@@ -263,7 +263,7 @@ async fn runner(
 pub async fn run_recipe(
     recipe: &Recipe,
     log_file_path: PathBuf,
-    verbose: bool,
+    config: &ToolConfig,
 ) -> Result<(), String> {
     let env_values: Vec<(String, String)> = recipe
         .environment
@@ -271,9 +271,13 @@ pub async fn run_recipe(
         .map(|name| (name.clone(), std::env::var(name).unwrap_or_default()))
         .collect();
 
-    let result = tokio::process::Command::new("sh")
-        .env_clear()
-        .envs(env_values)
+    let mut cmd = tokio::process::Command::new("sh");
+    let run_cmd = if config.clean_environment {
+        cmd.env_clear().envs(env_values)
+    } else {
+        &mut cmd
+    };
+    let result = run_cmd
         .current_dir(recipe.config_path.parent().unwrap())
         .arg("-c")
         .arg(recipe.run.clone())
@@ -290,7 +294,7 @@ pub async fn run_recipe(
                 stderr,
                 recipe.full_name(),
                 log_file_path,
-                verbose,
+                config.verbose,
             ));
             if let Ok(exit_code) = child.wait().await {
                 if !exit_code.success() {
