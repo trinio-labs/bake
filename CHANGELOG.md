@@ -5,6 +5,14 @@
 * Templated config files
 * Docker executors
 
+## v0.4.1
+
+Updates dependencies, hopefully to fix remote caching to GCS and Workload Identity Federation.
+
+### Fixes
+
+* Fixes workload identity federation by updating google-cloud-auth
+
 ## v0.4.0
 
 This release changes the way bake executes recipes that use environment variables. Starting from now, bake will only execute

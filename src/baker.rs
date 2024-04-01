@@ -9,6 +9,7 @@ use std::{
 use anyhow::bail;
 use console::{style, Color};
 use indicatif::{MultiProgress, ProgressBar};
+use log::debug;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::{ChildStderr, ChildStdout},
@@ -265,6 +266,7 @@ pub async fn run_recipe(
     log_file_path: PathBuf,
     config: &ToolConfig,
 ) -> Result<(), String> {
+    debug!("Running recipe: {}", recipe.full_name());
     let env_values: Vec<(String, String)> = recipe
         .environment
         .iter()
@@ -277,6 +279,8 @@ pub async fn run_recipe(
     } else {
         &mut cmd
     };
+
+    debug!("Spawning command for recipe: {}", recipe.full_name());
     let result = run_cmd
         .current_dir(recipe.config_path.parent().unwrap())
         .arg("-c")
@@ -285,6 +289,7 @@ pub async fn run_recipe(
         .stderr(std::process::Stdio::piped())
         .spawn();
 
+    debug!("Process finished for recipe: {}", recipe.full_name());
     match result {
         Ok(mut child) => {
             let stdout = child.stdout.take().unwrap();

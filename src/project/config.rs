@@ -49,7 +49,7 @@ pub struct CacheConfig {
     #[serde(default, with = "serde_yaml::with::singleton_map")]
     pub remotes: Option<RemoteCacheConfig>,
 
-    #[validate(custom = "validate_order")]
+    #[validate(custom(function = "validate_order"))]
     #[serde(default)]
     pub order: Vec<String>,
 }
