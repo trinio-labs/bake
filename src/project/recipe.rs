@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, io::Read, path::PathBuf};
 
 use anyhow::bail;
-use ignore::{overrides::OverrideBuilder, WalkBuilder};
+use globset::{GlobBuilder, GlobSetBuilder};
+use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
@@ -76,43 +77,32 @@ impl Recipe {
     pub fn get_recipe_hash(&self) -> anyhow::Result<String> {
         debug!("Getting hash for recipe: {}", self.name);
         let mut walk_builder = WalkBuilder::new(self.config_path.clone().parent().unwrap());
-        let mut overrides_builder =
-            OverrideBuilder::new(self.config_path.clone().parent().unwrap());
+        let mut globset_builder = GlobSetBuilder::new();
 
-        // Add an ignore all rule so that only globs listed as inputs are hashed
-        if let Err(err) = overrides_builder.add("!**/*") {
-            bail!(
-                "Failed to get hash for recipe {:?}. Error adding default ignore: {:?}",
-                self.name,
-                err
-            );
-        }
-
-        // For each input, add it to the overrides list
         for input in &self.cache.inputs {
             debug!("Adding input: {}", input);
-            if let Err(err) = overrides_builder.add(input) {
+            match GlobBuilder::new(input).literal_separator(true).build() {
+                Ok(glob) => globset_builder.add(glob),
+                Err(err) => {
+                    bail!(
+                        "Failed to get hash for recipe {:?}. Error adding input: {:?}",
+                        self.name,
+                        err
+                    );
+                }
+            };
+        }
+
+        let globset = match globset_builder.build() {
+            Ok(globset) => globset,
+            Err(err) => {
                 bail!(
-                    "Failed to get hash for recipe {:?}. Error adding input: {:?}",
+                    "Failed to get hash for recipe {:?}. Error building globset: {:?}",
                     self.name,
                     err
                 );
             }
-        }
-
-        match overrides_builder.build() {
-            Ok(overrides) => {
-                debug!("Num ignores: {}", overrides.num_ignores());
-                walk_builder.overrides(overrides);
-            }
-            Err(err) => {
-                bail!(
-                    "Failed to get hash for recipe {:?}. Error building overrides: {:?}",
-                    self.name,
-                    err
-                )
-            }
-        }
+        };
 
         // Hash all input files
         let walker = walk_builder.hidden(false).build();
@@ -120,21 +110,21 @@ impl Recipe {
         for result in walker {
             match result {
                 Ok(entry) => {
-                    if entry.file_type().unwrap().is_file() {
+                    let path = entry.path();
+                    let relative_path = path
+                        .strip_prefix(self.config_path.clone().parent().unwrap())
+                        .unwrap()
+                        .to_path_buf();
+                    if entry.file_type().unwrap().is_file() && globset.is_match(&relative_path) {
                         debug!("Hashing file: {:?}", entry.path());
-                        let path = entry.into_path();
                         let mut hasher = blake3::Hasher::new();
-                        let mut file = std::fs::File::open(&path).unwrap();
+                        let mut file = std::fs::File::open(path).unwrap();
                         let mut buf = Vec::new();
                         if let Err(err) = file.read_to_end(&mut buf) {
                             warn!("Error reading file: {:?}", err);
                         }
                         hasher.update(buf.as_slice());
                         let hash = hasher.finalize();
-                        let relative_path = path
-                            .strip_prefix(self.config_path.clone().parent().unwrap())
-                            .unwrap()
-                            .to_path_buf();
                         file_hashes.insert(relative_path, hash.to_string());
                     }
                 }

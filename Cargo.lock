@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "bake-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -548,6 +548,7 @@ dependencies = [
  "console",
  "env_logger",
  "flate2",
+ "globset",
  "google-cloud-storage",
  "handlebars",
  "ignore",

@@ -1,6 +1,6 @@
 [package]
 name = "bake-cli"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["Theo Ribeiro <repitilian.intern@proton.me>"]
 license = "Apache-2.0"
@@ -26,6 +26,7 @@ clap = { version = "4.5.3", features = ["derive"] }
 console = "0.15.8"
 env_logger = "0.11.3"
 flate2 = "1.0.28"
+globset = "0.4.14"
 google-cloud-storage = "0.16.0"
 handlebars = "5.1.0"
 ignore = "0.4.22"

@@ -5,6 +5,14 @@
 * Templated config files
 * Docker executors
 
+## v0.4.2
+
+This release fixes a bug with the cache input globs.
+
+### Fixes
+
+Fixes a bug with cache input globs that wouldn't correctly match files when they were in a subdirectory.
+
 ## v0.4.1
 
 Updates dependencies, hopefully to fix remote caching to GCS and Workload Identity Federation.
