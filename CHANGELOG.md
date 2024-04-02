@@ -5,6 +5,15 @@
 * Templated config files
 * Docker executors
 
+## v0.4.3
+
+Added more information about recipes that ran with errors.
+
+### Added
+
+* Recipes don't run anymore if any dependencies failed running
+* Bake now shows the recipes that failed after a bake
+
 ## v0.4.2
 
 This release fixes a bug with the cache input globs.

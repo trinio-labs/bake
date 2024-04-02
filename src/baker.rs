@@ -76,15 +76,26 @@ pub async fn bake(
         } => {}
     }
 
-    if recipe_queue
+    let errors: Vec<String> = recipe_queue
         .lock()
         .unwrap()
         .iter()
-        .any(|(_, recipe)| matches!(recipe.run_status.status, Status::Error))
-    {
-        bail!("Some recipes failed to run");
-    }
+        .filter_map(|(_, recipe)| {
+            if matches!(recipe.run_status.status, Status::Error) {
+                Some(recipe.full_name())
+            } else {
+                None
+            }
+        })
+        .collect();
 
+    if !errors.is_empty() {
+        bail!(
+            "Some recipes failed to run: \n{} {}",
+            console::style("✗").red(),
+            errors.join(&format!("\n{} ", console::style("✗").red()))
+        );
+    }
     Ok(())
 }
 
@@ -114,33 +125,45 @@ async fn runner(
                 break;
             }
 
+            // Find the first Idle recipe
             let result = queue.iter().find(|(_, recipe)| {
                 if recipe.run_status.status == Status::Idle {
+                    // If the recipe has dependencies, check if any are still running or idle
                     if let Some(dependencies) = recipe.dependencies.as_ref() {
                         let pending = dependencies.iter().any(|dep_name| {
-                            // If the dependency isn't in the status map, allow it to "run" anyway as we will
-                            // filter it later
                             if let Some(dep_rec) = queue.get(dep_name) {
                                 matches!(dep_rec.run_status.status, Status::Running | Status::Idle)
                             } else {
+                                // If the dependency is not in the queue, it is considered pending
                                 false
                             }
                         });
                         !pending
                     } else {
+                        // If the recipe has no dependencies, it can be run
                         true
                     }
                 } else {
+                    // If the recipe is not idle, it cannot be run
                     false
                 }
             });
 
+            // If a recipe was found, use it as next recipe
             if let Some((recipe_name, _)) = result {
+                // If any of the depdencies errored, quit runner loop
+                if queue
+                    .iter()
+                    .any(|(_, recipe)| matches!(recipe.run_status.status, Status::Error))
+                {
+                    break;
+                }
                 next_recipe_name = Some(recipe_name.clone());
             } else if queue
                 .iter()
                 .all(|(_, recipe)| matches!(recipe.run_status.status, Status::Done | Status::Error))
             {
+                // If all recipes are done, quit runner loop
                 break;
             }
         }
@@ -281,6 +304,9 @@ pub async fn run_recipe(
     };
 
     debug!("Spawning command for recipe: {}", recipe.full_name());
+    if config.verbose {
+        println_recipe("Started...", &recipe.full_name())
+    }
     let result = run_cmd
         .current_dir(recipe.config_path.parent().unwrap())
         .arg("-c")
@@ -319,6 +345,9 @@ pub async fn run_recipe(
         }
     }
 
+    if config.verbose {
+        println_recipe("Done...", &recipe.full_name())
+    }
     Ok(())
 }
 
@@ -360,21 +389,18 @@ async fn process_output(
     verbose: bool,
 ) -> Result<(), String> {
     let mut join_set = JoinSet::new();
-    let color = name_to_term_color(&recipe_name);
     let output_str = Arc::new(Mutex::new(String::new()));
 
     async fn collect_output<T: AsyncRead + Unpin>(
         output: T,
         recipe_name: String,
-        color: Color,
         output_string: Arc<Mutex<String>>,
         verbose: bool,
     ) {
         let mut reader = BufReader::new(output).lines();
         while let Some(line) = reader.next_line().await.unwrap() {
-            let formatted_line = format!("[{}]: {}", style(&recipe_name).fg(color), line);
             if verbose {
-                println!("{formatted_line}");
+                println_recipe(&line, &recipe_name);
             }
             output_string.lock().unwrap().push_str(&(line + "\n"));
         }
@@ -383,7 +409,6 @@ async fn process_output(
     join_set.spawn(collect_output(
         stdout,
         recipe_name.clone(),
-        color,
         output_str.clone(),
         verbose,
     ));
@@ -391,7 +416,6 @@ async fn process_output(
     join_set.spawn(collect_output(
         stderr,
         recipe_name.clone(),
-        color,
         output_str.clone(),
         verbose,
     ));
@@ -420,6 +444,12 @@ async fn process_output(
     Ok(())
 }
 
+fn println_recipe(line: &str, recipe_name: &str) {
+    let color = name_to_term_color(recipe_name);
+    let formatted_line = format!("[{}]: {}", style(&recipe_name).fg(color), line);
+    println!("{formatted_line}");
+}
+
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, sync::Arc};
@@ -428,7 +458,7 @@ mod tests {
 
     use crate::{
         cache::{Cache, CacheBuilder, CacheResult, CacheResultData, CacheStrategy},
-        project::BakeProject,
+        project::{BakeProject, Status},
         test_utils::TestProjectBuilder,
     };
 
@@ -502,9 +532,13 @@ mod tests {
     async fn run_error_recipes() {
         let mut project = create_test_project();
         project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
+        project.recipes.get_mut("bar:build").unwrap().dependencies =
+            Some(vec![String::from("bar:test")]);
         let project = Arc::new(project);
         let cache = build_cache(project.clone()).await;
         let res = super::bake(project.clone(), cache, Some("bar:")).await;
+
+        assert!(project.recipes.get("bar:build").unwrap().run_status.status == Status::Idle);
         assert!(res.is_err());
     }
 }

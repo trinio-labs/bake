@@ -109,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
             match baker::bake(arc_project.clone(), cache, args.recipe.as_deref()).await {
                 Ok(_) => {}
                 Err(err) => {
-                    println!("{}", err);
                     return Err(err);
                 }
             }

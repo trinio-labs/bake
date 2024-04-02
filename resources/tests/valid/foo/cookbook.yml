@@ -15,7 +15,7 @@ recipes:
       foo: "build-bar"
     cache:
       inputs:
-        - "{{ project.root }}/build.sh"
+        - "build.sh"
       outputs:
         - target
     run: |
@@ -26,6 +26,7 @@ recipes:
   build-dep:
     run: |
       echo "Hello Foo Build Dep!"
+      exit 1
 
   test:
     run: |
