@@ -26,7 +26,6 @@ recipes:
   build-dep:
     run: |
       echo "Hello Foo Build Dep!"
-      exit 1
 
   test:
     run: |

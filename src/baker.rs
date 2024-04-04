@@ -4,6 +4,7 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use anyhow::bail;
@@ -304,8 +305,12 @@ pub async fn run_recipe(
     };
 
     debug!("Spawning command for recipe: {}", recipe.full_name());
+    let start_time = Instant::now();
     if config.verbose {
-        println_recipe("Started...", &recipe.full_name())
+        println_recipe(
+            "============== Started baking recipe ==============",
+            &recipe.full_name(),
+        )
     }
     let result = run_cmd
         .current_dir(recipe.config_path.parent().unwrap())
@@ -344,9 +349,15 @@ pub async fn run_recipe(
             return Err(format!("Could not spawn process: {}", err));
         }
     }
-
+    let elapsed = start_time.elapsed();
     if config.verbose {
-        println_recipe("Done...", &recipe.full_name())
+        println_recipe(
+            &format!(
+                "============== Finished baking recipe ({:.2?}) =============",
+                elapsed
+            ),
+            &recipe.full_name(),
+        )
     }
     Ok(())
 }

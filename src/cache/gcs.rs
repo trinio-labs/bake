@@ -41,7 +41,7 @@ impl CacheStrategy for GcsCacheStrategy {
         let archive_path = std::env::temp_dir().join(&file_name);
 
         debug!("Getting key {key} from GCS");
-        if let Ok(mut data) = self
+        match self
             .client
             .download_streamed_object(
                 &GetObjectRequest {
@@ -53,37 +53,51 @@ impl CacheStrategy for GcsCacheStrategy {
             )
             .await
         {
-            debug!("Key {key} exists in GCS, downloading...");
-            if let Ok(mut file) = File::create(archive_path.clone()).await {
-                while let Some(bytes) = data.next().await {
-                    if let Ok(bytes) = bytes {
-                        if file.write_all(&bytes).await.is_err() {
-                            warn!(
-                                "GCS Cache Strategy failed to write to file in temp dir: {}",
-                                archive_path.display()
-                            );
-                            return CacheResult::Miss;
+            Ok(mut data) => {
+                debug!("Key {key} exists in GCS, downloading...");
+                match File::create(archive_path.clone()).await {
+                    Ok(mut file) => {
+                        while let Some(bytes) = data.next().await {
+                            if let Ok(bytes) = bytes {
+                                if file.write_all(&bytes).await.is_err() {
+                                    warn!(
+                                    "GCS Cache Strategy failed to write to file in temp dir: {}",
+                                    archive_path.display()
+                                );
+                                    return CacheResult::Miss;
+                                }
+                            }
                         }
+
+                        debug!(
+                            "Key downloaded from GCS, saved as {}",
+                            archive_path.display()
+                        );
+
+                        return CacheResult::Hit(CacheResultData { archive_path });
+                    }
+                    Err(err) => {
+                        debug!(
+                            "GCS Cache Strategy failed to create file in temp dir: {}: {}",
+                            archive_path.display(),
+                            err
+                        );
+                        return CacheResult::Miss;
                     }
                 }
-
-                debug!(
-                    "Key downloaded from GCS, saved as {}",
-                    archive_path.display()
-                );
-
-                return CacheResult::Hit(CacheResultData { archive_path });
+            }
+            Err(err) => {
+                debug!("Error retrieving key {key} from GCS: {err}");
+                return CacheResult::Miss;
             }
         }
-
-        debug!("Key {key} does not exist in GCS");
-        CacheResult::Miss
     }
 
     #[coverage(off)]
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
         let file_name = format!("{}.tar.gz", key);
         let upload_type = UploadType::Simple(Media::new(file_name.clone()));
+        debug!("Uploading key {key} to GCS");
         if let Ok(file) = File::open(&archive_path).await {
             let buf_reader = tokio::io::BufReader::new(file);
             let file_stream = tokio_util::io::ReaderStream::new(buf_reader);

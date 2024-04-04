@@ -5,6 +5,10 @@
 * Templated config files
 * Docker executors
 
+## v0.4.5
+
+This release adds a few more debug logs to GCS cache and adds an elapsed running time to the verbose output.
+
 ## v0.4.4
 
 This release adds the external-account feature to google cloud storage.

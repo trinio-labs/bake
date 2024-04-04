@@ -49,6 +49,10 @@ struct Args {
     /// Pass variable values
     #[arg(long, num_args = 1, value_name = "VAR>=<VALUE")]
     var: Vec<String>,
+
+    /// Skip using and saving to cache
+    #[arg(long)]
+    skip_cache: bool,
 }
 
 fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -87,12 +91,17 @@ async fn main() -> anyhow::Result<()> {
             })?;
 
     match BakeProject::from(&bake_path, override_variables) {
-        Ok(project) => {
+        Ok(mut project) => {
             println!("Loading project... {}", console::style("✓").green());
             let recipe_filter = args.recipe.as_deref();
-            let arc_project = Arc::new(project);
 
             // Build cache using project and Local, S3 and GCS strategies
+            if args.skip_cache {
+                println!("Skipping cache...");
+                project.config.cache.local.enabled = false;
+                project.config.cache.remotes = None;
+            }
+            let arc_project = Arc::new(project);
             let mut cache_builder = CacheBuilder::new(arc_project.clone());
             if let Some(recipe_filter) = recipe_filter {
                 cache_builder.filter(recipe_filter);
