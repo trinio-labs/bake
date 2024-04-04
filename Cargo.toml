@@ -27,7 +27,7 @@ console = "0.15.8"
 env_logger = "0.11.3"
 flate2 = "1.0.28"
 globset = "0.4.14"
-google-cloud-storage = "0.16.0"
+google-cloud-storage = { version = "0.16.0", features = ["external-account"] }
 handlebars = "5.1.0"
 ignore = "0.4.22"
 indexmap = { version = "2.2.5", features = ["serde"] }

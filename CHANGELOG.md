@@ -5,6 +5,10 @@
 * Templated config files
 * Docker executors
 
+## v0.4.4
+
+This release adds the external-account feature to google cloud storage.
+
 ## v0.4.3
 
 Added more information about recipes that ran with errors.
