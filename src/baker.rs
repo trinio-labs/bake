@@ -206,17 +206,15 @@ async fn runner(
 
                     // let result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), project.config.verbose).await;
                     let mut cached = false;
-                    let result = match cache.get(&next_recipe.full_name()).await {
-                       CacheResult::Hit(_) => {
+                    let result: Result<(), String>;
+                    if next_recipe.cache.is_some() && matches!(cache.get(&next_recipe.full_name()).await, CacheResult::Hit(_)) {
                             println!("{}: {} (cached)", next_recipe_name, console::style("✓").green());
                             cached = true;
-                            Ok(())
-                        },
+                            result = Ok(());
+                    } else {
+                        result = run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), &project.config).await;
+                    }
 
-                       CacheResult::Miss => {
-                            run_recipe(&next_recipe, project.get_recipe_log_path(&next_recipe.full_name()), &project.config).await
-                        },
-                    };
 
                     // let mut status_mutex = status_map.lock().unwrap();
                     // let status = status_mutex.get_mut(&next_recipe.full_name()).unwrap();
@@ -229,7 +227,7 @@ async fn runner(
                                 recipe.run_status.status = Status::Done;
                             }
                             let mut cached_str = String::new();
-                            if !cached {
+                            if !cached && next_recipe.cache.is_some() {
                                 match cache.put(&next_recipe_name).await {
                                     Ok(_) => {},
                                     Err(err) => {

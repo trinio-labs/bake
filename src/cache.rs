@@ -86,45 +86,50 @@ impl Cache {
                 let recipe = self.project.recipes.get(recipe_name).unwrap();
 
                 // Add outputs to archive
-                for output in &recipe.cache.outputs {
-                    // Resolve relative paths by trying to get canonical form
-                    let full_output_path = match recipe
-                        .config_path
-                        .parent()
-                        .unwrap()
-                        .join(output)
-                        .canonicalize()
-                    {
-                        Ok(path) => path,
-                        Err(err) => {
-                            bail!("Failed to get canonical path for output {output}: {err}");
-                        }
-                    };
+                if let Some(cache) = &recipe.cache {
+                    for output in &cache.outputs {
+                        // Resolve relative paths by trying to get canonical form
+                        let full_output_path = match recipe
+                            .config_path
+                            .parent()
+                            .unwrap()
+                            .join(output)
+                            .canonicalize()
+                        {
+                            Ok(path) => path,
+                            Err(err) => {
+                                bail!("Failed to get canonical path for output {output}: {err}");
+                            }
+                        };
 
-                    let relative_output_path = match full_output_path
-                        .strip_prefix(&self.project.root_path.canonicalize().unwrap())
-                    {
-                        Ok(path) => path,
-                        Err(err) => {
+                        let relative_output_path = match full_output_path
+                            .strip_prefix(&self.project.root_path.canonicalize().unwrap())
+                        {
+                            Ok(path) => path,
+                            Err(err) => {
+                                return Err(anyhow!(
+                                    "Failed to get relative path for output {output}: {err}",
+                                ));
+                            }
+                        };
+
+                        let res = if full_output_path.is_dir() {
+                            tar.append_dir_all(relative_output_path, full_output_path.clone())
+                        } else {
+                            tar.append_path_with_name(
+                                full_output_path.clone(),
+                                relative_output_path,
+                            )
+                        };
+
+                        if let Err(err) = res {
                             return Err(anyhow!(
-                                "Failed to get relative path for output {output}: {err}",
+                                "Failed to add {} to tar file in temp dir for recipe {}: {}",
+                                output,
+                                recipe_name,
+                                err
                             ));
                         }
-                    };
-
-                    let res = if full_output_path.is_dir() {
-                        tar.append_dir_all(relative_output_path, full_output_path.clone())
-                    } else {
-                        tar.append_path_with_name(full_output_path.clone(), relative_output_path)
-                    };
-
-                    if let Err(err) = res {
-                        return Err(anyhow!(
-                            "Failed to add {} to tar file in temp dir for recipe {}: {}",
-                            output,
-                            recipe_name,
-                            err
-                        ));
                     }
                 }
 

@@ -5,6 +5,15 @@
 * Templated config files
 * Docker executors
 
+## v0.4.6
+
+This release changes how bake chooses to cache a recipe. It now only caches if the recipe has
+a cache property in its definition.
+
+### Added
+
+* Recipe is only cached if it has a cache property
+
 ## v0.4.5
 
 This release adds a few more debug logs to GCS cache and adds an elapsed running time to the verbose output.

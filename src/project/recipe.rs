@@ -43,7 +43,7 @@ pub struct Recipe {
     pub config_path: PathBuf,
 
     #[serde(default)]
-    pub cache: RecipeCacheConfig,
+    pub cache: Option<RecipeCacheConfig>,
 
     pub description: Option<String>,
 
@@ -78,58 +78,61 @@ impl Recipe {
         debug!("Getting hash for recipe: {}", self.name);
         let mut walk_builder = WalkBuilder::new(self.config_path.clone().parent().unwrap());
         let mut globset_builder = GlobSetBuilder::new();
+        let mut file_hashes = BTreeMap::<PathBuf, String>::new();
 
-        for input in &self.cache.inputs {
-            debug!("Adding input: {}", input);
-            match GlobBuilder::new(input).literal_separator(true).build() {
-                Ok(glob) => globset_builder.add(glob),
+        if let Some(cache) = &self.cache {
+            for input in &cache.inputs {
+                debug!("Adding input: {}", input);
+                match GlobBuilder::new(input).literal_separator(true).build() {
+                    Ok(glob) => globset_builder.add(glob),
+                    Err(err) => {
+                        bail!(
+                            "Failed to get hash for recipe {:?}. Error adding input: {:?}",
+                            self.name,
+                            err
+                        );
+                    }
+                };
+            }
+
+            let globset = match globset_builder.build() {
+                Ok(globset) => globset,
                 Err(err) => {
                     bail!(
-                        "Failed to get hash for recipe {:?}. Error adding input: {:?}",
+                        "Failed to get hash for recipe {:?}. Error building globset: {:?}",
                         self.name,
                         err
                     );
                 }
             };
-        }
 
-        let globset = match globset_builder.build() {
-            Ok(globset) => globset,
-            Err(err) => {
-                bail!(
-                    "Failed to get hash for recipe {:?}. Error building globset: {:?}",
-                    self.name,
-                    err
-                );
-            }
-        };
-
-        // Hash all input files
-        let walker = walk_builder.hidden(false).build();
-        let mut file_hashes = BTreeMap::<PathBuf, String>::new();
-        for result in walker {
-            match result {
-                Ok(entry) => {
-                    let path = entry.path();
-                    let relative_path = path
-                        .strip_prefix(self.config_path.clone().parent().unwrap())
-                        .unwrap()
-                        .to_path_buf();
-                    if entry.file_type().unwrap().is_file() && globset.is_match(&relative_path) {
-                        debug!("Hashing file: {:?}", entry.path());
-                        let mut hasher = blake3::Hasher::new();
-                        let mut file = std::fs::File::open(path).unwrap();
-                        let mut buf = Vec::new();
-                        if let Err(err) = file.read_to_end(&mut buf) {
-                            warn!("Error reading file: {:?}", err);
+            // Hash all input files
+            let walker = walk_builder.hidden(false).build();
+            for result in walker {
+                match result {
+                    Ok(entry) => {
+                        let path = entry.path();
+                        let relative_path = path
+                            .strip_prefix(self.config_path.clone().parent().unwrap())
+                            .unwrap()
+                            .to_path_buf();
+                        if entry.file_type().unwrap().is_file() && globset.is_match(&relative_path)
+                        {
+                            debug!("Hashing file: {:?}", entry.path());
+                            let mut hasher = blake3::Hasher::new();
+                            let mut file = std::fs::File::open(path).unwrap();
+                            let mut buf = Vec::new();
+                            if let Err(err) = file.read_to_end(&mut buf) {
+                                warn!("Error reading file: {:?}", err);
+                            }
+                            hasher.update(buf.as_slice());
+                            let hash = hasher.finalize();
+                            file_hashes.insert(relative_path, hash.to_string());
                         }
-                        hasher.update(buf.as_slice());
-                        let hash = hasher.finalize();
-                        file_hashes.insert(relative_path, hash.to_string());
                     }
-                }
-                Err(err) => {
-                    warn!("Error reading file: {:?}", err);
+                    Err(err) => {
+                        warn!("Error reading file: {:?}", err);
+                    }
                 }
             }
         }
@@ -183,10 +186,10 @@ mod tests {
             environment: vec!["FOO".to_owned()],
             variables: IndexMap::new(),
             run: String::from("test"),
-            cache: RecipeCacheConfig {
+            cache: Some(RecipeCacheConfig {
                 inputs: vec![String::from("build.sh")],
                 ..Default::default()
-            },
+            }),
             run_status: RunStatus::default(),
         };
         std::env::set_var("FOO", "bar");
@@ -196,7 +199,7 @@ mod tests {
         let hash2 = recipe.get_recipe_hash().unwrap();
         assert_ne!(hash1, hash2);
 
-        recipe.cache.inputs = vec![];
+        recipe.cache.as_mut().unwrap().inputs = vec![];
         let hash3 = recipe.get_recipe_hash().unwrap();
 
         recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);
