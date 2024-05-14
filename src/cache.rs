@@ -3,12 +3,22 @@ pub mod gcs;
 pub mod local;
 pub mod s3;
 
-use std::{collections::HashMap, fmt::Debug, fs::File, path::PathBuf, sync::Arc};
+use core::panic;
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt::Debug,
+    fs::File,
+    io::{Seek, SeekFrom, Write},
+    os::unix::fs::FileExt,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
-use log::warn;
+use log::{log, warn};
 
 use crate::project::BakeProject;
 
@@ -53,12 +63,20 @@ impl Cache {
         let hash = self.hashes.get(recipe_name).unwrap();
         for strategy in &self.strategies {
             if let CacheResult::Hit(data) = strategy.get(hash).await {
-                if let Ok(tar_gz) = File::open(&data.archive_path) {
+                if let Ok(mut tar_gz) = File::open(&data.archive_path) {
+                    if let Err(err) = tar_gz.rewind() {
+                        warn!(
+                            "Failed to rewind tar.gz file: {}. Error: {:?}",
+                            &data.archive_path.display(),
+                            err
+                        );
+                        return CacheResult::Miss;
+                    }
                     let tar = GzDecoder::new(tar_gz);
                     let mut archive = tar::Archive::new(tar);
                     if let Err(err) = archive.unpack(self.project.root_path.clone()) {
                         warn!(
-                            "Failed to unpack tar.gz file: {}. Error: {}",
+                            "Failed to unpack tar.gz file: {}. Error: {:?}",
                             &data.archive_path.display(),
                             err
                         );

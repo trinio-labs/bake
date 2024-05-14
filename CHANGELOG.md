@@ -5,6 +5,10 @@
 * Templated config files
 * Docker executors
 
+## v0.4.7
+
+This release tries to fix the tar error during a cache retrieval.
+
 ## v0.4.6
 
 This release changes how bake chooses to cache a recipe. It now only caches if the recipe has
