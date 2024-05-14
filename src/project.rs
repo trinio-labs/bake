@@ -46,7 +46,7 @@ pub struct BakeProject {
     pub environment: Vec<String>,
 
     #[serde(default)]
-    #[validate]
+    #[validate(nested)]
     /// Main configuration of the project
     pub config: ToolConfig,
 

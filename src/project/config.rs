@@ -90,7 +90,7 @@ pub struct ToolConfig {
     pub verbose: bool,
 
     #[serde(default)]
-    #[validate]
+    #[validate(nested)]
     pub cache: CacheConfig,
 
     #[serde(default)]

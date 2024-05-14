@@ -3,22 +3,12 @@ pub mod gcs;
 pub mod local;
 pub mod s3;
 
-use core::panic;
-use std::{
-    collections::HashMap,
-    error::Error,
-    fmt::Debug,
-    fs::File,
-    io::{Seek, SeekFrom, Write},
-    os::unix::fs::FileExt,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs::File, io::Seek, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
-use log::{log, warn};
+use log::warn;
 
 use crate::project::BakeProject;
 
