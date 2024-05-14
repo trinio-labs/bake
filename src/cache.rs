@@ -7,12 +7,13 @@ use std::{collections::HashMap, fs::File, io::Seek, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use log::warn;
 
 use crate::project::BakeProject;
 
 pub use builder::CacheBuilder;
+
+pub const ARCHIVE_EXTENSION: &str = "tar.zst";
 
 #[async_trait]
 pub trait CacheStrategy: Send + Sync {
@@ -56,17 +57,17 @@ impl Cache {
                 if let Ok(mut tar_gz) = File::open(&data.archive_path) {
                     if let Err(err) = tar_gz.rewind() {
                         warn!(
-                            "Failed to rewind tar.gz file: {}. Error: {:?}",
+                            "Failed to rewind archive file: {}. Error: {:?}",
                             &data.archive_path.display(),
                             err
                         );
                         return CacheResult::Miss;
                     }
-                    let tar = GzDecoder::new(tar_gz);
-                    let mut archive = tar::Archive::new(tar);
+                    let compressed = zstd::stream::Decoder::new(tar_gz).unwrap();
+                    let mut archive = tar::Archive::new(compressed);
                     if let Err(err) = archive.unpack(self.project.root_path.clone()) {
                         warn!(
-                            "Failed to unpack tar.gz file: {}. Error: {:?}",
+                            "Failed to unpack archive file: {}. Error: {:?}",
                             &data.archive_path.display(),
                             err
                         );
@@ -83,13 +84,20 @@ impl Cache {
     // Puts the given recipe's outputs in the cache
     pub async fn put(&self, recipe_name: &str) -> anyhow::Result<()> {
         // Create archive in temp dir
-        let archive_path =
-            std::env::temp_dir().join(format!("{}.tar.gz", recipe_name.replace(':', ".")));
+        let archive_path = std::env::temp_dir().join(format!(
+            "{}.{}",
+            recipe_name.replace(':', "."),
+            ARCHIVE_EXTENSION
+        ));
         let tar_gz = File::create(archive_path.clone());
 
         match tar_gz {
             Ok(tar_gz) => {
-                let enc = GzEncoder::new(tar_gz, Compression::default());
+                // let enc = GzEncoder::new(tar_gz, Compression::default());
+                let enc = match zstd::stream::Encoder::new(tar_gz, 1) {
+                    Ok(z) => z.auto_finish(),
+                    Err(err) => bail!("Failed creating zstd encoder: {}", err),
+                };
                 let mut tar = tar::Builder::new(enc);
                 let recipe = self.project.recipes.get(recipe_name).unwrap();
 

@@ -7,7 +7,7 @@
 
 ## v0.4.7
 
-This release tries to fix the tar error during a cache retrieval.
+This release tries to fix the tar error during a cache retrieval. Changes compression algorithm to zstd.
 
 ## v0.4.6
 

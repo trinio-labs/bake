@@ -466,7 +466,9 @@ mod tests {
     use async_trait::async_trait;
 
     use crate::{
-        cache::{Cache, CacheBuilder, CacheResult, CacheResultData, CacheStrategy},
+        cache::{
+            Cache, CacheBuilder, CacheResult, CacheResultData, CacheStrategy, ARCHIVE_EXTENSION,
+        },
         project::{BakeProject, Status},
         test_utils::TestProjectBuilder,
     };
@@ -481,7 +483,7 @@ mod tests {
         async fn get(&self, _: &str) -> CacheResult {
             if self.hit {
                 CacheResult::Hit(CacheResultData {
-                    archive_path: PathBuf::from("foo.tar.gz"),
+                    archive_path: PathBuf::from(format!("foo.{}", ARCHIVE_EXTENSION)),
                 })
             } else {
                 CacheResult::Miss

@@ -162,7 +162,7 @@ mod tests {
     use async_trait::async_trait;
 
     use crate::{
-        cache::{CacheResult, CacheResultData},
+        cache::{CacheResult, CacheResultData, ARCHIVE_EXTENSION},
         test_utils::TestProjectBuilder,
     };
 
@@ -180,7 +180,7 @@ mod tests {
         async fn get(&self, key: &str) -> CacheResult {
             self.get_called.lock().unwrap().push_str(key);
             CacheResult::Hit(CacheResultData {
-                archive_path: PathBuf::from(format!("{}.tar.gz", key)),
+                archive_path: PathBuf::from(format!("{}.{}", key, ARCHIVE_EXTENSION)),
             })
         }
         #[cfg_attr(coverage, coverage(off))]

@@ -4,7 +4,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use log::debug;
 
-use crate::{cache::CacheResultData, project::BakeProject};
+use crate::{
+    cache::{CacheResultData, ARCHIVE_EXTENSION},
+    project::BakeProject,
+};
 
 use super::{CacheResult, CacheStrategy};
 
@@ -16,7 +19,7 @@ pub struct LocalCacheStrategy {
 #[async_trait]
 impl CacheStrategy for LocalCacheStrategy {
     async fn get(&self, key: &str) -> CacheResult {
-        let file_name = key.to_owned() + ".tar.gz";
+        let file_name = format!("{}.{}", key.to_owned(), ARCHIVE_EXTENSION);
         let archive_path = self.path.join(file_name.clone());
         debug!("Checking local cache for key {}", archive_path.display());
         if archive_path.is_file() {
@@ -26,6 +29,7 @@ impl CacheStrategy for LocalCacheStrategy {
         CacheResult::Miss
     }
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
+        let file_name = format!("{}.{}", key.to_owned(), ARCHIVE_EXTENSION);
         // Create cache dir if it doesn't exist
         if !self.path.exists() {
             match std::fs::create_dir_all(&self.path) {
@@ -41,7 +45,7 @@ impl CacheStrategy for LocalCacheStrategy {
         }
 
         // Check if cache folder with that key already exists
-        let cache_path = self.path.join(key.to_owned() + ".tar.gz");
+        let cache_path = self.path.join(file_name);
         if cache_path.exists() {
             println!("Cache file already exists: {}", cache_path.display());
             return Ok(());

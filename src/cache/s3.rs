@@ -11,7 +11,7 @@ use log::{debug, warn};
 
 use crate::project::BakeProject;
 
-use super::{CacheResult, CacheResultData, CacheStrategy};
+use super::{CacheResult, CacheResultData, CacheStrategy, ARCHIVE_EXTENSION};
 
 #[derive(Clone, Debug)]
 pub struct S3CacheStrategy {
@@ -23,7 +23,7 @@ pub struct S3CacheStrategy {
 #[async_trait]
 impl CacheStrategy for S3CacheStrategy {
     async fn get(&self, key: &str) -> CacheResult {
-        let file_name = format!("{}.tar.gz", key);
+        let file_name = format!("{}.{}", key, ARCHIVE_EXTENSION);
         // Try to get file with key from bucket
         let archive_path = std::env::temp_dir().join(&file_name);
         let file = File::create(archive_path.clone());
@@ -69,7 +69,7 @@ impl CacheStrategy for S3CacheStrategy {
         };
     }
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
-        let file_name = format!("{key}.tar.gz");
+        let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
         let body = ByteStream::from_path(archive_path).await?;
 
         let output = self
