@@ -5,9 +5,23 @@
 * Templated config files
 * Docker executors
 
+## v0.4.8
+
+This release changes the behavior of recipe execution. Recipe commands are now
+run in a shell that sets `set -e` before any other command. This ensures that intermediate commands
+fail fast and trigger a recipe failure.
+
+### Changes
+
+* Run commands with `set -e`
+
 ## v0.4.7
 
 This release tries to fix the tar error during a cache retrieval. Changes compression algorithm to zstd.
+
+### Changes
+
+* Compression algorithm changed from gzip to zstd due to faster decompression
 
 ## v0.4.6
 

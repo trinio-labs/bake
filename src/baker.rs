@@ -313,7 +313,7 @@ pub async fn run_recipe(
     let result = run_cmd
         .current_dir(recipe.config_path.parent().unwrap())
         .arg("-c")
-        .arg(recipe.run.clone())
+        .arg(format!("set -e; {}", recipe.run.clone()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn();
@@ -542,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn run_error_recipes() {
         let mut project = create_test_project();
-        project.recipes.get_mut("bar:test").unwrap().run = String::from("ex12123123");
+        project.recipes.get_mut("bar:test").unwrap().run = String::from("false; echo 'hello!'");
         project.recipes.get_mut("bar:build").unwrap().dependencies =
             Some(vec![String::from("bar:test")]);
         let project = Arc::new(project);
