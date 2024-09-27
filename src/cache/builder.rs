@@ -46,7 +46,6 @@ impl CacheBuilder {
         }
     }
 
-    #[cfg_attr(coverage, coverage(off))]
     pub fn default_strategies(&mut self) -> &mut Self {
         self.add_strategy("local", super::local::LocalCacheStrategy::from_config);
         self.add_strategy("s3", super::s3::S3CacheStrategy::from_config);
@@ -176,19 +175,16 @@ mod tests {
 
     #[async_trait]
     impl CacheStrategy for TestCacheStrategy {
-        #[cfg_attr(coverage, coverage(off))]
         async fn get(&self, key: &str) -> CacheResult {
             self.get_called.lock().unwrap().push_str(key);
             CacheResult::Hit(CacheResultData {
                 archive_path: PathBuf::from(format!("{}.{}", key, ARCHIVE_EXTENSION)),
             })
         }
-        #[cfg_attr(coverage, coverage(off))]
         async fn put(&self, key: &str, _: PathBuf) -> anyhow::Result<()> {
             self.put_called.lock().unwrap().push_str(key);
             Ok(())
         }
-        #[cfg_attr(coverage, coverage(off))]
         async fn from_config(_: Arc<BakeProject>) -> anyhow::Result<Box<dyn super::CacheStrategy>> {
             Ok(Box::<TestCacheStrategy>::default())
         }
@@ -210,6 +206,6 @@ mod tests {
             .build()
             .await
             .unwrap();
-        assert!(cache.hashes.get("foo:build").is_some());
+        assert!(cache.hashes.contains_key("foo:build"));
     }
 }

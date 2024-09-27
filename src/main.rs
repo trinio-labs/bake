@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     let bake_path = if args.path.is_none() {
         std::env::current_dir().unwrap()
     } else {
-        PathBuf::from(args.path.unwrap())
+        std::path::absolute(args.path.unwrap())?
     };
 
     println!("Loading project...");

@@ -28,16 +28,12 @@ pub struct RemoteCacheConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct S3CacheConfig {
-    #[serde(default = "bool_true_default")]
-    pub enabled: bool,
     pub bucket: String,
     pub region: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct GcsCacheConfig {
-    #[serde(default = "bool_true_default")]
-    pub enabled: bool,
     pub bucket: String,
 }
 
