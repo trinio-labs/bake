@@ -1,22 +1,10 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use anyhow::bail;
 use log::debug;
-use serde::Serialize;
 
 use super::{Cache, CacheStrategy};
 use crate::project::BakeProject;
-
-#[derive(Debug, Serialize)]
-struct CacheData {
-    recipe: String,
-    deps: BTreeMap<String, String>,
-}
 
 type StrategyConstructor = Box<
     dyn Fn(
@@ -32,8 +20,7 @@ pub struct CacheBuilder {
     filter: Option<String>,
 
     strategies: HashMap<String, StrategyConstructor>,
-
-    hashes: HashMap<String, String>,
+    // hashes: HashMap<String, String>, // Removed: Combined hashes are now calculated by BakeProject
 }
 
 impl CacheBuilder {
@@ -42,7 +29,7 @@ impl CacheBuilder {
             project,
             filter: None,
             strategies: HashMap::new(),
-            hashes: HashMap::new(),
+            // hashes: HashMap::new(), // Removed
         }
     }
 
@@ -71,51 +58,35 @@ impl CacheBuilder {
         self
     }
 
-    fn calculate_hash_with_deps(&self, recipe_name: &str) -> String {
-        debug!("Calculating total hash for {}", recipe_name);
-        let mut cache_data = CacheData {
-            recipe: recipe_name.to_owned(),
-            deps: BTreeMap::new(),
-        };
+    // Removed: calculate_hash_with_deps - This logic is now handled by BakeProject::calculate_combined_hash_for
+    // fn calculate_hash_with_deps(&self, recipe_name: &str) -> String { ... }
 
-        if let Some(recipe_hash) = self.hashes.get(recipe_name) {
-            cache_data.recipe = recipe_hash.clone();
-        };
+    fn calculate_all_hashes(&self) -> anyhow::Result<HashMap<String, String>> {
+        let mut calculated_hashes = HashMap::new();
+        let project_recipes_fqns: Vec<String> = self
+            .project
+            .cookbooks
+            .values()
+            .flat_map(|cb| {
+                cb.recipes
+                    .keys()
+                    .map(|r_name| format!("{}:{}", cb.name, r_name))
+            })
+            .collect();
 
-        if let Some(deps) = self.project.clone().dependency_map.get(recipe_name) {
-            cache_data.deps = deps.iter().fold(BTreeMap::new(), |mut acc, x| {
-                if let Some(hash) = self.hashes.get(x) {
-                    acc.insert(x.clone(), hash.clone());
+        for recipe_fqn in project_recipes_fqns {
+            // Apply filter if present
+            if let Some(filter_str) = &self.filter {
+                if !recipe_fqn.contains(filter_str) {
+                    continue; // Skip recipes not matching the filter
                 }
-                acc
-            });
+            }
+            debug!("Calculating combined hash for cache: {recipe_fqn}");
+            // Use the new method from BakeProject
+            let combined_hash = self.project.get_combined_hash_for_recipe(&recipe_fqn)?;
+            calculated_hashes.insert(recipe_fqn, combined_hash);
         }
-
-        debug!("Total cache data: {:?}", cache_data);
-
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(serde_json::to_string(&cache_data).unwrap().as_bytes());
-        hasher.finalize().to_hex().to_string()
-    }
-
-    fn calculate_all_hashes(&mut self) -> anyhow::Result<HashMap<String, String>> {
-        let recipes = self.project.get_recipes(self.filter.as_deref());
-
-        self.hashes = recipes
-            .iter()
-            .map(|(name, recipe)| match recipe.get_recipe_hash() {
-                Ok(hash) => Ok((name.clone(), hash)),
-                Err(e) => Err(e),
-            })
-            .collect::<anyhow::Result<_>>()?;
-
-        recipes
-            .keys()
-            .map(|name| {
-                let hash = self.calculate_hash_with_deps(name);
-                Ok((name.clone(), hash))
-            })
-            .collect()
+        Ok(calculated_hashes)
     }
 
     pub async fn build(&mut self) -> anyhow::Result<Cache> {
@@ -178,7 +149,7 @@ mod tests {
         async fn get(&self, key: &str) -> CacheResult {
             self.get_called.lock().unwrap().push_str(key);
             CacheResult::Hit(CacheResultData {
-                archive_path: PathBuf::from(format!("{}.{}", key, ARCHIVE_EXTENSION)),
+                archive_path: PathBuf::from(format!("{key}.{ARCHIVE_EXTENSION}")),
             })
         }
         async fn put(&self, key: &str, _: PathBuf) -> anyhow::Result<()> {

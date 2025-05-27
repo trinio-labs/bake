@@ -40,7 +40,7 @@ impl std::fmt::Debug for GcsCacheStrategy {
 impl CacheStrategy for GcsCacheStrategy {
     #[coverage(off)]
     async fn get(&self, key: &str) -> CacheResult {
-        let file_name = format!("{}.{}", key, ARCHIVE_EXTENSION);
+        let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
         let archive_path = std::env::temp_dir().join(&file_name);
 
         debug!("Getting key {key} from GCS");
@@ -77,7 +77,7 @@ impl CacheStrategy for GcsCacheStrategy {
                             archive_path.display()
                         );
                         if let Err(err) = file.shutdown().await {
-                            error!("Error saving archive file: {:?}", err);
+                            error!("Error saving archive file: {err:?}");
                             return CacheResult::Miss;
                         }
 
@@ -102,7 +102,7 @@ impl CacheStrategy for GcsCacheStrategy {
 
     #[coverage(off)]
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
-        let file_name = format!("{}.{}", key, ARCHIVE_EXTENSION);
+        let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
         let upload_type = UploadType::Simple(Media::new(file_name.clone()));
         debug!("Uploading key {key} to GCS");
         if let Ok(file) = File::open(&archive_path).await {

@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use log::debug;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct Cookbook {
     pub name: String,
 

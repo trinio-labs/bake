@@ -31,7 +31,7 @@ pub struct RecipeCacheConfig {
     pub outputs: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct Recipe {
     #[serde(skip)]
     pub name: String,
@@ -73,8 +73,8 @@ impl Recipe {
         format!("{}:{}", self.cookbook, self.name)
     }
 
-    /// Gets the hash of the recipes fields, not including its dependencies
-    pub fn get_recipe_hash(&self) -> anyhow::Result<String> {
+    /// Gets the hash of the recipe's intrinsic properties (command, vars, env, inputs).
+    pub fn get_self_hash(&self) -> anyhow::Result<String> {
         debug!("Getting hash for recipe: {}", self.name);
         let mut walk_builder = WalkBuilder::new(self.config_path.clone().parent().unwrap());
         let mut globset_builder = GlobSetBuilder::new();
@@ -82,7 +82,7 @@ impl Recipe {
 
         if let Some(cache) = &self.cache {
             for input in &cache.inputs {
-                debug!("Adding input: {}", input);
+                debug!("Adding input: {input}");
                 match GlobBuilder::new(input).literal_separator(true).build() {
                     Ok(glob) => globset_builder.add(glob),
                     Err(err) => {
@@ -123,7 +123,7 @@ impl Recipe {
                             let mut file = std::fs::File::open(path).unwrap();
                             let mut buf = Vec::new();
                             if let Err(err) = file.read_to_end(&mut buf) {
-                                warn!("Error reading file: {:?}", err);
+                                warn!("Error reading file: {err:?}");
                             }
                             hasher.update(buf.as_slice());
                             let hash = hasher.finalize();
@@ -131,7 +131,7 @@ impl Recipe {
                         }
                     }
                     Err(err) => {
-                        warn!("Error reading file: {:?}", err);
+                        warn!("Error reading file: {err:?}");
                     }
                 }
             }
@@ -155,7 +155,7 @@ impl Recipe {
             run: self.run.clone(),
         };
 
-        debug!("Hash data: {:?}", hash_data);
+        debug!("Hash data: {hash_data:?}");
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(serde_json::to_string(&hash_data).unwrap().as_bytes());
@@ -193,20 +193,20 @@ mod tests {
             run_status: RunStatus::default(),
         };
         std::env::set_var("FOO", "bar");
-        let hash1 = recipe.get_recipe_hash().unwrap();
+        let hash1 = recipe.get_self_hash().unwrap();
 
         recipe.run = "test2".to_owned();
-        let hash2 = recipe.get_recipe_hash().unwrap();
+        let hash2 = recipe.get_self_hash().unwrap();
         assert_ne!(hash1, hash2);
 
         recipe.cache.as_mut().unwrap().inputs = vec![];
-        let hash3 = recipe.get_recipe_hash().unwrap();
+        let hash3 = recipe.get_self_hash().unwrap();
 
         recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);
-        let hash4 = recipe.get_recipe_hash().unwrap();
+        let hash4 = recipe.get_self_hash().unwrap();
 
         std::env::set_var("FOO", "not_bar");
-        let hash5 = recipe.get_recipe_hash().unwrap();
+        let hash5 = recipe.get_self_hash().unwrap();
 
         // All hashes should be unique
         let mut set = HashSet::new();

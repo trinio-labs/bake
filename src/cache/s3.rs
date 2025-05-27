@@ -16,14 +16,13 @@ use super::{CacheResult, CacheResultData, CacheStrategy, ARCHIVE_EXTENSION};
 #[derive(Clone, Debug)]
 pub struct S3CacheStrategy {
     pub bucket: String,
-    pub region: Option<String>,
     client: Client,
 }
 
 #[async_trait]
 impl CacheStrategy for S3CacheStrategy {
     async fn get(&self, key: &str) -> CacheResult {
-        let file_name = format!("{}.{}", key, ARCHIVE_EXTENSION);
+        let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
         // Try to get file with key from bucket
         let archive_path = std::env::temp_dir().join(&file_name);
         let file = File::create(archive_path.clone());
@@ -101,7 +100,6 @@ impl CacheStrategy for S3CacheStrategy {
                     .await;
                 return Ok(Box::new(Self {
                     bucket: s3.bucket.clone(),
-                    region: s3.region.clone(),
                     client: Client::new(&aws_config),
                 }));
             }

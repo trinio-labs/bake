@@ -10,7 +10,7 @@ mod test_utils;
 use anyhow::bail;
 use indexmap::IndexMap;
 use project::BakeProject;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use clap::Parser;
 use console::Term;
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
 
     let term = Term::stdout();
-    let padded_version = format!("{:<8}", VERSION);
+    let padded_version = format!("{VERSION:<8}");
     term.set_title("Bake");
     println!("{}", WELCOME_MSG.replace("xx.xx.xx", &padded_version));
 
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
             let cache = match cache_builder.default_strategies().build().await {
                 Ok(cache) => cache,
                 Err(err) => {
-                    println!("Error creating cache: {}", err);
+                    println!("Error creating cache: {err}");
                     return Err(err);
                 }
             };

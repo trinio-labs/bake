@@ -23,7 +23,7 @@ impl CacheStrategy for LocalCacheStrategy {
         let archive_path = self.path.join(file_name.clone());
         debug!("Checking local cache for key {}", archive_path.display());
         if archive_path.is_file() {
-            debug!("Cache hit for key {}", key);
+            debug!("Cache hit for key {key}");
             return CacheResult::Hit(CacheResultData { archive_path });
         }
         CacheResult::Miss
