@@ -20,14 +20,16 @@ pub fn parse_template(
     let mut handlebars = Handlebars::new();
     handlebars
         .register_template_string("template", template)
-        .expect("Failed to register template");
+        .unwrap_or_else(|_| {
+            panic!("Template Parsing: Failed to register template string '{template}'")
+        });
 
     let mut data = BTreeMap::from([("env", json!(env_values)), ("var", json!(variables))]);
     data.extend(constants.iter().map(|(k, v)| (k.as_ref(), json!(v))));
 
     match handlebars.render("template", &data) {
         Ok(rendered) => Ok(rendered),
-        Err(err) => bail!("Failed to render template: {}", err),
+        Err(err) => bail!("Template Rendering ('{}'): Failed to render template: {}. Ensure all referenced variables (env, var, constants) are correctly defined and accessible.", template, err),
     }
 }
 

@@ -58,7 +58,7 @@ struct Args {
 fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
     match s.split_once('=') {
         Some((key, value)) => Ok((key.trim().to_owned(), value.trim().to_owned())),
-        None => bail!("Expected key=value, got {}", s),
+        None => bail!("Variable Parse: Invalid variable format. Expected 'KEY=VALUE', but got '{}'. Ensure variables are passed using the --var NAME=VALUE syntax.", s),
     }
 }
 
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
             let cache = match cache_builder.default_strategies().build().await {
                 Ok(cache) => cache,
                 Err(err) => {
-                    println!("Error creating cache: {err}");
+                    eprintln!("Cache Initialization Error: Failed to create cache: {err}. Check cache configuration (local, S3, GCS) and connectivity.");
                     return Err(err);
                 }
             };

@@ -54,11 +54,22 @@ impl RecipeDependencyGraph {
         &mut self,
         cookbooks: &BTreeMap<String, Cookbook>,
     ) -> anyhow::Result<()> {
+        self.clear_graph_data();
+        self.add_recipe_nodes_from_cookbooks(cookbooks);
+        self.add_dependency_edges_and_validate_dependencies(cookbooks)?;
+        self.ensure_no_circular_dependencies()?;
+        Ok(())
+    }
+
+    /// Clears all nodes and edges from the graph and resets the FQN to NodeIndex map.
+    fn clear_graph_data(&mut self) {
         self.graph.clear();
         self.fqn_to_node_index.clear();
+    }
 
-        // First, populate the graph with all recipes as nodes.
-        // This ensures all potential dependency targets are known before adding edges.
+    /// Adds a node to the graph for each recipe found in the provided cookbooks.
+    /// Nodes are identified by the recipe's FQN.
+    fn add_recipe_nodes_from_cookbooks(&mut self, cookbooks: &BTreeMap<String, Cookbook>) {
         cookbooks
             .values()
             .flat_map(|cookbook| cookbook.recipes.values())
@@ -67,14 +78,24 @@ impl RecipeDependencyGraph {
                 let node_index = self.graph.add_node(fqn.clone());
                 self.fqn_to_node_index.insert(fqn, node_index);
             });
+    }
 
-        // Second, populate graph edges based on dependencies and validate them.
+    /// Adds edges to the graph for each declared dependency between recipes and validates them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `anyhow::Error` if any declared dependency refers to a non-existent recipe.
+    fn add_dependency_edges_and_validate_dependencies(
+        &mut self,
+        cookbooks: &BTreeMap<String, Cookbook>,
+    ) -> anyhow::Result<()> {
         let missing_deps_messages: Vec<String> = cookbooks
             .values()
             .flat_map(|cookbook| cookbook.recipes.values())
             .flat_map(|recipe| {
                 let source_fqn = recipe.full_name();
-                // This unwrap is safe because all recipes were added to fqn_to_node_index in the previous step.
+                // This unwrap is safe because all recipes were added to fqn_to_node_index
+                // in the add_recipe_nodes_from_cookbooks step.
                 let source_node_index = *self.fqn_to_node_index.get(&source_fqn).unwrap();
 
                 recipe.dependencies.as_ref().map_or_else(
@@ -105,13 +126,19 @@ impl RecipeDependencyGraph {
 
         if !missing_deps_messages.is_empty() {
             bail!(
-                "{}:\n{}",
-                console::style("Recipe dependency errors found").bold(),
+                "Dependency Graph: Recipe dependency errors found during graph population:\n{}",
                 missing_deps_messages.join("\n")
             );
         }
+        Ok(())
+    }
 
-        // Finally, validate for circular dependencies.
+    /// Checks for circular dependencies within the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `anyhow::Error` if cycles are detected, listing the recipes involved.
+    fn ensure_no_circular_dependencies(&self) -> anyhow::Result<()> {
         if is_cyclic_directed(&self.graph) {
             let mut cycles_messages = Vec::new();
             let sccs = tarjan_scc(&self.graph); // Tarjan's SCC algorithm identifies strongly connected components.
@@ -137,10 +164,10 @@ impl RecipeDependencyGraph {
             if cycles_messages.is_empty() {
                 // This case should ideally not be reached if is_cyclic_directed is true
                 // and tarjan_scc is working correctly, but it's a safeguard.
-                bail!("Circular dependencies detected in the project graph. (No specific cycle paths found by SCC analysis, but graph is cyclic)");
+                bail!("Dependency Graph: Circular dependencies detected during graph population. (SCC analysis did not pinpoint specific cycle paths, but the graph is cyclic. This might indicate a complex cycle structure or an issue with the cycle detection algorithm under certain graph conditions.)");
             } else {
                 bail!(
-                    "Circular dependencies detected:\n{}",
+                    "Dependency Graph: Circular dependencies detected during graph population:\n{}",
                     cycles_messages.join("\n")
                 );
             }
@@ -217,7 +244,7 @@ impl RecipeDependencyGraph {
         for fqn in initial_target_fqns {
             if !self.fqn_to_node_index.contains_key(fqn) {
                 bail!(
-                    "Initial target recipe FQN '{}' not found in the dependency graph.",
+                    "Execution Plan: Initial target recipe FQN '{}' not found in the dependency graph. Ensure the recipe exists and is correctly defined in a cookbook.",
                     fqn
                 );
             }
@@ -270,7 +297,7 @@ impl RecipeDependencyGraph {
         for fqn in target_fqns {
             if !self.fqn_to_node_index.contains_key(fqn) {
                 bail!(
-                    "Recipe FQN '{}' targeted for execution not found in the dependency graph.",
+                    "Execution Order: Recipe FQN '{}' targeted for execution not found in the dependency graph. This recipe was expected to be part of the graph but is missing.",
                     fqn
                 );
             }
@@ -335,14 +362,6 @@ impl RecipeDependencyGraph {
             // Sort FQNs at the current level for deterministic output order.
             current_level_fqns.sort();
 
-            if current_level_fqns.is_empty() && processed_count < target_fqns.len() {
-                // This condition implies that the queue is empty, but not all nodes have been processed.
-                // This should only happen if there's a cycle among the remaining unprocessed nodes.
-                // The check `processed_count != target_fqns.len()` at the end is the primary cycle detector.
-                // However, if the queue becomes empty prematurely, it's a strong indicator of a cycle.
-                // We can let the final check handle the error reporting for consistency.
-            }
-
             if !current_level_fqns.is_empty() {
                 result_levels_fqns.push(current_level_fqns.clone()); // Store the FQNs for this level
 
@@ -377,7 +396,7 @@ impl RecipeDependencyGraph {
                 }
             }
             bail!(
-                "Could not determine a valid execution order for all targeted recipes (within the graph component). \\
+                "Execution Order: Could not determine a valid execution order for all targeted recipes (within the graph component). \\
                 Processed FQNs: {}, Expected FQNs: {}. This usually indicates a circular dependency \\
                 among the following FQNs (or their dependencies within the target set): {:?}. \\
                 Please check your recipe dependencies.",

@@ -10,7 +10,7 @@ repository = "https://github.com/trinio-labs/bake"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 keywords = ["bake", "task-runner", "make", "build-tool"]
-rust-version = "1.89.0"
+rust-version = "1.87.0"
 
 [[bin]]
 name = "bake"
@@ -22,9 +22,12 @@ async-trait = "0.1.88"
 aws-config = "1.6.2"
 aws-sdk-s3 = "1.84.0"
 blake3 = "1.8.2"
+bytes = "1.8.0"
 clap = { version = "4.5.38", features = ["derive"] }
 console = "0.15.11"
 env_logger = "0.11.8"
+futures-core = "0.3.31"
+futures-util = "0.3.31"
 globset = "0.4.16"
 google-cloud-storage = { version = "0.24.0", features = ["external-account"] }
 handlebars = "6.3.2"
@@ -46,7 +49,10 @@ validator = { version = "0.20.0", features = ["derive"] }
 zstd = "0.13.3"
 
 [dev-dependencies]
+tempfile = "3.20.0"
 test-case = "3.3.1"
+mockall = "0.13.0"
+tokio-test = "0.4.4"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]

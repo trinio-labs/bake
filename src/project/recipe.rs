@@ -42,6 +42,9 @@ pub struct Recipe {
     #[serde(skip)]
     pub config_path: PathBuf,
 
+    #[serde(skip)]
+    pub project_root: PathBuf,
+
     #[serde(default)]
     pub cache: Option<RecipeCacheConfig>,
 
@@ -87,8 +90,9 @@ impl Recipe {
                     Ok(glob) => globset_builder.add(glob),
                     Err(err) => {
                         bail!(
-                            "Failed to get hash for recipe {:?}. Error adding input: {:?}",
-                            self.name,
+                            "Recipe Hash ('{}'): Failed to build glob for input pattern '{}': {:?}",
+                            self.full_name(),
+                            input,
                             err
                         );
                     }
@@ -99,8 +103,8 @@ impl Recipe {
                 Ok(globset) => globset,
                 Err(err) => {
                     bail!(
-                        "Failed to get hash for recipe {:?}. Error building globset: {:?}",
-                        self.name,
+                        "Recipe Hash ('{}'): Failed to build glob set from input patterns: {:?}",
+                        self.full_name(),
                         err
                     );
                 }
@@ -180,7 +184,8 @@ mod tests {
         let mut recipe = Recipe {
             name: String::from("test"),
             cookbook: String::from("test"),
-            config_path: PathBuf::from(config_path("/valid/foo/bake.yml")),
+            project_root: PathBuf::from(config_path("/valid/")),
+            config_path: PathBuf::from(config_path("/valid/foo/cookbook.yml")),
             description: None,
             dependencies: None,
             environment: vec!["FOO".to_owned()],

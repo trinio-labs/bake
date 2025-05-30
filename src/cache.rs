@@ -50,14 +50,15 @@ pub struct Cache {
 
 impl Cache {
     // Tries to get a cached result for the given recipe
-    pub async fn get(&self, recipe_name: &str) -> CacheResult {
+    pub async fn get(&self, recipe_name: &str, fqn_for_logging: &str) -> CacheResult {
         let hash = self.hashes.get(recipe_name).unwrap();
         for strategy in &self.strategies {
             if let CacheResult::Hit(data) = strategy.get(hash).await {
                 if let Ok(mut tar_gz) = File::open(&data.archive_path) {
                     if let Err(err) = tar_gz.rewind() {
                         warn!(
-                            "Failed to rewind archive file: {}. Error: {:?}",
+                            "Cache GET: Failed to rewind archive file for recipe '{}' from '{}': {:?}",
+                            fqn_for_logging,
                             &data.archive_path.display(),
                             err
                         );
@@ -67,7 +68,8 @@ impl Cache {
                     let mut archive = tar::Archive::new(compressed);
                     if let Err(err) = archive.unpack(self.project.root_path.clone()) {
                         warn!(
-                            "Failed to unpack archive file: {}. Error: {:?}",
+                            "Cache GET: Failed to unpack archive file for recipe '{}' from '{}': {:?}",
+                            fqn_for_logging,
                             &data.archive_path.display(),
                             err
                         );
@@ -96,15 +98,16 @@ impl Cache {
                 // let enc = GzEncoder::new(tar_gz, Compression::default());
                 let enc = match zstd::stream::Encoder::new(tar_gz, 1) {
                     Ok(z) => z.auto_finish(),
-                    Err(err) => bail!("Failed creating zstd encoder: {}", err),
+                    Err(err) => bail!(
+                        "Cache PUT: Failed to create zstd encoder for recipe '{}': {}",
+                        recipe_name,
+                        err
+                    ),
                 };
                 let mut tar = tar::Builder::new(enc);
                 // Get the recipe object using the new method
                 let recipe = self.project.get_recipe_by_fqn(recipe_name).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Recipe '{}' not found in project for caching its outputs",
-                        recipe_name
-                    )
+                    anyhow!("Cache PUT: Recipe '{}' not found in project when attempting to cache its outputs", recipe_name)
                 })?;
 
                 // Add outputs to archive
@@ -120,7 +123,7 @@ impl Cache {
                         {
                             Ok(path) => path,
                             Err(err) => {
-                                bail!("Failed to get canonical path for output {output}: {err}");
+                                bail!("Cache PUT: Failed to get canonical path for output '{}' of recipe '{}': {}", output, recipe_name, err);
                             }
                         };
 
@@ -130,7 +133,7 @@ impl Cache {
                             Ok(path) => path,
                             Err(err) => {
                                 return Err(anyhow!(
-                                    "Failed to get relative path for output {output}: {err}",
+                                    "Cache PUT: Failed to get relative path for output '{}' of recipe '{}': {}", output, recipe_name, err
                                 ));
                             }
                         };
@@ -146,7 +149,7 @@ impl Cache {
 
                         if let Err(err) = res {
                             return Err(anyhow!(
-                                "Failed to add {} to tar file in temp dir for recipe {}: {}",
+                                "Cache PUT: Failed to add output '{}' to archive for recipe '{}': {}",
                                 output,
                                 recipe_name,
                                 err
@@ -160,7 +163,7 @@ impl Cache {
                 let relative_log_path = log_path.strip_prefix(&self.project.root_path).unwrap();
                 if let Err(err) = tar.append_path_with_name(log_path.clone(), relative_log_path) {
                     return Err(anyhow!(
-                        "Failed to add log file to tar file in temp dir for recipe {}: {}",
+                        "Cache PUT: Failed to add log file to archive for recipe '{}': {}",
                         recipe_name,
                         err
                     ));
@@ -169,7 +172,7 @@ impl Cache {
                 // Finish archive
                 if let Err(err) = tar.finish() {
                     return Err(anyhow!(
-                        "Failed to finish tar file in temp dir for recipe {}: {}",
+                        "Cache PUT: Failed to finish archive for recipe '{}': {}",
                         recipe_name,
                         err
                     ));
@@ -177,10 +180,10 @@ impl Cache {
             }
             Err(err) => {
                 return Err(anyhow!(
-                    "Failed to create tar file in temp dir for recipe {}: {}",
-                    recipe_name,
-                    err
-                ))
+                "Cache PUT: Failed to create archive file in temp directory for recipe '{}': {}",
+                recipe_name,
+                err
+            ))
             }
         }
 
@@ -211,33 +214,145 @@ mod test {
     };
 
     use super::{Cache, CacheStrategy};
+    use anyhow::anyhow; // Added for the helper
 
-    // Removed: const FOO_BUILD_HASH: &str = "7d0ac2e376b5bb56bd6a1f283112bbcacba780c8fa58cec14149907a27083248";
+    // Helper to ensure output and log files exist for a recipe before a 'put' operation.
+    fn ensure_files_for_put(
+        project_arc: &Arc<BakeProject>,
+        recipe_fqn: &str,
+    ) -> anyhow::Result<()> {
+        project_arc.create_project_bake_dirs()?; // Ensures .bake/logs directory exists
+
+        let recipe = project_arc
+            .get_recipe_by_fqn(recipe_fqn)
+            .ok_or_else(|| anyhow!("Recipe '{}' not found for file setup", recipe_fqn))?;
+
+        // Create defined cache outputs
+        if let Some(cache_config) = &recipe.cache {
+            for output_rel_to_cookbook_str in &cache_config.outputs {
+                let output_abs_path = recipe
+                    .config_path // Path to the cookbook file (e.g., project_root/foo.yml)
+                    .parent()
+                    .unwrap()
+                    .join(output_rel_to_cookbook_str);
+
+                if let Some(parent_dir) = output_abs_path.parent() {
+                    std::fs::create_dir_all(parent_dir)?;
+                }
+
+                if !output_abs_path.exists() {
+                    if output_rel_to_cookbook_str.ends_with('/') {
+                        std::fs::create_dir_all(&output_abs_path)?;
+                    } else {
+                        std::fs::File::create(&output_abs_path)?
+                            .write_all(b"dummy output from helper")?;
+                    }
+                }
+            }
+        }
+
+        // Create log file
+        let log_file_abs_path = project_arc.get_recipe_log_path(recipe_fqn);
+        if let Some(log_parent) = log_file_abs_path.parent() {
+            std::fs::create_dir_all(log_parent)?;
+        }
+        if !log_file_abs_path.exists() {
+            std::fs::File::create(&log_file_abs_path)?.write_all(b"dummy log from helper")?;
+        }
+        Ok(())
+    }
 
     #[derive(Clone, Debug)]
     struct TestCacheStrategy {
-        cached_keys: Arc<Mutex<HashSet<String>>>, // Changed
+        name: String,
+        cached_keys: Arc<Mutex<HashSet<String>>>,
+        get_calls: Arc<Mutex<Vec<String>>>,
+        put_calls: Arc<Mutex<Vec<(String, PathBuf)>>>, // Stores (key, archive_path)
+        should_put_fail: bool,
+        create_dummy_archive_on_get: bool,
+    }
+
+    impl TestCacheStrategy {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                cached_keys: Arc::new(Mutex::new(HashSet::new())),
+                get_calls: Arc::new(Mutex::new(Vec::new())),
+                put_calls: Arc::new(Mutex::new(Vec::new())),
+                should_put_fail: false,
+                create_dummy_archive_on_get: false,
+            }
+        }
+
+        // Get the dummy archive path for a key (used by this strategy)
+        fn get_dummy_archive_path(&self, key: &str) -> PathBuf {
+            // Create a unique path for each strategy instance to avoid collisions
+            std::env::temp_dir().join(format!(
+                "test_cache_{}_{}_{}.{}",
+                self.name,
+                key,
+                std::process::id(),
+                ARCHIVE_EXTENSION
+            ))
+        }
     }
 
     #[async_trait]
     impl CacheStrategy for TestCacheStrategy {
         async fn get(&self, key: &str) -> super::CacheResult {
+            self.get_calls.lock().unwrap().push(key.to_string());
             if self.cached_keys.lock().unwrap().contains(key) {
-                // Changed
-                return CacheResult::Hit(CacheResultData {
-                    archive_path: PathBuf::from(format!("{key}.{ARCHIVE_EXTENSION}")), // Changed
-                });
+                let archive_path = self.get_dummy_archive_path(key);
+                if self.create_dummy_archive_on_get {
+                    if let Some(parent) = archive_path.parent() {
+                        std::fs::create_dir_all(parent)
+                            .expect("Failed to create dir for dummy archive");
+                    }
+                    let file = std::fs::File::create(&archive_path)
+                        .expect("Failed to create dummy archive file for get");
+                    let enc = zstd::stream::Encoder::new(file, 0)
+                        .expect("Failed to create zstd encoder for dummy archive")
+                        .auto_finish();
+                    let mut tar_builder = tar::Builder::new(enc);
+
+                    // Create a unique dummy file to add to the archive to ensure it's not empty
+                    // and to verify its content upon extraction.
+                    let dummy_content = format!("content_for_{}_{}", self.name, key);
+                    let dummy_file_name = format!("dummy_file_for_test_{}_{}.txt", self.name, key);
+                    let temp_dummy_file_path = std::env::temp_dir().join(&dummy_file_name);
+
+                    std::fs::write(&temp_dummy_file_path, &dummy_content)
+                        .expect("Failed to write temp dummy file for archive");
+
+                    tar_builder
+                        .append_path_with_name(&temp_dummy_file_path, &dummy_file_name)
+                        .expect("Failed to append dummy file to tar");
+
+                    tar_builder
+                        .finish()
+                        .expect("Failed to finish dummy tar archive");
+                    std::fs::remove_file(temp_dummy_file_path)
+                        .expect("Failed to remove temp dummy file");
+                }
+                return CacheResult::Hit(CacheResultData { archive_path });
             }
             CacheResult::Miss
         }
-        async fn put(&self, key: &str, _: PathBuf) -> anyhow::Result<()> {
-            self.cached_keys.lock().unwrap().insert(key.to_string()); // Changed
+
+        async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
+            self.put_calls
+                .lock()
+                .unwrap()
+                .push((key.to_string(), archive_path.clone()));
+            if self.should_put_fail {
+                return Err(anyhow::anyhow!("Simulated put error from {}", self.name));
+            }
+            self.cached_keys.lock().unwrap().insert(key.to_string());
             Ok(())
         }
-        async fn from_config(_: Arc<BakeProject>) -> anyhow::Result<Box<dyn super::CacheStrategy>> {
-            Ok(Box::new(TestCacheStrategy {
-                cached_keys: Arc::new(Mutex::new(HashSet::new())), // Changed
-            }))
+
+        async fn from_config(_project: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>> {
+            Ok(Box::new(TestCacheStrategy::new("default_from_config")))
         }
     }
 
@@ -269,23 +384,28 @@ mod test {
         // Test hit
         let recipe_hash_hit = cache.hashes.get("foo:build").unwrap().clone();
 
-        // Prime the first strategy to simulate a cache hit
+        // prepare the first strategy to simulate a cache hit
         if let Some(strategy_arc_box) = cache.strategies.get_mut(0) {
             // To modify the strategy, we need to ensure it's our TestCacheStrategy.
             // This approach assumes the strategy created by TestCacheStrategy::from_config
             // is what's in cache.strategies[0].
-            let primed_strategy = TestCacheStrategy {
+            let prepared_strategy = TestCacheStrategy {
+                name: "prepared_for_get_test".to_string(),
                 cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash_hit.clone()]))),
+                get_calls: Arc::new(Mutex::new(Vec::new())),
+                put_calls: Arc::new(Mutex::new(Vec::new())),
+                should_put_fail: false,
+                create_dummy_archive_on_get: false, // Set to true if specifically testing unpack from this strategy
             };
-            *strategy_arc_box = Arc::new(Box::new(primed_strategy));
+            *strategy_arc_box = Arc::new(Box::new(prepared_strategy));
         } else {
             panic!("No cache strategies configured for testing get_hit");
         }
 
-        let result_hit = cache.get("foo:build").await;
+        let result_hit = cache.get("foo:build", "foo:build").await; // Added fqn_for_logging
         assert!(
-            matches!(result_hit, CacheResult::Hit(ref data) if data.archive_path == PathBuf::from(format!("{recipe_hash_hit}.{ARCHIVE_EXTENSION}"))),
-            "Cache hit failed or returned unexpected data. Expected hash: {recipe_hash_hit}, archive_path: {recipe_hash_hit}.{ARCHIVE_EXTENSION}"
+            matches!(result_hit, CacheResult::Hit(ref data) if data.archive_path.to_str().unwrap().contains(&recipe_hash_hit)),
+            "Cache hit failed or returned unexpected data. Expected hash: {recipe_hash_hit}"
         );
 
         // Miss if recipe command changes
@@ -300,7 +420,7 @@ mod test {
             .run = "different command".to_owned();
         // Hashes are calculated in build_cache, so this new project will have a different hash for foo:build
         let cache_cmd_change = build_cache(Arc::new(project_cmd_change), "foo:build").await;
-        let result_cmd_miss = cache_cmd_change.get("foo:build").await;
+        let result_cmd_miss = cache_cmd_change.get("foo:build", "foo:build").await; // Added fqn_for_logging
         assert!(
             matches!(result_cmd_miss, CacheResult::Miss),
             "Cache should miss when recipe command changes"
@@ -317,11 +437,190 @@ mod test {
             .unwrap()
             .run = "different dependency command".to_owned();
         let cache_dep_change = build_cache(Arc::new(project_dep_change), "foo:build").await;
-        let result_dep_miss = cache_dep_change.get("foo:build").await;
+        let result_dep_miss = cache_dep_change.get("foo:build", "foo:build").await; // Added fqn_for_logging
         assert!(
             matches!(result_dep_miss, CacheResult::Miss),
             "Cache should miss when dependency changes"
         );
+    }
+
+    #[tokio::test]
+    async fn get_hit_in_second_strategy() {
+        let project_arc = Arc::new(create_test_project());
+        let mut cache = build_cache(project_arc.clone(), "foo:build").await;
+
+        let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
+
+        // First strategy will miss, second will hit
+        let miss_strategy = TestCacheStrategy {
+            name: "miss_first".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::new())),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: false,
+        };
+        let hit_strategy = TestCacheStrategy {
+            name: "hit_second".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash.clone()]))),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: false,
+        };
+        cache.strategies = vec![
+            Arc::new(Box::new(miss_strategy)),
+            Arc::new(Box::new(hit_strategy)),
+        ];
+
+        let result = cache.get("foo:build", "foo:build").await;
+        assert!(
+            matches!(result, CacheResult::Hit(ref data) if data.archive_path.to_str().unwrap().contains("test_cache_hit_second")),
+            "Cache should hit in the second strategy"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_corrupted_archive_returns_miss() {
+        let project_arc = Arc::new(create_test_project());
+        let mut cache = build_cache(project_arc.clone(), "foo:build").await;
+        let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
+
+        // Prepare a strategy that will hit, but the archive will be corrupted
+        let strategy = TestCacheStrategy {
+            name: "corrupted_archive".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash.clone()]))),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: false, // We'll create a corrupted file manually
+        };
+        let archive_path = strategy.get_dummy_archive_path(&recipe_hash);
+        // Create a corrupted archive file
+        std::fs::write(&archive_path, b"not a valid archive")
+            .expect("Failed to write corrupted archive");
+        cache.strategies = vec![Arc::new(Box::new(strategy))];
+
+        let result = cache.get("foo:build", "foo:build").await;
+        assert!(
+            matches!(result, CacheResult::Miss),
+            "Cache should return Miss if archive is corrupted"
+        );
+        let _ = std::fs::remove_file(&archive_path); // Clean up
+    }
+
+    #[tokio::test]
+    async fn put_missing_log_file_returns_error() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let project = create_test_project();
+        let project_arc = Arc::new(project);
+        _ = project_arc.create_project_bake_dirs();
+
+        // Define paths based on project structure and cache output definition
+        let output_file_rel_path = "foo/target/foo_test.txt";
+        let output_file_abs_path = project_arc.root_path.join(output_file_rel_path);
+        let log_file_abs_path = project_arc.get_recipe_log_path("foo:build");
+
+        // Clean up potential leftovers from previous runs
+        if let Some(parent_dir) = output_file_abs_path.parent() {
+            let _ = std::fs::remove_dir_all(parent_dir);
+        }
+        if let Some(parent_dir) = log_file_abs_path.parent() {
+            let _ = std::fs::remove_dir_all(parent_dir);
+        }
+
+        // Create output file but NOT the log file
+        std::fs::create_dir_all(output_file_abs_path.parent().unwrap()).unwrap();
+        std::fs::write(&output_file_abs_path, b"test output").unwrap();
+
+        let cache = build_cache(project_arc.clone(), "foo:build").await;
+        let result = cache.put("foo:build").await;
+        assert!(
+            result.is_err(),
+            "Cache put should fail if log file is missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_output_is_directory() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let project = TestProjectBuilder::new()
+            .with_cookbook("foo", &["build"])
+            .with_recipe_cache_outputs("foo:build", vec!["foo/target/dir_output".to_string()])
+            .build();
+        let project_arc = Arc::new(project);
+        _ = project_arc.create_project_bake_dirs();
+        let dir_output_path = project_arc.root_path.join("foo/target/dir_output");
+        std::fs::create_dir_all(&dir_output_path).unwrap();
+        // Add a file inside the directory to ensure it's not empty
+        std::fs::write(dir_output_path.join("file.txt"), b"test").unwrap();
+
+        // Use helper to ensure all required files exist
+        ensure_files_for_put(&project_arc, "foo:build").unwrap();
+
+        let cache = build_cache(project_arc.clone(), "foo:build").await;
+        let result = cache.put("foo:build").await;
+        if let Err(err) = &result {
+            let e = format!("Cache put failed with error: {err:?}");
+            println!("{e}");
+        }
+        assert!(
+            result.is_ok(),
+            "Cache put should succeed when output is a directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_output_with_special_characters() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let project = TestProjectBuilder::new()
+            .with_cookbook("foo", &["build"])
+            .with_recipe_cache_outputs(
+                "foo:build",
+                vec!["foo/target/special char@#$.txt".to_string()],
+            )
+            .build();
+        let project_arc = Arc::new(project);
+        _ = project_arc.create_project_bake_dirs();
+        let special_path = project_arc.root_path.join("foo/target/special char@#$.txt");
+        std::fs::create_dir_all(special_path.parent().unwrap()).unwrap();
+        std::fs::write(&special_path, b"special").unwrap();
+
+        // Use helper to ensure all required files exist
+        ensure_files_for_put(&project_arc, "foo:build").unwrap();
+
+        let cache = build_cache(project_arc.clone(), "foo:build").await;
+        let result = cache.put("foo:build").await;
+        assert!(
+            result.is_ok(),
+            "Cache put should succeed with special characters in output path"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_puts_and_gets() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let project_arc = Arc::new(create_test_project());
+
+        // Use helper to ensure all required files exist before concurrent operations
+        ensure_files_for_put(&project_arc, "foo:build").unwrap();
+
+        let cache = Arc::new(build_cache(project_arc.clone(), "foo:build").await);
+        let mut handles = vec![];
+        for _ in 0..5 {
+            let cache_clone = cache.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = cache_clone.put("foo:build").await;
+            }));
+            let cache_clone = cache.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = cache_clone.get("foo:build", "foo:build").await;
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     #[tokio::test]
@@ -348,8 +647,14 @@ mod test {
 
         // Create an inspectable TestCacheStrategy instance
         let inspectable_keys = Arc::new(Mutex::new(HashSet::new()));
+        let inspectable_put_calls = Arc::new(Mutex::new(Vec::new())); // For inspecting put calls
         let inspectable_strategy = TestCacheStrategy {
+            name: "inspectable_for_put_test".to_string(),
             cached_keys: inspectable_keys.clone(),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: inspectable_put_calls.clone(), // Use the new Arc for put_calls
+            should_put_fail: false,
+            create_dummy_archive_on_get: false,
         };
 
         let mut cache = build_cache(project_arc.clone(), "foo:build").await;
@@ -368,7 +673,7 @@ mod test {
             let error_message = format!("{err:?}");
             assert!(
                 error_message.contains(&format!(
-                    "Failed to get canonical path for output {output_file_rel_path}"
+                    "Failed to get canonical path for output '{output_file_rel_path}'"
                 )),
                 "Error message for missing output was not as expected. Got: {error_message}"
             );
@@ -378,19 +683,8 @@ mod test {
         }
 
         // Test case 2: Successful put
-        // Create the directories and files that 'put' expects
-        std::fs::create_dir_all(output_file_abs_path.parent().unwrap())
-            .expect("Failed to create output directory for test");
-        let mut test_output_file = std::fs::File::create(&output_file_abs_path)
-            .expect("Failed to create test output file");
-        test_output_file.write_all(b"test content").unwrap();
-
-        if let Some(log_parent) = log_file_abs_path.parent() {
-            std::fs::create_dir_all(log_parent).expect("Failed to create log directory");
-        }
-        let mut test_log_file =
-            std::fs::File::create(&log_file_abs_path).expect("Failed to create test log file");
-        test_log_file.write_all(b"test log").unwrap();
+        // Use helper to ensure all required files exist
+        ensure_files_for_put(&project_arc, "foo:build").unwrap();
 
         let res_success = cache.put("foo:build").await;
         assert!(

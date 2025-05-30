@@ -127,20 +127,26 @@ impl BakeProject {
     /// Finds the configuration file and reads it into a string.
     fn find_and_load_config_str(path: &Path) -> anyhow::Result<(PathBuf, String)> {
         let file_path = if !path.exists() {
-            bail!("Path does not exist: {}", path.display());
+            bail!(
+                "Project Load: Configuration path '{}' does not exist.",
+                path.display()
+            );
         } else if path.is_dir() {
             Self::find_config_file_in_dir(path)?
         } else if path.is_file() {
             PathBuf::from(path)
         } else {
-            bail!("Invalid path: not a file or directory");
+            bail!(
+                "Project Load: Invalid configuration path '{}'. It is not a file or a directory.",
+                path.display()
+            );
         };
 
         match std::fs::read_to_string(&file_path) {
             Ok(contents) => Ok((file_path, contents)),
             Err(err) => {
                 bail!(
-                    "Could not read config file: {}. Error: {}",
+                    "Project Load: Failed to read configuration file '{}': {}",
                     file_path.display(),
                     err
                 );
@@ -153,7 +159,7 @@ impl BakeProject {
         match serde_yaml::from_str::<Self>(config_str) {
             Ok(mut parsed) => {
                 if let Err(err) = parsed.validate() {
-                    bail!("Config file validation failed: {}", err);
+                    bail!("Project Load: Configuration file '{}' validation failed: {}", file_path.display(), err);
                 }
                 parsed.root_path = file_path
                     .parent()
@@ -162,7 +168,7 @@ impl BakeProject {
                 Ok(parsed)
             }
             Err(err) => bail!(
-                "Could not parse config file: {}. Error: {}",
+                "Project Load: Failed to parse configuration file '{}': {}. Check YAML syntax and project structure.",
                 file_path.display(),
                 err
             ),
@@ -264,7 +270,7 @@ impl BakeProject {
         // Create the main .bake directory.
         if let Err(err) = std::fs::create_dir_all(self.get_project_bake_path()) {
             bail!(
-                "Could not create .bake directory at {}: {}",
+                "Project Setup: Failed to create project .bake directory at '{}': {}",
                 self.get_project_bake_path().display(),
                 err
             );
@@ -272,7 +278,7 @@ impl BakeProject {
         // Create the logs subdirectory within .bake.
         if let Err(err) = std::fs::create_dir_all(self.get_project_log_path()) {
             bail!(
-                "Could not create logs directory at {}: {}",
+                "Project Setup: Failed to create project logs directory at '{}': {}",
                 self.get_project_log_path().display(),
                 err
             );
@@ -315,7 +321,7 @@ impl BakeProject {
             }
             // If no config file is found after checking all relevant directories.
             bail!(
-                "Could not find bake.yml or bake.yaml in {} or its parent directories.",
+                "Project Load: bake.yml or bake.yaml not found in '{}' or any parent directory. Ensure a configuration file exists at the project root.",
                 dir.display()
             );
         }
@@ -399,8 +405,8 @@ impl BakeProject {
                 match self.get_recipe_by_fqn(&fqn) {
                     Some(recipe_ref) => recipes_this_level.push(recipe_ref.clone()),
                     None => bail!(
-                        "Recipe '{}' (part of the execution plan) not found in project cookbooks. \
-                        This indicates an inconsistency between the dependency graph and loaded recipes.",
+                        "Execution Plan: Recipe '{}' from the execution plan was not found in the loaded project cookbooks. \
+                        This suggests an internal inconsistency, possibly due to a corrupted or manually altered dependency graph state.",
                         fqn
                     ),
                 }

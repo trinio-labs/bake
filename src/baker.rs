@@ -58,7 +58,6 @@ pub async fn bake(
         Arc::new(Mutex::new(BTreeMap::new()));
 
     let (cancel_tx, _) = broadcast::channel(1); // Used for Ctrl+C and fast_fail signalling.
-    #[allow(unused_assignments)] // This warning is benign due to early bail with fast_fail.
     let mut overall_success = true;
 
     for (level_idx, level_recipes) in execution_plan.into_iter().enumerate() {
@@ -72,7 +71,6 @@ pub async fn bake(
         );
 
         let mut level_join_set = JoinSet::new();
-        // Semaphore to limit concurrency within the current execution level.
         let semaphore = Arc::new(Semaphore::new(project.config.max_parallel));
 
         for recipe_to_run in level_recipes {
@@ -81,29 +79,31 @@ pub async fn bake(
             let multi_progress_clone = multi_progress.clone();
             let results_clone = execution_results.clone();
             let semaphore_clone = semaphore.clone();
-            let cancel_rx_clone: broadcast::Receiver<()> = cancel_tx.subscribe();
+
+            // Clone the sender for this specific task.
+            // The task will use this cloned sender to create its own receivers.
+            let cancel_tx_clone_for_task = cancel_tx.clone();
+            let mut task_outer_cancel_rx = cancel_tx_clone_for_task.subscribe();
 
             level_join_set.spawn(async move {
-                let recipe_fqn = recipe_to_run.full_name(); // Capture FQN for potential early exit
-
+                let recipe_fqn = recipe_to_run.full_name();
                 let permit = match semaphore_clone.acquire_owned().await {
                     Ok(p) => p,
                     Err(_) => {
-                        // Semaphore closed, likely due to broader cancellation
                         let status = RunStatus {
                             status: Status::Error,
                             output: "Semaphore closed".to_string(),
                         };
-                        // Record the error status before returning
                         results_clone
                             .lock()
                             .unwrap()
                             .insert(recipe_fqn, status.clone());
-                        return status; // Early return from the spawned task
+                        return status;
                     }
                 };
 
-                let progress_bar: Option<ProgressBar> = if !arc_project_clone.config.verbose {
+                // Create the progress bar option for this task.
+                let progress_bar_owner = if !arc_project_clone.config.verbose {
                     Some(
                         multi_progress_clone.add(
                             ProgressBar::new_spinner()
@@ -113,111 +113,139 @@ pub async fn bake(
                 } else {
                     None
                 };
+                // Clone it for manage_single_recipe_execution if it will be moved there.
+                let progress_bar_for_manage = progress_bar_owner.clone();
 
-                let final_status = manage_single_recipe_execution(
-                    recipe_to_run.clone(), // Recipe is Clone
-                    arc_project_clone,
-                    arc_cache_clone,
-                    progress_bar, // Pass the owned Option<ProgressBar>
-                    cancel_rx_clone,
-                )
-                .await;
+                // Listen for cancellation during manage_single_recipe_execution
+                let final_status = tokio::select! {
+                    biased;
+                    _ = task_outer_cancel_rx.recv() => { // Use the task-specific receiver
+                        if let Some(pb) = progress_bar_owner.as_ref() { // Borrow the original owner
+                            pb.finish_with_message(format!(
+                                "Baking recipe {}... {} (cancelled by signal)",
+                                recipe_fqn,
+                                style("∅").yellow()
+                            ));
+                        }
+                        RunStatus {
+                            status: Status::Error,
+                            output: "Cancelled by signal (e.g. Ctrl+C or fast_fail)".to_string(),
+                        }
+                    }
+                    // Pass the cloned progress_bar to manage_single_recipe_execution.
+                    status = manage_single_recipe_execution(
+                        recipe_to_run.clone(),
+                        arc_project_clone,
+                        arc_cache_clone,
+                        progress_bar_for_manage, // Pass the clone that can be moved
+                        cancel_tx_clone_for_task.subscribe(), // Use cloned sender to subscribe
+                    ) => status,
+                };
 
                 results_clone
                     .lock()
                     .unwrap()
-                    .insert(recipe_fqn, final_status.clone());
-
-                drop(permit); // Release the semaphore permit.
-                final_status // Return the final status of this recipe.
+                    .insert(recipe_fqn.clone(), final_status.clone());
+                drop(permit);
+                final_status
             });
         }
 
-        // Wait for all tasks in the current level to complete, or handle Ctrl+C / fast_fail.
-        loop {
-            debug!("Waiting for tasks in level {level_idx} to complete...");
-            tokio::select! {
-                biased; // Prioritize processing completed tasks and then cancellation.
-                // Handle task completion or JoinSet empty
-                maybe_join_result = level_join_set.join_next() => {
-                    if let Some(join_result) = maybe_join_result {
-                        // A task has completed.
-                        match join_result {
-                            Ok(recipe_final_status) => {
-                                debug!("Recipe finished: {recipe_final_status:?}");
-                                if recipe_final_status.status == Status::Error {
-                                    overall_success = false;
-                                    if project.config.fast_fail {
-                                        cancel_tx.send(()).ok(); // Signal other tasks to cancel.
-                                        level_join_set.abort_all(); // Abort remaining tasks in this level.
-                                        // Drain remaining tasks to ensure cleanup.
-                                        debug!("Draining tasks after fast_fail (recipe error) for level {level_idx}...");
-                                        while level_join_set.join_next().await.is_some() {}
-                                        debug!("Finished draining tasks after fast_fail (recipe error) for level {level_idx}.");
-                                        bail!(
-                                            "Recipe '{}' failed. Fast fail enabled, aborting...",
-                                            recipe_final_status.output.lines().next().unwrap_or("unknown recipe")
-                                        );
-                                    }
-                                }
-                            }
-                            Err(join_err) => {
-                                debug!("Task join error: {join_err:?}");
-                                // A task panicked or was cancelled by abort_all().
-                                // Only treat non-cancelled panics as new errors here.
-                                if !join_err.is_cancelled() {
-                                    overall_success = false;
-                                    eprintln!("A baking task panicked: {join_err}");
-                                    if project.config.fast_fail {
-                                        cancel_tx.send(()).ok();
-                                        level_join_set.abort_all();
-                                        debug!("Draining tasks after fast_fail (panic) for level {level_idx}...");
-                                        while level_join_set.join_next().await.is_some() {}
-                                        debug!("Finished draining tasks after fast_fail (panic) for level {level_idx}.");
-                                        bail!("Task panicked and fast_fail is enabled. Aborting.");
-                                    }
-                                }
-                            }
+        // Level processing loop: Simplified select! and centralized fast-fail logic.
+        let mut level_failed_due_to_error_or_panic = false;
+        while let Some(join_result) = tokio::select! {
+            biased;
+            // Prefer checking for Ctrl+C first only if not already fast-failing.
+            _ = tokio::signal::ctrl_c(), if !level_failed_due_to_error_or_panic || !project.config.fast_fail => {
+                println!("Ctrl+C received, attempting to shut down gracefully...");
+                cancel_tx.send(()).ok(); // Signal all tasks to cancel.
+                level_join_set.abort_all(); // Abort all tasks in the current level.
+                // Drain the join set to allow tasks to clean up.
+                debug!("Draining tasks after Ctrl+C for level {level_idx}...");
+                while level_join_set.join_next().await.is_some() {}
+                debug!("Finished draining tasks after Ctrl+C for level {level_idx}.");
+                bail!("Bake process cancelled by user.");
+            },
+            // Then, process the next completed task.
+            res = level_join_set.join_next() => res,
+        } {
+            match join_result {
+                Ok(recipe_final_status) => {
+                    debug!("Recipe finished: {recipe_final_status:?}");
+                    if recipe_final_status.status == Status::Error {
+                        overall_success = false;
+                        level_failed_due_to_error_or_panic = true;
+                        if project.config.fast_fail {
+                            cancel_tx.send(()).ok(); // Signal other tasks.
+                            level_join_set.abort_all(); // Abort remaining tasks in this level.
+                                                        // No immediate bail here; drain and then bail after the loop.
                         }
-                    } else {
-                        // level_join_set.join_next() returned None, so the set is empty.
-                        debug!("All tasks for level {level_idx} complete (join_next returned None).");
-                        break; // Exit the select loop for this level.
                     }
                 }
-
-                // Handle Ctrl+C
-                _ = tokio::signal::ctrl_c() => {
-                    println!("Ctrl+C received, attempting to shut down gracefully...");
-                    cancel_tx.send(()).ok(); // Signal tasks to cancel.
-                    level_join_set.abort_all();
-                    // Drain remaining tasks to ensure cleanup after abort_all.
-                    debug!("Draining tasks after Ctrl+C for level {level_idx}...");
-                    while level_join_set.join_next().await.is_some() {
-                        // Loop to ensure all tasks (especially cancelled ones) are joined.
+                Err(join_err) => {
+                    debug!("Task join error: {join_err:?}");
+                    if !join_err.is_cancelled() {
+                        overall_success = false;
+                        level_failed_due_to_error_or_panic = true;
+                        eprintln!("A baking task panicked: {join_err}");
+                        if project.config.fast_fail {
+                            cancel_tx.send(()).ok();
+                            level_join_set.abort_all();
+                            // No immediate bail here; drain and then bail after the loop.
+                        }
                     }
-                    debug!("Finished draining tasks after Ctrl+C for level {level_idx}.");
-                    bail!("Bake process cancelled by user.");
                 }
             }
+            // If fast_fail is enabled and an error/panic occurred, break to drain and then bail.
+            if level_failed_due_to_error_or_panic && project.config.fast_fail {
+                break;
+            }
         }
+        debug!("Finished processing level {level_idx} tasks. Draining any remaining...");
+        // Drain any remaining tasks (e.g., if fast_fail broke the loop or all tasks completed normally)
+        while level_join_set.join_next().await.is_some() {}
+        debug!("All tasks for level {level_idx} drained.");
 
-        // If fast_fail was triggered and we bailed, this part won't be reached for that level.
-        if !overall_success && project.config.fast_fail {
-            bail!("Fast fail triggered, aborting bake.");
+        // Centralized fast-fail bail for the current level.
+        if project.config.fast_fail && !overall_success {
+            let errors = execution_results.lock().unwrap();
+            let failed_recipe_msgs: Vec<String> = errors
+                .iter()
+                .filter(|(_, status)| status.status == Status::Error)
+                .map(|(fqn, status)| {
+                    format!(
+                        "  - Recipe '{}': {}",
+                        fqn,
+                        status.output.lines().next().unwrap_or("failed")
+                    )
+                })
+                .collect();
+
+            if !failed_recipe_msgs.is_empty() {
+                bail!(
+                    "Fast fail triggered due to error(s) in level {}:
+{}
+Aborting bake.",
+                    level_idx,
+                    failed_recipe_msgs.join("\n")
+                );
+            } else {
+                // This case might happen if a panic occurred that wasn't directly tied to a recipe result,
+                // or if a cancellation signal was processed before any recipe error.
+                bail!("Fast fail triggered in level {}, aborting bake.", level_idx);
+            }
         }
     }
 
     // Final error reporting based on execution_results.
     if !overall_success {
-        let final_errors: Vec<String> = execution_results
-            .lock()
-            .unwrap()
+        let locked_results = execution_results.lock().unwrap();
+        let final_errors: Vec<String> = locked_results
             .iter()
             .filter_map(|(fqn, status_obj)| {
                 if status_obj.status == Status::Error {
                     Some(format!(
-                        "Recipe '{}' failed: {}",
+                        "  - Recipe '{}' failed: {}",
                         fqn,
                         status_obj.output.trim_end_matches('\n')
                     ))
@@ -228,11 +256,16 @@ pub async fn bake(
             .collect();
 
         if !final_errors.is_empty() {
-            bail!("Some recipes failed to run:\n{}", final_errors.join("\n"));
+            bail!(
+                "Bake completed with errors:
+{}",
+                final_errors.join("\n")
+            );
         } else {
             // This case can occur if overall_success is false due to a cancellation or panic
-            // not directly tied to a specific recipe's error output, or if fast_fail bailed early.
-            bail!("Bake process failed or was cancelled.");
+            // not directly tied to a specific recipe's error output, or if fast_fail bailed early
+            // but somehow didn't produce specific error messages above.
+            bail!("Bake process failed or was cancelled without specific recipe errors reported.");
         }
     }
 
@@ -267,61 +300,64 @@ async fn manage_single_recipe_execution(
             run_status.output = "Cancelled by user or fast_fail".to_string();
         }
         _ = async {
-            let mut skip_run_due_to_cache = false;
             // Check cache for the recipe.
-            if recipe_to_run.cache.is_some() &&
-               matches!(cache.get(&recipe_fqn).await, CacheResult::Hit(_)) {
-                if let Some(pb) = progress_bar.as_ref() {
-                    pb.finish_with_message(format!(
-                        "Baking recipe {}... {} (cached)",
-                        recipe_fqn,
-                        console::style("✓").green()
-                    ));
-                } else if project.config.verbose {
-                    println!("{}: {} (cached)", recipe_fqn, console::style("✓").green());
-                }
-                skip_run_due_to_cache = true;
-                run_status.status = Status::Done;
-            }
-
-            if !skip_run_due_to_cache {
-                // If not cached or cache is disabled, run the recipe.
-                run_status.status = Status::Running;
-                if let Some(pb) = progress_bar.as_ref() {
-                    pb.set_message(format!("Baking recipe {recipe_fqn}... (running)"));
-                }
-                match run_recipe(
-                    &recipe_to_run,
-                    project.get_recipe_log_path(&recipe_fqn),
-                    &project.config
-                ).await {
-                    Ok(_) => {
-                        run_status.status = Status::Done;
-                        // If the run was successful, try to cache it if configured.
-                        if recipe_to_run.cache.is_some() {
-                            if let Err(e) = cache.put(&recipe_fqn).await {
-                                let err_msg = format!("Cache store error for {recipe_fqn}: {e}");
-                                if let Some(pb) = progress_bar.as_ref() { pb.println(&err_msg); } else { println!("{err_msg}"); }
-                            }
-                        }
+            if recipe_to_run.cache.is_some() {
+                match cache.get(&recipe_fqn, &recipe_fqn).await { // Assuming this returns CacheResult directly
+                    CacheResult::Hit(_) => {
                         if let Some(pb) = progress_bar.as_ref() {
                             pb.finish_with_message(format!(
-                                "Baking recipe {}... {}",
+                                "Baking recipe {}... {} (cached)",
                                 recipe_fqn,
                                 console::style("✓").green()
                             ));
+                        } else if project.config.verbose {
+                            println!("{}: {} (cached)", recipe_fqn, console::style("✓").green());
+                        }
+                        run_status.status = Status::Done;
+                        return; // Return from the async block, not the whole function
+                    }
+                    CacheResult::Miss => {
+                        debug!("Cache miss for recipe: {recipe_fqn}. Proceeding with execution.");
+                        // If it's a miss, we simply proceed to run the recipe normally.
+                    }
+                }
+            }
+
+            // If not cached (i.e., CacheResult::Miss was matched and fell through) or cache is disabled, run the recipe.
+            run_status.status = Status::Running;
+            if let Some(pb) = progress_bar.as_ref() {
+                pb.set_message(format!("Baking recipe {recipe_fqn}... (running)"));
+            }
+            match run_recipe(
+                &recipe_to_run,
+                project.get_recipe_log_path(&recipe_fqn),
+                &project.config
+            ).await {
+                Ok(_) => {
+                    run_status.status = Status::Done;
+                    if recipe_to_run.cache.is_some() { // Try to cache if successful run
+                        if let Err(e) = cache.put(&recipe_fqn).await {
+                            let err_msg = format!("Cache store error for {recipe_fqn}: {e}");
+                            if let Some(pb) = progress_bar.as_ref() { pb.println(&err_msg); } else { println!("{err_msg}"); }
                         }
                     }
-                    Err(e) => {
-                        run_status.status = Status::Error;
-                        run_status.output = e.clone();
-                        if let Some(pb) = progress_bar.as_ref() {
-                            pb.finish_with_message(format!(
-                                "Baking recipe {}... {}",
-                                recipe_fqn,
-                                console::style("✗").red()
-                            ));
-                        }
+                    if let Some(pb) = progress_bar.as_ref() {
+                        pb.finish_with_message(format!(
+                            "Baking recipe {}... {}",
+                            recipe_fqn,
+                            console::style("✓").green()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    run_status.status = Status::Error;
+                    run_status.output = e; // e is already a String, no need to clone
+                    if let Some(pb) = progress_bar.as_ref() {
+                        pb.finish_with_message(format!(
+                            "Baking recipe {}... {}",
+                            recipe_fqn,
+                            console::style("✗").red()
+                        ));
                     }
                 }
             }
@@ -394,11 +430,19 @@ pub async fn run_recipe(
                 }
             }
             if let Err(err) = process_handle.await {
-                return Err(format!("Could wait for process output thread: {err}"));
+                return Err(format!(
+                    "Error processing output for recipe '{}': {}",
+                    recipe.full_name(),
+                    err
+                ));
             }
         }
         Err(err) => {
-            return Err(format!("Could not spawn process: {err}"));
+            return Err(format!(
+                "Failed to spawn command for recipe '{}': {}",
+                recipe.full_name(),
+                err
+            ));
         }
     }
     let elapsed = start_time.elapsed();
@@ -491,7 +535,8 @@ async fn process_output(
         Ok(mut file) => {
             if let Err(err) = file.write_all(output_str.lock().unwrap().as_bytes()) {
                 return Err(format!(
-                    "could not write log file {}: {}",
+                    "Failed to write to log file for recipe '{}' at '{}': {}",
+                    recipe_name,
                     log_file_path.display(),
                     err
                 ));
@@ -499,7 +544,8 @@ async fn process_output(
         }
         Err(err) => {
             return Err(format!(
-                "could not create log file {}: {}",
+                "Failed to create log file for recipe '{}' at '{}': {}",
+                recipe_name,
                 log_file_path.display(),
                 err
             ));

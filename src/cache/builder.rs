@@ -58,9 +58,6 @@ impl CacheBuilder {
         self
     }
 
-    // Removed: calculate_hash_with_deps - This logic is now handled by BakeProject::calculate_combined_hash_for
-    // fn calculate_hash_with_deps(&self, recipe_name: &str) -> String { ... }
-
     fn calculate_all_hashes(&self) -> anyhow::Result<HashMap<String, String>> {
         let mut calculated_hashes = HashMap::new();
         let project_recipes_fqns: Vec<String> = self
@@ -133,6 +130,16 @@ mod tests {
 
     use crate::{
         cache::{CacheResult, CacheResultData, ARCHIVE_EXTENSION},
+        project::{
+            config::{
+                GcsCacheConfig,
+                // CacheConfig is implicitly part of BakeProject.config.cache
+                // LocalCacheConfig, // Commenting out to test if truly unused
+                RemoteCacheConfig,
+                S3CacheConfig,
+            },
+            BakeProject,
+        },
         test_utils::TestProjectBuilder,
     };
 
@@ -178,5 +185,219 @@ mod tests {
             .await
             .unwrap();
         assert!(cache.hashes.contains_key("foo:build"));
+    }
+
+    #[tokio::test]
+    async fn test_new_cache_builder() {
+        let project = Arc::new(TestProjectBuilder::new().build());
+        let builder = CacheBuilder::new(project);
+        assert!(builder.filter.is_none());
+        assert!(builder.strategies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_default_strategies_added() {
+        let project = Arc::new(TestProjectBuilder::new().build());
+        let mut builder = CacheBuilder::new(project);
+        builder.default_strategies();
+        assert!(builder.strategies.contains_key("local"));
+        assert!(builder.strategies.contains_key("s3"));
+        assert!(builder.strategies.contains_key("gcs"));
+    }
+
+    #[tokio::test]
+    async fn test_add_custom_strategy_added() {
+        let project = Arc::new(TestProjectBuilder::new().build());
+        let mut builder = CacheBuilder::new(project);
+        builder.add_strategy("custom_strategy", TestCacheStrategy::from_config);
+        assert!(builder.strategies.contains_key("custom_strategy"));
+        assert_eq!(builder.strategies.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_filter_applied_to_hashes() {
+        let project_arc = Arc::new(
+            TestProjectBuilder::new()
+                .with_cookbook("foo", &["build", "test"])
+                .with_cookbook("bar", &["build"])
+                .build(),
+        );
+
+        // Filter for "foo:"
+        let mut builder_foo = CacheBuilder::new(project_arc.clone());
+        builder_foo.default_strategies();
+
+        let cache_foo = builder_foo.filter("foo:").build().await.unwrap();
+        assert_eq!(cache_foo.hashes.len(), 2);
+        assert!(cache_foo.hashes.contains_key("foo:build"));
+        assert!(cache_foo.hashes.contains_key("foo:test"));
+        assert!(!cache_foo.hashes.contains_key("bar:build"));
+
+        // Filter for "bar:"
+        let mut builder_bar = CacheBuilder::new(project_arc.clone());
+        builder_bar.default_strategies();
+
+        let cache_bar = builder_bar.filter("bar:").build().await.unwrap();
+        assert_eq!(cache_bar.hashes.len(), 1);
+        assert!(cache_bar.hashes.contains_key("bar:build"));
+        assert!(!cache_bar.hashes.contains_key("foo:build"));
+
+        // No filter
+        let mut builder_all = CacheBuilder::new(project_arc.clone());
+        builder_all.default_strategies();
+
+        let cache_all = builder_all.build().await.unwrap();
+        assert_eq!(cache_all.hashes.len(), 3);
+        assert!(cache_all.hashes.contains_key("foo:build"));
+        assert!(cache_all.hashes.contains_key("foo:test"));
+        assert!(cache_all.hashes.contains_key("bar:build"));
+
+        // Filter for specific recipe "foo:build"
+        let mut builder_specific = CacheBuilder::new(project_arc.clone());
+        builder_specific.default_strategies();
+
+        let cache_specific = builder_specific.filter("foo:build").build().await.unwrap();
+        assert_eq!(cache_specific.hashes.len(), 1);
+        assert!(cache_specific.hashes.contains_key("foo:build"));
+        assert!(!cache_specific.hashes.contains_key("foo:test"));
+    }
+
+    #[tokio::test]
+    async fn test_build_with_config_order() {
+        let mut project = TestProjectBuilder::new()
+            .with_cookbook("foo", &["build"])
+            .build();
+
+        // Configure cache order
+        project.config.cache.order = vec!["s3".to_string(), "local".to_string()];
+        // Ensure the strategies in the order are considered enabled for the builder's logic
+        // if it relies on individual .enabled flags (though order should override)
+        project.config.cache.local.enabled = true;
+        project.config.cache.remotes = Some(RemoteCacheConfig {
+            s3: Some(S3CacheConfig {
+                bucket: "test-bucket".to_string(),
+                region: None,
+            }),
+            gcs: None,
+        });
+
+        let project_arc = Arc::new(project);
+
+        let mut builder = CacheBuilder::new(project_arc.clone());
+        let cache = builder
+            .add_strategy("local", TestCacheStrategy::from_config)
+            .add_strategy("s3", TestCacheStrategy::from_config)
+            .add_strategy("gcs", TestCacheStrategy::from_config) // gcs is registered but not in order
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            cache.strategies.len(),
+            2,
+            "Cache should only contain strategies specified in the order"
+        );
+        // TODO: Add a way to identify the strategies to assert their exact order e.g. s3 then local
+        // For now, we assume if the count is correct, the builder respected the order.
+        // A more robust check would be:
+        // assert_eq!(cache.strategies[0].name(), "s3");
+        // assert_eq!(cache.strategies[1].name(), "local");
+    }
+
+    #[tokio::test]
+    async fn test_build_with_default_order_local_only() {
+        let mut project = TestProjectBuilder::new()
+            .with_cookbook("foo", &["build"])
+            .build();
+
+        // Ensure no explicit order and only local cache is enabled
+        project.config.cache.order = vec![]; // Empty order
+        project.config.cache.local.enabled = true;
+        project.config.cache.remotes = None; // No S3 or GCS configured
+
+        let project_arc = Arc::new(project);
+
+        let mut builder = CacheBuilder::new(project_arc.clone());
+        let cache = builder
+            .add_strategy("local", TestCacheStrategy::from_config)
+            .add_strategy("s3", TestCacheStrategy::from_config) // s3 is registered
+            .add_strategy("gcs", TestCacheStrategy::from_config) // gcs is registered
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(cache.strategies.len(), 1, "Cache should only contain the local strategy when it's the only one enabled and no order is set");
+        // TODO: Add a way to identify the strategy to assert it is indeed 'local'.
+    }
+
+    #[tokio::test]
+    async fn test_build_with_default_order_s3_gcs_enabled() {
+        let mut project = TestProjectBuilder::new()
+            .with_cookbook("foo", &["build"])
+            .build();
+
+        // Ensure no explicit order, local is disabled, and S3/GCS are enabled
+        project.config.cache.order = vec![]; // Empty order
+        project.config.cache.local.enabled = false; // Local cache disabled
+        project.config.cache.remotes = Some(RemoteCacheConfig {
+            s3: Some(S3CacheConfig {
+                bucket: "test-s3-bucket".to_string(),
+                region: None,
+            }),
+            gcs: Some(GcsCacheConfig {
+                bucket: "test-gcs-bucket".to_string(),
+            }),
+        });
+
+        let project_arc = Arc::new(project);
+
+        let mut builder = CacheBuilder::new(project_arc.clone());
+        let cache = builder
+            .add_strategy("local", TestCacheStrategy::from_config) // local is registered but disabled
+            .add_strategy("s3", TestCacheStrategy::from_config)
+            .add_strategy("gcs", TestCacheStrategy::from_config)
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            cache.strategies.len(),
+            2,
+            "Cache should contain s3 and gcs strategies based on default order when enabled"
+        );
+        // TODO: Add a way to identify the strategies to assert their exact order (e.g., s3 then gcs).
+    }
+
+    #[tokio::test]
+    async fn test_build_fails_on_missing_strategy_in_order() {
+        let mut project = TestProjectBuilder::new()
+            .with_cookbook("foo", &["build"])
+            .build();
+
+        // Configure an order with a strategy that won't be registered
+        project.config.cache.order = vec!["custom_strategy".to_string(), "local".to_string()];
+
+        let project_arc = Arc::new(project);
+
+        let mut builder = CacheBuilder::new(project_arc.clone());
+        let result = builder
+            .add_strategy("local", TestCacheStrategy::from_config) // Only register "local"
+            // "custom_strategy" is in the order but not registered
+            .build()
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Build should fail when a strategy in the order is not registered."
+        );
+
+        if let Err(e) = result {
+            let error_message = e.to_string();
+            assert!(
+                error_message
+                    .contains("No cache strategy implementation found for custom_strategy"),
+                "Error message should indicate that 'custom_strategy' was not found. Got: {error_message}"
+            );
+        }
     }
 }

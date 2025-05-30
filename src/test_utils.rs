@@ -40,6 +40,7 @@ impl TestProjectBuilder {
                     String::from(*recipe),
                     Recipe {
                         name: String::from(*recipe),
+                        project_root: self.project.root_path.clone(),
                         cookbook: name.to_owned(),
                         description: None,
                         dependencies: None,

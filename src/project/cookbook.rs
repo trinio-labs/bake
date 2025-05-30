@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     project::Recipe,
@@ -33,6 +36,7 @@ impl Cookbook {
     ///
     pub fn from(
         path: &PathBuf,
+        project_root: &Path,
         project_environment: &[String],
         project_variables: &IndexMap<String, String>,
         project_constants: &IndexMap<String, String>,
@@ -42,7 +46,7 @@ impl Cookbook {
 
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(_) => bail!("Could not read config file: {}", path.display()),
+            Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
         };
 
         match serde_yaml::from_str::<Self>(&config_str) {
@@ -78,6 +82,7 @@ impl Cookbook {
                     recipe.name = name.clone();
                     recipe.cookbook = parsed.name.clone();
                     recipe.config_path = path.to_path_buf();
+                    recipe.project_root = project_root.to_path_buf();
 
                     // Inherit environment and variables from cookbook
                     let mut recipe_environment = parsed.environment.clone();
@@ -94,7 +99,7 @@ impl Cookbook {
                     ) {
                         recipe.variables = variables;
                     } else {
-                        bail!("Could not parse recipe variables: {}", recipe.name)
+                        bail!("Cookbook '{}': Failed to parse variables for recipe '{}'. Check syntax and variable definitions.", parsed.name, recipe.name)
                     }
 
                     recipe.run = parse_template(
@@ -119,7 +124,7 @@ impl Cookbook {
                 })?;
                 config = parsed;
             }
-            Err(err) => bail!("Could not parse cookbook file: {}", err),
+            Err(err) => bail!("Cookbook: Failed to parse cookbook configuration file at '{}': {}. Check YAML syntax.", path.display(), err),
         }
 
         Ok(config)
@@ -150,6 +155,7 @@ impl Cookbook {
                     if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
                         match Self::from(
                             &file.into_path(),
+                            path,
                             project_environment,
                             project_variables,
                             project_constants,
@@ -189,12 +195,13 @@ mod test {
         assert_eq!(actual.unwrap().len(), 2)
     }
 
-    #[test_case(config_path("/valid/foo/cookbook.yml") => using validate_cookbook_foo; "Valid cookbook file")]
-    #[test_case(config_path("/invalid/config/cookbook.yml") => matches Err(_); "Invalid cookbook file")]
-    #[test_case(config_path("/invalid/config") => matches Err(_); "Cant read directory")]
-    fn read_cookbook(path_str: String) -> anyhow::Result<super::Cookbook> {
+    #[test_case(config_path("/valid/"), config_path("/valid/foo/cookbook.yml") => using validate_cookbook_foo; "Valid cookbook file")]
+    #[test_case(config_path("/valid/"),config_path("/invalid/config/cookbook.yml") => matches Err(_); "Invalid cookbook file")]
+    #[test_case(config_path("/valid/"), config_path("/invalid/config") => matches Err(_); "Cant read directory")]
+    fn read_cookbook(project_root: String, path_str: String) -> anyhow::Result<super::Cookbook> {
         super::Cookbook::from(
             &PathBuf::from(path_str),
+            &PathBuf::from(project_root),
             &[],
             &IndexMap::new(),
             &IndexMap::new(),
