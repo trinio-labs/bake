@@ -192,7 +192,7 @@ mod tests {
             variables: IndexMap::new(),
             run: String::from("test"),
             cache: Some(RecipeCacheConfig {
-                inputs: vec![String::from("build.sh")],
+                inputs: vec![String::from("build.sh"), String::from("../*.txt")],
                 ..Default::default()
             }),
             run_status: RunStatus::default(),
@@ -204,14 +204,17 @@ mod tests {
         let hash2 = recipe.get_self_hash().unwrap();
         assert_ne!(hash1, hash2);
 
-        recipe.cache.as_mut().unwrap().inputs = vec![];
+        recipe.cache.as_mut().unwrap().inputs.pop();
         let hash3 = recipe.get_self_hash().unwrap();
 
-        recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);
+        recipe.cache.as_mut().unwrap().inputs.pop();
         let hash4 = recipe.get_self_hash().unwrap();
 
-        std::env::set_var("FOO", "not_bar");
+        recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);
         let hash5 = recipe.get_self_hash().unwrap();
+
+        std::env::set_var("FOO", "not_bar");
+        let hash6 = recipe.get_self_hash().unwrap();
 
         // All hashes should be unique
         let mut set = HashSet::new();
@@ -220,5 +223,6 @@ mod tests {
         assert!(set.insert(hash3));
         assert!(set.insert(hash4));
         assert!(set.insert(hash5));
+        assert!(set.insert(hash6));
     }
 }
