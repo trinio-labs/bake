@@ -5,6 +5,7 @@ use globset::{GlobBuilder, GlobSetBuilder};
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use log::{debug, warn};
+use pathdiff::diff_paths;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
@@ -79,63 +80,94 @@ impl Recipe {
     /// Gets the hash of the recipe's intrinsic properties (command, vars, env, inputs).
     pub fn get_self_hash(&self) -> anyhow::Result<String> {
         debug!("Getting hash for recipe: {}", self.name);
-        let mut walk_builder = WalkBuilder::new(self.config_path.clone().parent().unwrap());
-        let mut globset_builder = GlobSetBuilder::new();
+        let cookbook_dir = self.config_path.parent().unwrap();
         let mut file_hashes = BTreeMap::<PathBuf, String>::new();
 
         if let Some(cache) = &self.cache {
-            for input in &cache.inputs {
-                debug!("Adding input: {input}");
-                match GlobBuilder::new(input).literal_separator(true).build() {
-                    Ok(glob) => globset_builder.add(glob),
+            if !cache.inputs.is_empty() {
+                // Build globset from all input patterns
+                let mut globset_builder = GlobSetBuilder::new();
+                for input in &cache.inputs {
+                    debug!("Adding input pattern: {input}");
+                    match GlobBuilder::new(input).literal_separator(true).build() {
+                        Ok(glob) => globset_builder.add(glob),
+                        Err(err) => {
+                            bail!(
+                                "Recipe Hash ('{}'): Failed to build glob for input pattern '{}': {:?}",
+                                self.full_name(),
+                                input,
+                                err
+                            );
+                        }
+                    };
+                }
+
+                let globset = match globset_builder.build() {
+                    Ok(globset) => globset,
                     Err(err) => {
                         bail!(
-                            "Recipe Hash ('{}'): Failed to build glob for input pattern '{}': {:?}",
+                            "Recipe Hash ('{}'): Failed to build glob set from input patterns: {:?}",
                             self.full_name(),
-                            input,
                             err
                         );
                     }
                 };
-            }
 
-            let globset = match globset_builder.build() {
-                Ok(globset) => globset,
-                Err(err) => {
-                    bail!(
-                        "Recipe Hash ('{}'): Failed to build glob set from input patterns: {:?}",
-                        self.full_name(),
-                        err
-                    );
-                }
-            };
+                // Find the root directory to walk from by looking at all patterns
+                let walk_root = self.find_walk_root(&cache.inputs, cookbook_dir)?;
 
-            // Hash all input files
-            let walker = walk_builder.hidden(false).build();
-            for result in walker {
-                match result {
-                    Ok(entry) => {
-                        let path = entry.path();
-                        let relative_path = path
-                            .strip_prefix(self.config_path.clone().parent().unwrap())
-                            .unwrap()
-                            .to_path_buf();
-                        if entry.file_type().unwrap().is_file() && globset.is_match(&relative_path)
-                        {
-                            debug!("Hashing file: {:?}", entry.path());
-                            let mut hasher = blake3::Hasher::new();
-                            let mut file = std::fs::File::open(path).unwrap();
-                            let mut buf = Vec::new();
-                            if let Err(err) = file.read_to_end(&mut buf) {
-                                warn!("Error reading file: {err:?}");
+                // Walk files from the root directory
+                let mut walk_builder = WalkBuilder::new(&walk_root);
+                let walker = walk_builder.hidden(false).build();
+
+                for result in walker {
+                    match result {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            if !entry.file_type().unwrap().is_file() {
+                                continue;
                             }
-                            hasher.update(buf.as_slice());
-                            let hash = hasher.finalize();
-                            file_hashes.insert(relative_path, hash.to_string());
+
+                            // Calculate the relative path from cookbook directory for glob matching
+                            let relative_from_cookbook =
+                                if let Some(rel) = diff_paths(path, cookbook_dir) {
+                                    rel
+                                } else {
+                                    // If we can't get a relative path, try stripping the cookbook prefix
+                                    match path.strip_prefix(cookbook_dir) {
+                                        Ok(rel) => rel.to_path_buf(),
+                                        Err(_) => {
+                                            // For files outside cookbook dir, use the full path for matching
+                                            path.to_path_buf()
+                                        }
+                                    }
+                                };
+
+                            if globset.is_match(&relative_from_cookbook) {
+                                debug!(
+                                    "Hashing file: {path:?} (matched as {relative_from_cookbook:?})"
+                                );
+                                let mut hasher = blake3::Hasher::new();
+                                let mut file = match std::fs::File::open(path) {
+                                    Ok(file) => file,
+                                    Err(err) => {
+                                        warn!("Error opening file {path:?}: {err}");
+                                        continue;
+                                    }
+                                };
+                                let mut buf = Vec::new();
+                                if let Err(err) = file.read_to_end(&mut buf) {
+                                    warn!("Error reading file {path:?}: {err}");
+                                    continue;
+                                }
+                                hasher.update(buf.as_slice());
+                                let hash = hasher.finalize();
+                                file_hashes.insert(relative_from_cookbook, hash.to_string());
+                            }
                         }
-                    }
-                    Err(err) => {
-                        warn!("Error reading file: {err:?}");
+                        Err(err) => {
+                            warn!("Error reading file during walk: {err:?}");
+                        }
                     }
                 }
             }
@@ -165,6 +197,69 @@ impl Recipe {
         hasher.update(serde_json::to_string(&hash_data).unwrap().as_bytes());
         let hash = hasher.finalize();
         Ok(hash.to_string())
+    }
+
+    /// Finds the optimal root directory to walk from based on input patterns.
+    /// This ensures we walk the minimum necessary directory tree.
+    fn find_walk_root(
+        &self,
+        inputs: &[String],
+        cookbook_dir: &std::path::Path,
+    ) -> anyhow::Result<PathBuf> {
+        let mut root_candidates = Vec::new();
+
+        for input in inputs {
+            let pattern_path = PathBuf::from(input);
+            let base_dir = if pattern_path.is_absolute() {
+                pattern_path.parent().unwrap_or(&pattern_path).to_path_buf()
+            } else {
+                // For relative patterns, resolve from cookbook directory
+                let resolved = cookbook_dir.join(&pattern_path);
+                resolved.parent().unwrap_or(&resolved).to_path_buf()
+            };
+
+            // Canonicalize to handle .. properly
+            if let Ok(canonical) = base_dir.canonicalize() {
+                root_candidates.push(canonical);
+            }
+        }
+
+        // If no valid directories found, default to cookbook directory
+        if root_candidates.is_empty() {
+            return Ok(cookbook_dir.to_path_buf());
+        }
+
+        // Find the common ancestor of all directories
+        let mut common_root = root_candidates[0].clone();
+        for candidate in &root_candidates[1..] {
+            common_root = find_common_ancestor(&common_root, candidate);
+        }
+
+        Ok(common_root)
+    }
+}
+
+/// Finds the common ancestor directory of two paths.
+fn find_common_ancestor(path1: &std::path::Path, path2: &std::path::Path) -> PathBuf {
+    let components1: Vec<_> = path1.components().collect();
+    let components2: Vec<_> = path2.components().collect();
+
+    let mut common_path = PathBuf::new();
+    let min_len = components1.len().min(components2.len());
+
+    for i in 0..min_len {
+        if components1[i] == components2[i] {
+            common_path.push(components1[i]);
+        } else {
+            break;
+        }
+    }
+
+    // If no common path found, return root
+    if common_path.as_os_str().is_empty() {
+        PathBuf::from("/")
+    } else {
+        common_path
     }
 }
 

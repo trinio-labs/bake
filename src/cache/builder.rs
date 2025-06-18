@@ -20,7 +20,6 @@ pub struct CacheBuilder {
     filter: Option<String>,
 
     strategies: HashMap<String, StrategyConstructor>,
-    // hashes: HashMap<String, String>, // Removed: Combined hashes are now calculated by BakeProject
 }
 
 impl CacheBuilder {
@@ -29,7 +28,6 @@ impl CacheBuilder {
             project,
             filter: None,
             strategies: HashMap::new(),
-            // hashes: HashMap::new(), // Removed
         }
     }
 
