@@ -20,11 +20,12 @@ path = "src/main.rs"
 anyhow = "1.0.98"
 async-trait = "0.1.88"
 aws-config = "1.8.0"
-aws-sdk-s3 = "1.92.0"
+aws-sdk-s3 = "1.94.0"
 blake3 = "1.8.2"
 bytes = "1.10.1"
 clap = { version = "4.5.40", features = ["derive"] }
 console = "0.15.11"
+dirs = "6.0.0"
 env_logger = "0.11.8"
 futures-core = "0.3.31"
 futures-util = "0.3.31"
@@ -39,10 +40,15 @@ pathdiff = "0.2.3"
 petgraph = "0.8.2"
 rand = "0.9.1"
 regex = "1.11.1"
+self_update = { version = "0.42.0", features = [
+    "archive-tar",
+    "compression-flate2",
+] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 serde_yaml = "0.9.34"
 tar = "0.4.44"
+tempfile = "3.20.0"
 tokio = { version = "1.45.1", features = ["full"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.15"
@@ -59,30 +65,3 @@ tokio-test = "0.4.4"
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-# Config for 'cargo dist'
-[workspace.metadata.dist]
-# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.22.1"
-# CI backends to support
-ci = "github"
-# The installers to generate for each app
-installers = ["shell", "homebrew"]
-# Customize the Homebrew formula name
-formula = "bake"
-# A GitHub repo to push Homebrew formulas to
-tap = "trinio-labs/tap"
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = [
-  "aarch64-apple-darwin",
-  "x86_64-apple-darwin",
-  "x86_64-unknown-linux-gnu",
-]
-# Publish jobs to run in CI
-publish-jobs = ["homebrew"]
-# Which actions to run on pull requests
-pr-run-mode = "plan"
-# Path that installers should place binaries in
-install-path = "CARGO_HOME"
-# Whether to install an updater program
-install-updater = false

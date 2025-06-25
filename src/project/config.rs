@@ -61,6 +61,32 @@ impl Default for CacheConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateConfig {
+    #[serde(default = "bool_true_default")]
+    pub enabled: bool,
+
+    #[serde(default = "update_check_interval_default")]
+    pub check_interval_days: u64,
+
+    #[serde(default)]
+    pub auto_update: bool,
+
+    #[serde(default)]
+    pub prerelease: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_interval_days: update_check_interval_default(),
+            auto_update: false,
+            prerelease: false,
+        }
+    }
+}
+
 fn validate_order(value: &[String]) -> Result<(), ValidationError> {
     let valid = value
         .iter()
@@ -91,6 +117,9 @@ pub struct ToolConfig {
 
     #[serde(default)]
     pub clean_environment: bool,
+
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 impl Default for ToolConfig {
@@ -101,6 +130,7 @@ impl Default for ToolConfig {
             verbose: false,
             cache: CacheConfig::default(),
             clean_environment: false,
+            update: UpdateConfig::default(),
         }
     }
 }
@@ -111,4 +141,8 @@ fn bool_true_default() -> bool {
 
 fn max_parallel_default() -> usize {
     std::thread::available_parallelism().unwrap().get() - 1
+}
+
+fn update_check_interval_default() -> u64 {
+    7 // Default value, you might want to implement a more robust default logic
 }

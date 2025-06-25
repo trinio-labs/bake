@@ -240,24 +240,6 @@ impl BakeProject {
         Ok(project)
     }
 
-    /// Retrieves the combined hash for a specified recipe.
-    ///
-    /// This hash is calculated based on the recipe's own content and the hashes
-    /// of its dependencies. It is used to determine if a recipe or its inputs
-    /// have changed, potentially requiring a rebuild.
-    ///
-    /// # Arguments
-    ///
-    /// * `recipe_fqn` - The fully qualified name of the recipe.
-    ///
-    /// # Returns
-    ///
-    /// A `Result<String, anyhow::Error>` containing the combined hash string if successful,
-    /// or an error if the hash calculation fails (e.g., recipe not found).
-    pub fn get_combined_hash_for_recipe(&self, recipe_fqn: &str) -> anyhow::Result<String> {
-        hashing::calculate_combined_hash_for_recipe(recipe_fqn, self)
-    }
-
     /// Creates the necessary `.bake` and `.bake/logs` directories within the project root.
     ///
     /// These directories are used by Bake to store metadata, cache, and log files.

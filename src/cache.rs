@@ -356,13 +356,22 @@ mod test {
         }
     }
 
-    async fn build_cache(project: Arc<BakeProject>, filter: &str) -> Cache {
+    async fn build_cache(project: Arc<BakeProject>) -> Cache {
+        let all_recipes: Vec<String> = project
+            .cookbooks
+            .values()
+            .flat_map(|cb| {
+                cb.recipes
+                    .keys()
+                    .map(|r_name| format!("{}:{}", cb.name, r_name))
+            })
+            .collect();
+
         CacheBuilder::new(project)
-            .filter(filter)
             .add_strategy("local", TestCacheStrategy::from_config)
             .add_strategy("s3", TestCacheStrategy::from_config)
             .add_strategy("gcs", TestCacheStrategy::from_config)
-            .build()
+            .build_for_recipes(&all_recipes)
             .await
             .unwrap()
     }
@@ -379,7 +388,7 @@ mod test {
     #[tokio::test]
     async fn get() {
         let project_arc = Arc::new(create_test_project());
-        let mut cache = build_cache(project_arc.clone(), "foo:build").await;
+        let mut cache = build_cache(project_arc.clone()).await;
 
         // Test hit
         let recipe_hash_hit = cache.hashes.get("foo:build").unwrap().clone();
@@ -419,7 +428,7 @@ mod test {
             .unwrap()
             .run = "different command".to_owned();
         // Hashes are calculated in build_cache, so this new project will have a different hash for foo:build
-        let cache_cmd_change = build_cache(Arc::new(project_cmd_change), "foo:build").await;
+        let cache_cmd_change = build_cache(Arc::new(project_cmd_change)).await;
         let result_cmd_miss = cache_cmd_change.get("foo:build", "foo:build").await; // Added fqn_for_logging
         assert!(
             matches!(result_cmd_miss, CacheResult::Miss),
@@ -436,7 +445,7 @@ mod test {
             .get_mut("build-dep") // Change a dependency's command
             .unwrap()
             .run = "different dependency command".to_owned();
-        let cache_dep_change = build_cache(Arc::new(project_dep_change), "foo:build").await;
+        let cache_dep_change = build_cache(Arc::new(project_dep_change)).await;
         let result_dep_miss = cache_dep_change.get("foo:build", "foo:build").await; // Added fqn_for_logging
         assert!(
             matches!(result_dep_miss, CacheResult::Miss),
@@ -447,7 +456,7 @@ mod test {
     #[tokio::test]
     async fn get_hit_in_second_strategy() {
         let project_arc = Arc::new(create_test_project());
-        let mut cache = build_cache(project_arc.clone(), "foo:build").await;
+        let mut cache = build_cache(project_arc.clone()).await;
 
         let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
 
@@ -483,7 +492,7 @@ mod test {
     #[tokio::test]
     async fn get_corrupted_archive_returns_miss() {
         let project_arc = Arc::new(create_test_project());
-        let mut cache = build_cache(project_arc.clone(), "foo:build").await;
+        let mut cache = build_cache(project_arc.clone()).await;
         let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
 
         // Prepare a strategy that will hit, but the archive will be corrupted
@@ -534,7 +543,7 @@ mod test {
         std::fs::create_dir_all(output_file_abs_path.parent().unwrap()).unwrap();
         std::fs::write(&output_file_abs_path, b"test output").unwrap();
 
-        let cache = build_cache(project_arc.clone(), "foo:build").await;
+        let cache = build_cache(project_arc.clone()).await;
         let result = cache.put("foo:build").await;
         assert!(
             result.is_err(),
@@ -559,7 +568,7 @@ mod test {
         // Use helper to ensure all required files exist
         ensure_files_for_put(&project_arc, "foo:build").unwrap();
 
-        let cache = build_cache(project_arc.clone(), "foo:build").await;
+        let cache = build_cache(project_arc.clone()).await;
         let result = cache.put("foo:build").await;
         if let Err(err) = &result {
             let e = format!("Cache put failed with error: {err:?}");
@@ -590,7 +599,7 @@ mod test {
         // Use helper to ensure all required files exist
         ensure_files_for_put(&project_arc, "foo:build").unwrap();
 
-        let cache = build_cache(project_arc.clone(), "foo:build").await;
+        let cache = build_cache(project_arc.clone()).await;
         let result = cache.put("foo:build").await;
         assert!(
             result.is_ok(),
@@ -606,7 +615,7 @@ mod test {
         // Use helper to ensure all required files exist before concurrent operations
         ensure_files_for_put(&project_arc, "foo:build").unwrap();
 
-        let cache = Arc::new(build_cache(project_arc.clone(), "foo:build").await);
+        let cache = Arc::new(build_cache(project_arc.clone()).await);
         let mut handles = vec![];
         for _ in 0..5 {
             let cache_clone = cache.clone();
@@ -657,7 +666,7 @@ mod test {
             create_dummy_archive_on_get: false,
         };
 
-        let mut cache = build_cache(project_arc.clone(), "foo:build").await;
+        let mut cache = build_cache(project_arc.clone()).await;
         // Use only our inspectable strategy for this test
         cache.strategies = vec![Arc::new(Box::new(inspectable_strategy))];
 

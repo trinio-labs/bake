@@ -20,6 +20,25 @@ brew install trinio-labs/tap/bake
 cargo install bake-cli
 ```
 
+## Auto-Updates
+
+Bake includes an auto-update feature that keeps your installation up to date automatically. The tool checks for updates periodically based on your configuration and stores the last check time to avoid excessive API calls.
+
+You can configure update behavior in your `bake.yml` file or use CLI commands:
+
+```bash
+# Check for updates (bypasses interval)
+bake --check-updates
+
+# Perform self-update
+bake --self-update
+
+# Update to latest version (including prereleases)
+bake --self-update --prerelease
+```
+
+For detailed configuration options, see [Auto-Update Documentation](./docs/auto-update.md).
+
 ## A bake project
 
 A bake project consists of a root `bake.yml` configuration file, [Cookbooks](#cookbooks) and [Recipes](#recipes).

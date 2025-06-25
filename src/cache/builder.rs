@@ -16,9 +16,6 @@ type StrategyConstructor = Box<
 /// CacheBuilder is a builder for a Cache
 pub struct CacheBuilder {
     project: Arc<BakeProject>,
-
-    filter: Option<String>,
-
     strategies: HashMap<String, StrategyConstructor>,
 }
 
@@ -26,7 +23,6 @@ impl CacheBuilder {
     pub fn new(project: Arc<BakeProject>) -> Self {
         Self {
             project,
-            filter: None,
             strategies: HashMap::new(),
         }
     }
@@ -51,40 +47,21 @@ impl CacheBuilder {
         self
     }
 
-    pub fn filter(&mut self, filter: &str) -> &mut Self {
-        self.filter = Some(filter.to_owned());
-        self
-    }
+    fn calculate_hashes_for_recipes(
+        &self,
+        recipe_fqns: &[String],
+    ) -> anyhow::Result<HashMap<String, String>> {
+        use crate::project::hashing::RecipeHasher;
+        let mut hasher = RecipeHasher::new(&self.project);
 
-    fn calculate_all_hashes(&self) -> anyhow::Result<HashMap<String, String>> {
-        let mut calculated_hashes = HashMap::new();
-        let project_recipes_fqns: Vec<String> = self
-            .project
-            .cookbooks
-            .values()
-            .flat_map(|cb| {
-                cb.recipes
-                    .keys()
-                    .map(|r_name| format!("{}:{}", cb.name, r_name))
-            })
-            .collect();
-
-        for recipe_fqn in project_recipes_fqns {
-            // Apply filter if present
-            if let Some(filter_str) = &self.filter {
-                if !recipe_fqn.contains(filter_str) {
-                    continue; // Skip recipes not matching the filter
-                }
-            }
+        for recipe_fqn in recipe_fqns {
             debug!("Calculating combined hash for cache: {recipe_fqn}");
-            // Use the new method from BakeProject
-            let combined_hash = self.project.get_combined_hash_for_recipe(&recipe_fqn)?;
-            calculated_hashes.insert(recipe_fqn, combined_hash);
+            let _ = hasher.hash_for(recipe_fqn)?;
         }
-        Ok(calculated_hashes)
+        Ok(hasher.into_memoized_hashes().into_iter().collect())
     }
 
-    pub async fn build(&mut self) -> anyhow::Result<Cache> {
+    pub async fn build_for_recipes(&mut self, recipe_fqns: &[String]) -> anyhow::Result<Cache> {
         let mut strategies: Vec<Arc<Box<dyn CacheStrategy>>> = Vec::new();
 
         let mut order = self.project.config.cache.order.clone();
@@ -115,7 +92,7 @@ impl CacheBuilder {
         Ok(Cache {
             project: self.project.clone(),
             strategies,
-            hashes: self.calculate_all_hashes()?,
+            hashes: self.calculate_hashes_for_recipes(recipe_fqns)?,
         })
     }
 }
@@ -175,11 +152,12 @@ mod tests {
         );
         let mut builder = CacheBuilder::new(project);
 
+        let all_recipes = vec!["foo:build".to_string()];
         let cache = builder
             .add_strategy("local", TestCacheStrategy::from_config)
             .add_strategy("s3", TestCacheStrategy::from_config)
             .add_strategy("gcs", TestCacheStrategy::from_config)
-            .build()
+            .build_for_recipes(&all_recipes)
             .await
             .unwrap();
         assert!(cache.hashes.contains_key("foo:build"));
@@ -189,7 +167,6 @@ mod tests {
     async fn test_new_cache_builder() {
         let project = Arc::new(TestProjectBuilder::new().build());
         let builder = CacheBuilder::new(project);
-        assert!(builder.filter.is_none());
         assert!(builder.strategies.is_empty());
     }
 
@@ -210,54 +187,6 @@ mod tests {
         builder.add_strategy("custom_strategy", TestCacheStrategy::from_config);
         assert!(builder.strategies.contains_key("custom_strategy"));
         assert_eq!(builder.strategies.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_filter_applied_to_hashes() {
-        let project_arc = Arc::new(
-            TestProjectBuilder::new()
-                .with_cookbook("foo", &["build", "test"])
-                .with_cookbook("bar", &["build"])
-                .build(),
-        );
-
-        // Filter for "foo:"
-        let mut builder_foo = CacheBuilder::new(project_arc.clone());
-        builder_foo.default_strategies();
-
-        let cache_foo = builder_foo.filter("foo:").build().await.unwrap();
-        assert_eq!(cache_foo.hashes.len(), 2);
-        assert!(cache_foo.hashes.contains_key("foo:build"));
-        assert!(cache_foo.hashes.contains_key("foo:test"));
-        assert!(!cache_foo.hashes.contains_key("bar:build"));
-
-        // Filter for "bar:"
-        let mut builder_bar = CacheBuilder::new(project_arc.clone());
-        builder_bar.default_strategies();
-
-        let cache_bar = builder_bar.filter("bar:").build().await.unwrap();
-        assert_eq!(cache_bar.hashes.len(), 1);
-        assert!(cache_bar.hashes.contains_key("bar:build"));
-        assert!(!cache_bar.hashes.contains_key("foo:build"));
-
-        // No filter
-        let mut builder_all = CacheBuilder::new(project_arc.clone());
-        builder_all.default_strategies();
-
-        let cache_all = builder_all.build().await.unwrap();
-        assert_eq!(cache_all.hashes.len(), 3);
-        assert!(cache_all.hashes.contains_key("foo:build"));
-        assert!(cache_all.hashes.contains_key("foo:test"));
-        assert!(cache_all.hashes.contains_key("bar:build"));
-
-        // Filter for specific recipe "foo:build"
-        let mut builder_specific = CacheBuilder::new(project_arc.clone());
-        builder_specific.default_strategies();
-
-        let cache_specific = builder_specific.filter("foo:build").build().await.unwrap();
-        assert_eq!(cache_specific.hashes.len(), 1);
-        assert!(cache_specific.hashes.contains_key("foo:build"));
-        assert!(!cache_specific.hashes.contains_key("foo:test"));
     }
 
     #[tokio::test]
@@ -282,11 +211,12 @@ mod tests {
         let project_arc = Arc::new(project);
 
         let mut builder = CacheBuilder::new(project_arc.clone());
+        let all_recipes = vec!["foo:build".to_string()];
         let cache = builder
             .add_strategy("local", TestCacheStrategy::from_config)
             .add_strategy("s3", TestCacheStrategy::from_config)
             .add_strategy("gcs", TestCacheStrategy::from_config) // gcs is registered but not in order
-            .build()
+            .build_for_recipes(&all_recipes)
             .await
             .unwrap();
 
@@ -316,11 +246,12 @@ mod tests {
         let project_arc = Arc::new(project);
 
         let mut builder = CacheBuilder::new(project_arc.clone());
+        let all_recipes = vec!["foo:build".to_string()];
         let cache = builder
             .add_strategy("local", TestCacheStrategy::from_config)
             .add_strategy("s3", TestCacheStrategy::from_config) // s3 is registered
             .add_strategy("gcs", TestCacheStrategy::from_config) // gcs is registered
-            .build()
+            .build_for_recipes(&all_recipes)
             .await
             .unwrap();
 
@@ -350,11 +281,12 @@ mod tests {
         let project_arc = Arc::new(project);
 
         let mut builder = CacheBuilder::new(project_arc.clone());
+        let all_recipes = vec!["foo:build".to_string()];
         let cache = builder
             .add_strategy("local", TestCacheStrategy::from_config) // local is registered but disabled
             .add_strategy("s3", TestCacheStrategy::from_config)
             .add_strategy("gcs", TestCacheStrategy::from_config)
-            .build()
+            .build_for_recipes(&all_recipes)
             .await
             .unwrap();
 
@@ -364,6 +296,71 @@ mod tests {
             "Cache should contain s3 and gcs strategies based on default order when enabled"
         );
         // TODO: Add a way to identify the strategies to assert their exact order (e.g., s3 then gcs).
+    }
+
+    #[tokio::test]
+    async fn test_build_for_recipes_with_subset() {
+        let project_arc = Arc::new(
+            TestProjectBuilder::new()
+                .with_cookbook("foo", &["build", "test", "deploy"])
+                .with_cookbook("bar", &["build", "test"])
+                .build(),
+        );
+
+        let mut builder = CacheBuilder::new(project_arc.clone());
+        builder.default_strategies();
+
+        // Only build cache for subset of recipes
+        let subset_recipes = vec!["foo:build".to_string(), "bar:test".to_string()];
+        let cache = builder.build_for_recipes(&subset_recipes).await.unwrap();
+
+        // Should only contain hashes for the specified recipes
+        assert_eq!(cache.hashes.len(), 2);
+        assert!(cache.hashes.contains_key("foo:build"));
+        assert!(cache.hashes.contains_key("bar:test"));
+        assert!(!cache.hashes.contains_key("foo:test"));
+        assert!(!cache.hashes.contains_key("foo:deploy"));
+        assert!(!cache.hashes.contains_key("bar:build"));
+    }
+
+    #[tokio::test]
+    async fn test_build_for_recipes_empty_list() {
+        let project_arc = Arc::new(
+            TestProjectBuilder::new()
+                .with_cookbook("foo", &["build"])
+                .build(),
+        );
+
+        let mut builder = CacheBuilder::new(project_arc.clone());
+        builder.default_strategies();
+
+        // Build cache with empty recipe list
+        let empty_recipes: Vec<String> = vec![];
+        let cache = builder.build_for_recipes(&empty_recipes).await.unwrap();
+
+        // Should contain no hashes
+        assert_eq!(cache.hashes.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_hashes_for_recipes_direct() {
+        let project_arc = Arc::new(
+            TestProjectBuilder::new()
+                .with_cookbook("foo", &["build", "test"])
+                .build(),
+        );
+
+        let builder = CacheBuilder::new(project_arc.clone());
+
+        // Test the calculate_hashes_for_recipes method directly
+        let specific_recipes = vec!["foo:build".to_string()];
+        let hashes = builder
+            .calculate_hashes_for_recipes(&specific_recipes)
+            .unwrap();
+
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains_key("foo:build"));
+        assert!(!hashes.contains_key("foo:test"));
     }
 
     #[tokio::test]
@@ -378,10 +375,11 @@ mod tests {
         let project_arc = Arc::new(project);
 
         let mut builder = CacheBuilder::new(project_arc.clone());
+        let all_recipes = vec!["foo:build".to_string()];
         let result = builder
             .add_strategy("local", TestCacheStrategy::from_config) // Only register "local"
             // "custom_strategy" is in the order but not registered
-            .build()
+            .build_for_recipes(&all_recipes)
             .await;
 
         assert!(

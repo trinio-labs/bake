@@ -28,27 +28,18 @@ use crate::{
 /// # Arguments
 /// * `project` - An `Arc` wrapped `BakeProject` instance containing project configuration and recipes.
 /// * `cache` - A `Cache` instance for recipe execution caching.
-/// * `filter` - An optional string slice (`&str`). If provided, only recipes whose
-///   fully qualified names start with this filter will be executed.
+/// * `execution_plan` - A pre-computed execution plan containing the recipes to execute in dependency order.
 ///
 pub async fn bake(
     project: Arc<BakeProject>,
     cache: Cache,
-    filter: Option<&str>,
+    execution_plan: Vec<Vec<Recipe>>,
 ) -> anyhow::Result<()> {
     // Create .bake directories
     project.create_project_bake_dirs()?;
 
-    let execution_plan = project.get_recipes_for_execution(filter)?;
     if execution_plan.is_empty() {
-        if filter.is_some() {
-            println!(
-                "No recipes found matching the filter: '{}'",
-                filter.unwrap()
-            );
-        } else {
-            println!("No recipes to bake in the project.");
-        }
+        println!("No recipes to bake in the project.");
         return Ok(());
     }
 
@@ -602,11 +593,21 @@ mod tests {
     }
 
     async fn build_cache(project: Arc<BakeProject>) -> Cache {
+        let all_recipes: Vec<String> = project
+            .cookbooks
+            .values()
+            .flat_map(|cb| {
+                cb.recipes
+                    .keys()
+                    .map(|r_name| format!("{}:{}", cb.name, r_name))
+            })
+            .collect();
+        
         CacheBuilder::new(project)
             .add_strategy("local", TestCacheStrategy::from_config)
             .add_strategy("s3", TestCacheStrategy::from_config)
             .add_strategy("gcs", TestCacheStrategy::from_config)
-            .build()
+            .build_for_recipes(&all_recipes)
             .await
             .unwrap()
     }
@@ -656,7 +657,8 @@ mod tests {
     async fn run_all_recipes() {
         let project = Arc::new(create_test_project());
         let cache = build_cache(project.clone()).await;
-        let res = super::bake(project.clone(), cache, None).await;
+        let execution_plan = project.get_recipes_for_execution(None).unwrap();
+        let res = super::bake(project.clone(), cache, execution_plan).await;
         assert!(res.is_ok());
     }
 
@@ -666,7 +668,8 @@ mod tests {
         project.config.verbose = true;
         let project = Arc::new(project);
         let cache = build_cache(project.clone()).await;
-        let res = super::bake(project.clone(), cache, Some("bar:")).await;
+        let execution_plan = project.get_recipes_for_execution(Some("bar:")).unwrap();
+        let res = super::bake(project.clone(), cache, execution_plan).await;
         assert!(res.is_ok());
     }
 
@@ -702,7 +705,8 @@ mod tests {
 
         let project_arc = Arc::new(project);
         let cache = build_cache(project_arc.clone()).await;
-        let res = super::bake(project_arc.clone(), cache, Some("bar:")).await;
+        let execution_plan = project_arc.get_recipes_for_execution(Some("bar:")).unwrap();
+        let res = super::bake(project_arc.clone(), cache, execution_plan).await;
 
         // Assert that the bake operation failed as expected.
         assert!(res.is_err(), "Bake should fail when a recipe errors.");
