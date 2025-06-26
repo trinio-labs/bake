@@ -5,6 +5,40 @@
 * Templated config files
 * Docker executors
 
+## v0.5.0
+
+This release adds self-update functionality to bake, allowing users to automatically check for and install updates.
+
+### Added
+
+* Self-update functionality with automatic update checks
+* `bake self-update` command to manually update to the latest version
+* Configurable update settings (enabled/disabled, check interval, auto-update, prerelease support)
+* Update notifications when new versions are available
+* Support for Homebrew installation via `cargo-dist`
+
+### Changed
+
+* Updated to use `cargo-dist` for release management and distribution
+* Improved error handling and user feedback for update operations
+* Enhanced CI/CD pipeline with automated releases and Homebrew formula updates
+
+### Technical
+
+* Added `self_update` dependency for handling binary updates
+* Implemented update checking with configurable intervals
+* Added cache-based update check throttling to avoid excessive API calls
+* Skip update checks in CI environments and development builds
+
+### Fixes
+* Fixed bug where a cache input dependency couldn't be in parent folders or using relative paths
+
+
+## v0.4.9
+
+Minor bug corrections
+
+
 ## v0.4.8
 
 This release changes the behavior of recipe execution. Recipe commands are now
