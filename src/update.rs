@@ -129,11 +129,11 @@ pub async fn check_for_updates(config: &UpdateConfig) -> Result<Option<String>> 
                 }
             }
             Err(e) => {
-                log::warn!("Failed to check for updates: {}", e);
+                log::warn!("Failed to check for updates: {e}");
             }
         },
         Err(e) => {
-            log::warn!("Failed to configure updater: {}", e);
+            log::warn!("Failed to configure updater: {e}");
         }
     }
     Ok(None)

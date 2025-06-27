@@ -20,21 +20,6 @@ pub struct VariableContext {
 }
 
 impl VariableContext {
-    /// Creates a new variable context with the given components
-    pub fn new(
-        environment: Vec<String>,
-        variables: IndexMap<String, String>,
-        constants: IndexMap<String, IndexMap<String, String>>,
-        overrides: IndexMap<String, String>,
-    ) -> Self {
-        Self {
-            environment,
-            variables,
-            constants,
-            overrides,
-        }
-    }
-
     /// Creates a new variable context with empty collections
     pub fn empty() -> Self {
         Self {
@@ -163,37 +148,8 @@ impl VariableContextBuilder {
         self
     }
 
-    pub fn constants(mut self, constants: IndexMap<String, IndexMap<String, String>>) -> Self {
-        self.context.constants = constants;
-        self
-    }
-
     pub fn overrides(mut self, overrides: IndexMap<String, String>) -> Self {
         self.context.overrides = overrides;
-        self
-    }
-
-    pub fn add_environment(mut self, env_var: String) -> Self {
-        self.context.environment.push(env_var);
-        self
-    }
-
-    pub fn add_variable(mut self, key: String, value: String) -> Self {
-        self.context.variables.insert(key, value);
-        self
-    }
-
-    pub fn add_constant(mut self, namespace: String, key: String, value: String) -> Self {
-        self.context
-            .constants
-            .entry(namespace)
-            .or_insert_with(IndexMap::new)
-            .insert(key, value);
-        self
-    }
-
-    pub fn add_override(mut self, key: String, value: String) -> Self {
-        self.context.overrides.insert(key, value);
         self
     }
 
@@ -208,77 +164,36 @@ impl Default for VariableContextBuilder {
     }
 }
 
-// Legacy functions for backward compatibility
-pub fn parse_template(
-    template: &str,
-    environment: &[String],
-    variables: &IndexMap<String, String>,
-    constants: &IndexMap<String, IndexMap<String, String>>,
-) -> anyhow::Result<String> {
-    let context = VariableContext::new(
-        environment.to_vec(),
-        variables.clone(),
-        constants.clone(),
-        IndexMap::new(),
-    );
-    context.parse_template(template)
-}
-
-pub fn parse_variable_list(
-    environment: &[String],
-    variables: &IndexMap<String, String>,
-    constants: &IndexMap<String, IndexMap<String, String>>,
-    override_variables: &IndexMap<String, String>,
-) -> anyhow::Result<IndexMap<String, String>> {
-    let context = VariableContext::new(
-        environment.to_vec(),
-        variables.clone(),
-        constants.clone(),
-        override_variables.clone(),
-    );
-    context.process_variables()
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_parse_template() {
         let variables = IndexMap::from([("foo".to_owned(), "bar".to_owned())]);
-        let constants = IndexMap::from([(
-            "project".to_owned(),
-            IndexMap::from([("foo".to_owned(), "bar".to_owned())]),
-        )]);
-
         let environment = vec!["TEST_PARSE_TEMPLATE".to_owned()];
         env::set_var("TEST_PARSE_TEMPLATE", "env_var");
 
-        let result = parse_template(
-            "{{var.foo}}",
-            environment.as_slice(),
-            &variables,
-            &constants,
-        )
-        .unwrap();
+        // Use with_project_constants to inject a constant
+        let mut context = VariableContext::with_project_constants(Path::new("/project/root"));
+        context.environment = environment.clone();
+        context.variables = variables.clone();
+        context
+            .constants
+            .get_mut("project")
+            .unwrap()
+            .insert("foo".to_owned(), "bar".to_owned());
+
+        let result = context.parse_template("{{var.foo}}").unwrap();
         assert_eq!(result, "bar");
 
-        let result = parse_template(
-            "{{project.foo}}",
-            environment.as_slice(),
-            &variables,
-            &constants,
-        )
-        .unwrap();
+        let result = context.parse_template("{{project.foo}}").unwrap();
         assert_eq!(result, "bar");
 
-        let result = parse_template(
-            "{{env.TEST_PARSE_TEMPLATE}}",
-            environment.as_slice(),
-            &variables,
-            &constants,
-        )
-        .unwrap();
+        let result = context
+            .parse_template("{{env.TEST_PARSE_TEMPLATE}}")
+            .unwrap();
         assert_eq!(result, "env_var");
     }
 
@@ -286,11 +201,6 @@ mod test {
     fn test_parse_variable_list() {
         let environment = vec!["TEST_PARSE_VARIABLE_LIST".to_owned()];
         env::set_var("TEST_PARSE_VARIABLE_LIST", "bar");
-
-        let constants = IndexMap::from([(
-            "project".to_owned(),
-            IndexMap::from([("foo".to_owned(), "bar".to_owned())]),
-        )]);
 
         let overrides = IndexMap::from([("bar".to_owned(), "override".to_owned())]);
 
@@ -304,10 +214,19 @@ mod test {
             ("goo".to_owned(), "{{ var.bar }}".to_owned()),
         ]);
 
-        let result =
-            parse_variable_list(environment.as_slice(), &variables, &constants, &overrides)
-                .unwrap();
-        assert_eq!(result.get("foo").unwrap(), "bar");
+        // Use with_project_constants to inject a constant
+        let mut context = VariableContext::with_project_constants(Path::new("/project/root"));
+        context.environment = environment;
+        context.variables = variables;
+        context.overrides = overrides;
+        context
+            .constants
+            .get_mut("project")
+            .unwrap()
+            .insert("foo".to_owned(), "bar".to_owned());
+
+        let result = context.process_variables().unwrap();
+        assert_eq!(result.get("foo"), Some(&"bar".to_owned()));
         assert_eq!(result.get("baz").unwrap(), "bar");
         assert_eq!(result.get("bar").unwrap(), "override");
         assert_eq!(result.get("goo").unwrap(), "override");
@@ -315,12 +234,17 @@ mod test {
 
     #[test]
     fn test_variable_context_builder() {
-        let context = VariableContext::builder()
-            .add_environment("TEST_BUILDER".to_owned())
-            .add_variable("foo".to_owned(), "bar".to_owned())
-            .add_constant("project".to_owned(), "root".to_owned(), "/tmp".to_owned())
-            .add_override("override".to_owned(), "value".to_owned())
-            .build();
+        let mut context = VariableContext::with_project_constants(Path::new("/tmp"));
+        context.environment.push("TEST_BUILDER".to_owned());
+        context.variables.insert("foo".to_owned(), "bar".to_owned());
+        context
+            .constants
+            .get_mut("project")
+            .unwrap()
+            .insert("root".to_owned(), "/tmp".to_owned());
+        context
+            .overrides
+            .insert("override".to_owned(), "value".to_owned());
 
         assert_eq!(context.environment, vec!["TEST_BUILDER"]);
         assert_eq!(context.variables.get("foo"), Some(&"bar".to_owned()));
@@ -333,15 +257,17 @@ mod test {
 
     #[test]
     fn test_variable_context_merge() {
-        let mut context1 = VariableContext::builder()
-            .add_environment("ENV1".to_owned())
-            .add_variable("var1".to_owned(), "value1".to_owned())
-            .build();
+        let mut context1 = VariableContext::builder().build();
+        context1.environment.push("ENV1".to_owned());
+        context1
+            .variables
+            .insert("var1".to_owned(), "value1".to_owned());
 
-        let context2 = VariableContext::builder()
-            .add_environment("ENV2".to_owned())
-            .add_variable("var2".to_owned(), "value2".to_owned())
-            .build();
+        let mut context2 = VariableContext::builder().build();
+        context2.environment.push("ENV2".to_owned());
+        context2
+            .variables
+            .insert("var2".to_owned(), "value2".to_owned());
 
         context1.merge(&context2);
 

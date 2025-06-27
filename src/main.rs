@@ -103,11 +103,11 @@ async fn main() -> anyhow::Result<()> {
     if args.update_info {
         match get_update_info() {
             Ok(info) => {
-                println!("{}", info);
+                println!("{info}");
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("Failed to get update info: {}", e);
+                eprintln!("Failed to get update info: {e}");
                 return Err(e);
             }
         }
@@ -139,13 +139,13 @@ async fn main() -> anyhow::Result<()> {
                         return Ok(());
                     }
                     Err(e) => {
-                        eprintln!("Failed to save configuration: {}", e);
+                        eprintln!("Failed to save configuration: {e}");
                         return Err(e);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Failed to load project: {}", e);
+                eprintln!("Failed to load project: {e}");
                 return Err(e);
             }
         }
@@ -159,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         match result {
             Ok(_) => return Ok(()),
             Err(e) => {
-                eprintln!("Self-update failed: {}", e);
+                eprintln!("Self-update failed: {e}");
                 return Err(e);
             }
         }
@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
 
         match check_for_updates(&update_config).await {
             Ok(Some(version)) => {
-                println!("New version available: {}", version);
+                println!("New version available: {version}");
                 return Ok(());
             }
             Ok(None) => {
@@ -183,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("Failed to check for updates: {}", e);
+                eprintln!("Failed to check for updates: {e}");
                 return Err(e);
             }
         }

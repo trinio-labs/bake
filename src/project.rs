@@ -249,31 +249,27 @@ impl BakeProject {
                         );
                     } else {
                         eprintln!(
-                            "⚠️  Forced override: This project was created with bake v{} but you're running v{}. Proceeding due to --force-version-override flag!",
-                            project_version, current_version
+                            "⚠️  Forced override: This project was created with bake v{project_version} but you're running v{current_version}. Proceeding with force override.",
                         );
                     }
-                } else if project_parts.get(0) != current_parts.get(0) {
+                } else if project_parts.first() != current_parts.first() {
                     // Major version mismatch - this could indicate breaking changes
                     eprintln!(
-                        "⚠️  Warning: This project was created with bake v{} but you're running v{}",
-                        project_version, current_version
+                        "⚠️  Warning: This project was created with bake v{project_version} but you're running v{current_version}",
                     );
                     eprintln!("   This major version difference may cause configuration issues.");
                     eprintln!("   Consider updating your project configuration or using the same bake version.");
                 } else {
                     // Minor/patch version difference - less likely to cause issues
                     eprintln!(
-                        "ℹ️  Info: This project was created with bake v{} (you're running v{})",
-                        project_version, current_version
+                        "ℹ️  Info: This project was created with bake v{project_version} (you're running v{current_version})",
                     );
                 }
             }
         } else {
             // No version specified - this is an older project
             eprintln!(
-                "ℹ️  Info: This project doesn't specify a bake version (created with bake v{})",
-                current_version
+                "ℹ️  Info: This project doesn't specify a bake version (created with bake v{current_version})",
             );
         }
 

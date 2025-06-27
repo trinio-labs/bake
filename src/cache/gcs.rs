@@ -69,9 +69,8 @@ impl GcsClient for Client {
 
         tokio::spawn(async move {
             while let Some(chunk_result) = gcs_stream.next().await {
-                let converted_result = chunk_result
-                    .map(|bytes| bytes)
-                    .map_err(|e| anyhow::anyhow!("GCS stream error: {}", e));
+                let converted_result =
+                    chunk_result.map_err(|e| anyhow::anyhow!("GCS stream error: {}", e));
 
                 if tx.send(converted_result).await.is_err() {
                     break;
