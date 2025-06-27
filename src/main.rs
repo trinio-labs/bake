@@ -71,6 +71,14 @@ struct Args {
     /// Show update information
     #[arg(long)]
     update_info: bool,
+
+    /// Update the bake version in the project configuration to the current version
+    #[arg(long)]
+    update_version: bool,
+
+    /// Force running even if the config version is newer than the current version
+    #[arg(long)]
+    force_version_override: bool,
 }
 
 fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -100,6 +108,44 @@ async fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 eprintln!("Failed to get update info: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    if args.update_version {
+        let bake_path = if args.path.is_none() {
+            std::env::current_dir().unwrap()
+        } else {
+            std::path::absolute(args.path.unwrap())?
+        };
+
+        match BakeProject::from(&bake_path, IndexMap::new(), args.force_version_override) {
+            Ok(mut project) => {
+                let old_version = project.bake_version.clone();
+                project.update_bake_version();
+
+                match project.save_configuration() {
+                    Ok(_) => {
+                        if let Some(old_ver) = old_version {
+                            println!(
+                                "✓ Updated bake version from v{} to v{}",
+                                old_ver,
+                                env!("CARGO_PKG_VERSION")
+                            );
+                        } else {
+                            println!("✓ Set bake version to v{}", env!("CARGO_PKG_VERSION"));
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to save configuration: {}", e);
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to load project: {}", e);
                 return Err(e);
             }
         }
@@ -161,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(acc)
             })?;
 
-    match BakeProject::from(&bake_path, override_variables) {
+    match BakeProject::from(&bake_path, override_variables, args.force_version_override) {
         Ok(mut project) => {
             println!("Loading project... {}", console::style("✓").green());
             let recipe_filter = args.recipe.as_deref();

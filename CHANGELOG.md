@@ -2,8 +2,36 @@
 
 ## Unreleased
 
-* Templated config files
-* Docker executors
+## v0.6.0
+
+This release adds comprehensive configuration variable support throughout bake projects, allowing variables to be used in cache inputs/outputs, cookbook names, and all configuration files.
+
+### Added
+
+* **Comprehensive configuration variable support** - Variables can now be used throughout all configuration files
+* **Cache variable support** - Cache inputs and outputs can now use templated variables
+* **Cookbook name templating** - Cookbook names can be dynamically generated using variables
+* **Project-wide variable context** - Enhanced variable system with improved scoping and inheritance
+* Version management in project configuration files
+* `--update-version` flag to update project configuration to current bake version
+* `--force-version-override` flag to run even with newer config versions
+* Enhanced template system with improved variable context handling
+* Better error handling and validation for project configurations
+
+### Changed
+
+* **Template system overhaul** - Complete refactor of the template system for better variable support
+* Improved cache handling and reliability with variable support
+* Enhanced cookbook processing and validation with templated names
+* Updated test configurations and examples to showcase new variable capabilities
+* **Breaking change**: Enhanced variable context and scoping rules
+
+### Technical
+
+* Refactored template system for comprehensive variable support
+* Improved project configuration parsing and validation
+* Enhanced error messages and user feedback for variable resolution
+* Better variable inheritance and scoping mechanisms
 
 ## v0.5.0
 

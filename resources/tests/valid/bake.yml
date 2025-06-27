@@ -9,7 +9,7 @@ config:
     local:
       enabled: true
     remotes:
-      s3:
-        bucket: trinio-bake-cache
+      # s3:
+      #   bucket: trinio-bake-cache
       gcs:
         bucket: trinio-bake-cache

@@ -5,13 +5,14 @@ use std::{
 
 use crate::{
     project::Recipe,
-    template::{parse_template, parse_variable_list},
+    template::VariableContext,
 };
 use anyhow::bail;
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use log::debug;
 use serde::Deserialize;
+use serde_yaml::Value;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Cookbook {
@@ -29,18 +30,50 @@ pub struct Cookbook {
     pub config_path: PathBuf,
 }
 impl Cookbook {
+    /// Processes template variables in a YAML value recursively
+    fn process_template_in_value(
+        value: &mut Value,
+        context: &VariableContext,
+        skip_variables_and_run: bool,
+    ) -> anyhow::Result<()> {
+        match value {
+            Value::String(s) => {
+                // Only process strings that contain template syntax
+                if s.contains("{{") && s.contains("}}") {
+                    let processed = context.parse_template(s)?;
+                    *s = processed;
+                }
+            }
+            Value::Mapping(map) => {
+                for (k, v) in map.iter_mut() {
+                    // Skip processing the "variables" and "run" fields if requested
+                    if skip_variables_and_run && (k.as_str() == Some("variables") || k.as_str() == Some("run")) {
+                        continue;
+                    }
+                    Self::process_template_in_value(v, context, skip_variables_and_run)?;
+                }
+            }
+            Value::Sequence(seq) => {
+                for item in seq.iter_mut() {
+                    Self::process_template_in_value(item, context, skip_variables_and_run)?;
+                }
+            }
+            _ => {} // Other types (Number, Bool, Null) don't need processing
+        }
+        Ok(())
+    }
+
     /// Creates a cookbook config from a path to a cookbook file
     ///
     /// # Arguments
     /// * `path` - Path to a cookbook file
+    /// * `project_root` - Path to the project root
+    /// * `context` - Variable context containing environment, variables, and overrides
     ///
     pub fn from(
         path: &PathBuf,
         project_root: &Path,
-        project_environment: &[String],
-        project_variables: &IndexMap<String, String>,
-        project_constants: &IndexMap<String, String>,
-        override_variables: &IndexMap<String, String>,
+        context: &VariableContext,
     ) -> anyhow::Result<Self> {
         let config: Cookbook;
 
@@ -49,34 +82,40 @@ impl Cookbook {
             Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
         };
 
-        match serde_yaml::from_str::<Self>(&config_str) {
+        // First parse as generic YAML to allow template processing
+        let mut yaml_value: Value = match serde_yaml::from_str(&config_str) {
+            Ok(value) => value,
+            Err(err) => bail!("Cookbook: Failed to parse cookbook configuration file at '{}': {}. Check YAML syntax.", path.display(), err),
+        };
+
+        // Create a new context for this cookbook, inheriting from the project context
+        let mut cookbook_context = context.clone();
+        
+        // Add project and cookbook constants
+        cookbook_context.merge(&VariableContext::with_project_constants(project_root));
+        cookbook_context.merge(&VariableContext::with_cookbook_constants(path));
+
+        // Process template variables in the YAML structure (but skip the variables and run fields)
+        Self::process_template_in_value(&mut yaml_value, &cookbook_context, true)?;
+
+        // Now deserialize into the Cookbook struct
+        match serde_yaml::from_value::<Self>(yaml_value) {
             Ok(mut parsed) => {
                 parsed.config_path = path.to_path_buf();
 
                 // Inherit environment and variables from project
-                let mut cookbook_environment = project_environment.to_owned();
+                let mut cookbook_environment = context.environment.clone();
                 cookbook_environment.extend(parsed.environment.iter().cloned());
                 parsed.environment = cookbook_environment;
 
-                let mut cookbook_variables = project_variables.clone();
+                let mut cookbook_variables = context.variables.clone();
                 cookbook_variables.extend(parsed.variables.clone());
 
-                let mut cookbook_constants =
-                    IndexMap::from([("project".to_owned(), project_constants.clone())]);
-                cookbook_constants.insert(
-                    "cookbook".to_owned(),
-                    IndexMap::from([(
-                        "root".to_owned(),
-                        path.parent().unwrap().display().to_string(),
-                    )]),
-                );
-
-                parsed.variables = parse_variable_list(
-                    &parsed.environment,
-                    &cookbook_variables,
-                    &cookbook_constants,
-                    override_variables,
-                )?;
+                // Process cookbook variables with project variables only
+                let mut cookbook_var_context = cookbook_context.clone();
+                cookbook_var_context.variables = cookbook_variables;
+                parsed.variables = cookbook_var_context.process_variables()?;
+                let resolved_cookbook_vars = parsed.variables.clone();
 
                 parsed.recipes.iter_mut().try_for_each(|(name, recipe)| {
                     recipe.name = name.clone();
@@ -87,27 +126,30 @@ impl Cookbook {
                     // Inherit environment and variables from cookbook
                     let mut recipe_environment = parsed.environment.clone();
                     recipe_environment.extend(recipe.environment.iter().cloned());
-                    recipe.environment = recipe_environment;
+                    recipe.environment = recipe_environment.clone();
 
-                    let mut recipe_variables = parsed.variables.clone();
+                    // Start with resolved cookbook variables, then add recipe variables
+                    let mut recipe_variables = resolved_cookbook_vars.clone();
                     recipe_variables.extend(recipe.variables.clone());
-                    if let Ok(variables) = parse_variable_list(
-                        recipe.environment.as_slice(),
-                        &recipe_variables,
-                        &cookbook_constants,
-                        override_variables,
-                    ) {
-                        recipe.variables = variables;
-                    } else {
-                        bail!("Cookbook '{}': Failed to parse variables for recipe '{}'. Check syntax and variable definitions.", parsed.name, recipe.name)
+                    
+                    // Process recipe variables with access to cookbook variables
+                    let mut recipe_context = cookbook_context.clone();
+                    recipe_context.environment = recipe_environment;
+                    recipe_context.variables = recipe_variables;
+                    
+                    match recipe_context.process_variables() {
+                        Ok(variables) => {
+                            recipe.variables = variables;
+                        }
+                        Err(_) => {
+                            bail!("Cookbook '{}': Failed to parse variables for recipe '{}'. Check syntax and variable definitions.", parsed.name, recipe.name)
+                        }
                     }
 
-                    recipe.run = parse_template(
-                        &recipe.run,
-                        &recipe.environment,
-                        &recipe.variables,
-                        &cookbook_constants,
-                    )?;
+                    // Process the run field with the recipe's processed variables
+                    let mut run_context = cookbook_context.clone();
+                    run_context.variables = recipe.variables.clone();
+                    recipe.run = run_context.parse_template(&recipe.run)?;
 
                     if let Some(dependencies) = recipe.dependencies.as_ref() {
                         let new_deps = dependencies.iter().map(|dep| {
@@ -124,7 +166,7 @@ impl Cookbook {
                 })?;
                 config = parsed;
             }
-            Err(err) => bail!("Cookbook: Failed to parse cookbook configuration file at '{}': {}. Check YAML syntax.", path.display(), err),
+            Err(err) => bail!("Cookbook: Failed to deserialize cookbook configuration after template processing at '{}': {}. Check YAML syntax and template variable usage.", path.display(), err),
         }
 
         Ok(config)
@@ -137,13 +179,11 @@ impl Cookbook {
     ///
     /// # Arguments
     /// * `path` - Path to a directory
+    /// * `context` - Variable context containing environment, variables, and overrides
     ///
     pub fn map_from(
         path: &PathBuf,
-        project_environment: &[String],
-        project_variables: &IndexMap<String, String>,
-        project_constants: &IndexMap<String, String>,
-        override_variables: &IndexMap<String, String>,
+        context: &VariableContext,
     ) -> anyhow::Result<BTreeMap<String, Self>> {
         let all_files = WalkBuilder::new(path)
             .add_custom_ignore_filename(".bakeignore")
@@ -156,10 +196,7 @@ impl Cookbook {
                         match Self::from(
                             &file.into_path(),
                             path,
-                            project_environment,
-                            project_variables,
-                            project_constants,
-                            override_variables,
+                            context,
                         ) {
                             Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
                             Err(err) => Some(Err(err)),
@@ -182,6 +219,7 @@ mod test {
 
     use indexmap::IndexMap;
     use test_case::test_case;
+    use crate::template::VariableContext;
 
     fn config_path(path_str: &str) -> String {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
@@ -202,10 +240,11 @@ mod test {
         super::Cookbook::from(
             &PathBuf::from(path_str),
             &PathBuf::from(project_root),
-            &[],
-            &IndexMap::new(),
-            &IndexMap::new(),
-            &IndexMap::new(),
+            &VariableContext::builder()
+                .environment(vec![])
+                .variables(IndexMap::new())
+                .overrides(IndexMap::new())
+                .build(),
         )
     }
 
@@ -214,10 +253,11 @@ mod test {
     fn read_all_cookbooks(path_str: String) -> anyhow::Result<BTreeMap<String, super::Cookbook>> {
         super::Cookbook::map_from(
             &PathBuf::from(path_str),
-            &[],
-            &IndexMap::new(),
-            &IndexMap::new(),
-            &IndexMap::new(),
+            &VariableContext::builder()
+                .environment(vec![])
+                .variables(IndexMap::new())
+                .overrides(IndexMap::new())
+                .build(),
         )
     }
 }

@@ -23,6 +23,7 @@ impl TestProjectBuilder {
             variables: IndexMap::new(),
             environment: vec![],
             config: ToolConfig::default(),
+            bake_version: None,
             root_path: temp_dir,
             // dependency_map: BTreeMap::new(), // Removed: Handled by graph
             // Initialize graph fields as default, they will be populated by the new graph module

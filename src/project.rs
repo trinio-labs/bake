@@ -21,7 +21,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::template::parse_variable_list;
+use crate::template::VariableContext;
 
 use self::config::ToolConfig;
 
@@ -70,6 +70,11 @@ pub struct BakeProject {
     #[validate(nested)]
     /// The main configuration settings for the Bake tool within this project.
     pub config: ToolConfig,
+
+    /// The version of bake that was used to create this project configuration.
+    /// This helps detect configuration mismatches due to breaking changes.
+    #[serde(default)]
+    pub bake_version: Option<String>,
 
     #[serde(skip)]
     /// The root path of the project, typically the directory containing the `bake.yml` file.
@@ -180,17 +185,16 @@ impl BakeProject {
         &mut self,
         override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<()> {
-        let project_constants = IndexMap::from([(
-            "root".to_owned(),
-            self.root_path.clone().display().to_string(),
-        )]);
+        let mut context = VariableContext::builder()
+            .environment(self.environment.clone())
+            .variables(self.variables.clone())
+            .overrides(override_variables.clone())
+            .build();
 
-        self.variables = parse_variable_list(
-            self.environment.as_slice(),
-            &self.variables,
-            &IndexMap::from([("project".to_owned(), project_constants)]),
-            override_variables,
-        )?;
+        // Add project constants
+        context.merge(&VariableContext::with_project_constants(&self.root_path));
+
+        self.variables = context.process_variables()?;
         Ok(())
     }
 
@@ -199,17 +203,13 @@ impl BakeProject {
         &mut self,
         override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<()> {
-        let project_constants = IndexMap::from([(
-            "root".to_owned(),
-            self.root_path.clone().display().to_string(),
-        )]);
-        self.cookbooks = Cookbook::map_from(
-            &self.root_path,
-            &self.environment,
-            &self.variables,
-            &project_constants,
-            override_variables,
-        )?;
+        let context = VariableContext::builder()
+            .environment(self.environment.clone())
+            .variables(self.variables.clone())
+            .overrides(override_variables.clone())
+            .build();
+
+        self.cookbooks = Cookbook::map_from(&self.root_path, &context)?;
         Ok(())
     }
 
@@ -221,12 +221,115 @@ impl BakeProject {
         Ok(())
     }
 
-    pub fn from(path: &Path, override_variables: IndexMap<String, String>) -> anyhow::Result<Self> {
+    /// Validates the bake version used to create this project configuration.
+    /// Prevents running if the config version is greater (newer) than the current running version, unless force_version_override is true.
+    fn validate_bake_version(&self, force_version_override: bool) -> anyhow::Result<()> {
+        let current_version = env!("CARGO_PKG_VERSION");
+
+        if let Some(project_version) = &self.bake_version {
+            if project_version != current_version {
+                // Parse versions to compare
+                let current_parts: Vec<u32> = current_version
+                    .split('.')
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                let project_parts: Vec<u32> = project_version
+                    .split('.')
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+
+                // Compare version tuples (major, minor, patch)
+                let cmp = project_parts.cmp(&current_parts);
+                if cmp == std::cmp::Ordering::Greater {
+                    if !force_version_override {
+                        // Config version is newer than running version
+                        anyhow::bail!(
+                            "❌ This project was created with bake v{} but you're running v{}.\n   Please upgrade your bake installation to match or exceed the project version, or use --force-version-override to bypass this check.",
+                            project_version, current_version
+                        );
+                    } else {
+                        eprintln!(
+                            "⚠️  Forced override: This project was created with bake v{} but you're running v{}. Proceeding due to --force-version-override flag!",
+                            project_version, current_version
+                        );
+                    }
+                } else if project_parts.get(0) != current_parts.get(0) {
+                    // Major version mismatch - this could indicate breaking changes
+                    eprintln!(
+                        "⚠️  Warning: This project was created with bake v{} but you're running v{}",
+                        project_version, current_version
+                    );
+                    eprintln!("   This major version difference may cause configuration issues.");
+                    eprintln!("   Consider updating your project configuration or using the same bake version.");
+                } else {
+                    // Minor/patch version difference - less likely to cause issues
+                    eprintln!(
+                        "ℹ️  Info: This project was created with bake v{} (you're running v{})",
+                        project_version, current_version
+                    );
+                }
+            }
+        } else {
+            // No version specified - this is an older project
+            eprintln!(
+                "ℹ️  Info: This project doesn't specify a bake version (created with bake v{})",
+                current_version
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Updates the bake version to the current version.
+    /// This should be called when the project configuration is modified.
+    pub fn update_bake_version(&mut self) {
+        self.bake_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    }
+
+    /// Saves the project configuration back to the original file.
+    /// This is useful for updating the bake version or other configuration changes.
+    pub fn save_configuration(&self) -> anyhow::Result<()> {
+        let config_path = self.root_path.join("bake.yml");
+
+        // Create a temporary struct for serialization (excluding skip fields)
+        #[derive(serde::Serialize)]
+        struct BakeProjectConfig<'a> {
+            name: &'a str,
+            description: &'a Option<String>,
+            variables: &'a IndexMap<String, String>,
+            environment: &'a Vec<String>,
+            config: &'a ToolConfig,
+            bake_version: &'a Option<String>,
+        }
+
+        let config = BakeProjectConfig {
+            name: &self.name,
+            description: &self.description,
+            variables: &self.variables,
+            environment: &self.environment,
+            config: &self.config,
+            bake_version: &self.bake_version,
+        };
+
+        let yaml = serde_yaml::to_string(&config)?;
+        std::fs::write(&config_path, yaml)?;
+
+        Ok(())
+    }
+
+    pub fn from(
+        path: &Path,
+        override_variables: IndexMap<String, String>,
+        force_version_override: bool,
+    ) -> anyhow::Result<Self> {
         // Find and load the configuration file content.
         let (file_path, config_str) = Self::find_and_load_config_str(path)?;
 
         // Parse the configuration string, validate, and set the root path.
         let mut project = Self::parse_and_validate_project(&file_path, &config_str)?;
+
+        // Validate bake version compatibility
+        project.validate_bake_version(force_version_override)?;
 
         // Initialize project-level variables.
         project.initialize_project_variables(&override_variables)?;
@@ -495,7 +598,7 @@ mod tests {
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
         std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(&PathBuf::from(path_str), IndexMap::new())
+        super::BakeProject::from(&PathBuf::from(path_str), IndexMap::new(), false)
     }
 
     #[test]
@@ -508,34 +611,67 @@ mod tests {
         let project = super::BakeProject::from(
             &PathBuf::from(config_path("/invalid/permission")),
             IndexMap::new(),
+            false,
         );
         assert!(project.is_err());
         perms.set_mode(mode);
         std::fs::set_permissions(&path, perms.clone()).unwrap();
     }
 
-    // #[test]
-    // fn recipes() {
-    //     let project = super::BakeProject::from(&PathBuf::from(config_path("/valid/"))).unwrap();
-    //
-    //     // Should return empty when not specifying format "<cookbook>:<recipe>"
-    //     let recipes = project.get_recipes(RecipeSearch::ByPattern("foo"));
-    //     assert_eq!(recipes.len(), 0);
-    //
-    //     let recipes = project.get_recipes(RecipeSearch::ByPattern("foo:build"));
-    //     assert_eq!(recipes.len(), 1);
-    //     assert_eq!(recipes[0].name, "build");
-    //
-    //     let recipes = project.get_recipes(RecipeSearch::ByPattern("foo:"));
-    //     assert_eq!(recipes.len(), 3);
-    //
-    //     let recipes = project.get_recipes(RecipeSearch::ByPattern(":build"));
-    //     assert_eq!(recipes.len(), 2);
-    //
-    //     let recipes = project.get_recipes(RecipeSearch::ByPattern(":test"));
-    //     assert_eq!(recipes.len(), 2);
-    //
-    //     let recipes = project.get_recipes(RecipeSearch::All);
-    //     assert_eq!(recipes.len(), 6);
-    // }
+    #[test]
+    fn test_bake_version_validation() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("bake.yml");
+
+        // Create a test configuration with a specific bake version
+        let config_content = r#"
+name: test_project
+bake_version: "0.4.0"
+variables:
+  test_var: "test_value"
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        // Test that version validation works
+        let result = super::BakeProject::from(temp_dir.path(), IndexMap::new(), false);
+        assert!(result.is_ok());
+
+        let project = result.unwrap();
+        assert_eq!(project.bake_version, Some("0.4.0".to_string()));
+    }
+
+    #[test]
+    fn test_update_bake_version() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("bake.yml");
+
+        // Create a test configuration without bake version
+        let config_content = r#"
+name: test_project
+variables:
+  test_var: "test_value"
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        // Load project and update version
+        let mut project =
+            super::BakeProject::from(temp_dir.path(), IndexMap::new(), false).unwrap();
+        project.update_bake_version();
+
+        // Save configuration
+        project.save_configuration().unwrap();
+
+        // Verify the version was updated
+        let updated_content = fs::read_to_string(&config_path).unwrap();
+        assert!(updated_content.contains("bake_version:"));
+        assert!(updated_content.contains(env!("CARGO_PKG_VERSION")));
+    }
 }

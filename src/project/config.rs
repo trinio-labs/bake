@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use validator::{Validate, ValidationError};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LocalCacheConfig {
     #[serde(default = "bool_true_default")]
     pub enabled: bool,
@@ -20,24 +20,24 @@ impl Default for LocalCacheConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RemoteCacheConfig {
     pub s3: Option<S3CacheConfig>,
     pub gcs: Option<GcsCacheConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct S3CacheConfig {
     pub bucket: String,
     pub region: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GcsCacheConfig {
     pub bucket: String,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct CacheConfig {
     #[serde(default)]
     pub local: LocalCacheConfig,
@@ -61,7 +61,7 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateConfig {
     #[serde(default = "bool_true_default")]
     pub enabled: bool,
@@ -100,7 +100,7 @@ fn validate_order(value: &[String]) -> Result<(), ValidationError> {
     }
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ToolConfig {
     #[serde(default = "max_parallel_default")]
     pub max_parallel: usize,
