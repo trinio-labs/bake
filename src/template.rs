@@ -4,6 +4,7 @@ use anyhow::bail;
 use handlebars::Handlebars;
 use indexmap::IndexMap;
 use serde_json::json;
+use serde_yaml;
 
 /// Represents the context for template variable processing, containing all
 /// available variables, environment variables, and constants.
@@ -122,6 +123,50 @@ impl VariableContext {
             constants,
             overrides: IndexMap::new(),
         }
+    }
+
+    /// Processes template variables in a YAML value recursively, preserving original types
+    pub fn process_template_in_value(
+        value: &mut serde_yaml::Value,
+        context: &Self,
+        skip_variables_and_run: bool,
+    ) -> anyhow::Result<()> {
+        match value {
+            serde_yaml::Value::String(s) => {
+                // Only process strings that contain template syntax
+                if s.contains("{{") && s.contains("}}") {
+                    let processed = context.parse_template(s)?;
+
+                    // Use serde_yaml's built-in parsing to preserve types
+                    // This automatically handles bool, number, null, etc.
+                    if let Ok(parsed_value) = serde_yaml::from_str::<serde_yaml::Value>(&processed)
+                    {
+                        *value = parsed_value;
+                    } else {
+                        // If parsing fails, keep as string
+                        *s = processed;
+                    }
+                }
+            }
+            serde_yaml::Value::Mapping(map) => {
+                for (k, v) in map.iter_mut() {
+                    // Skip processing the "variables" and "run" fields if requested
+                    if skip_variables_and_run
+                        && (k.as_str() == Some("variables") || k.as_str() == Some("run"))
+                    {
+                        continue;
+                    }
+                    Self::process_template_in_value(v, context, skip_variables_and_run)?;
+                }
+            }
+            serde_yaml::Value::Sequence(seq) => {
+                for item in seq.iter_mut() {
+                    Self::process_template_in_value(item, context, skip_variables_and_run)?;
+                }
+            }
+            _ => {} // Other types (Number, Bool, Null) don't need processing
+        }
+        Ok(())
     }
 }
 
@@ -323,5 +368,65 @@ mod test {
             processed_recipe_vars.get("foo"),
             Some(&"build-bar".to_owned())
         );
+    }
+
+    #[test]
+    fn test_boolean_template_substitution() {
+        // Test that boolean values are preserved correctly
+        let variables = IndexMap::from([
+            ("force_build".to_owned(), "false".to_owned()),
+            ("enable_cache".to_owned(), "true".to_owned()),
+            ("debug_mode".to_owned(), "{{ var.force_build }}".to_owned()),
+        ]);
+
+        let context = VariableContext::builder().variables(variables).build();
+
+        let result = context.process_variables().unwrap();
+
+        // The debug_mode should be "false" (string) since it references force_build
+        assert_eq!(result.get("debug_mode"), Some(&"false".to_owned()));
+        assert_eq!(result.get("force_build"), Some(&"false".to_owned()));
+        assert_eq!(result.get("enable_cache"), Some(&"true".to_owned()));
+    }
+
+    #[test]
+    fn test_process_template_in_value_type_preservation() {
+        use serde_yaml::Value;
+
+        // Create a YAML value with template variables
+        let yaml_str = r#"
+force_build: "{{ var.force_build }}"
+max_workers: "{{ var.max_workers }}"
+debug_enabled: "{{ var.debug_enabled }}"
+cache_path: "{{ var.cache_path }}"
+null_value: "{{ var.null_value }}"
+"#;
+
+        let mut yaml_value: Value = serde_yaml::from_str(yaml_str).unwrap();
+
+        // Create a context with the variables
+        let variables = IndexMap::from([
+            ("force_build".to_owned(), "false".to_owned()),
+            ("max_workers".to_owned(), "4".to_owned()),
+            ("debug_enabled".to_owned(), "true".to_owned()),
+            ("cache_path".to_owned(), "/tmp/cache".to_owned()),
+            ("null_value".to_owned(), "null".to_owned()),
+        ]);
+
+        let context = VariableContext::builder().variables(variables).build();
+
+        // Process the template
+        VariableContext::process_template_in_value(&mut yaml_value, &context, false).unwrap();
+
+        // Check that the processed values have the correct types
+        if let Value::Mapping(map) = &yaml_value {
+            assert!(matches!(map.get("force_build"), Some(Value::Bool(false))));
+            assert!(
+                matches!(map.get("max_workers"), Some(Value::Number(n)) if n.as_i64() == Some(4))
+            );
+            assert!(matches!(map.get("debug_enabled"), Some(Value::Bool(true))));
+            assert!(matches!(map.get("cache_path"), Some(Value::String(s)) if s == "/tmp/cache"));
+            assert!(matches!(map.get("null_value"), Some(Value::Null)));
+        }
     }
 }

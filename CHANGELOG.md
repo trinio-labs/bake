@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## v0.6.1
+
+This release fixes a critical issue where template variable substitution was converting all values to strings, causing deserialization errors when configuration structs expected specific types like booleans.
+
+### Fixed
+
+* **Template type preservation** - Template variables now preserve their original YAML types (boolean, number, null) instead of always converting to strings
+* **Boolean field support** - Configuration fields expecting boolean values now work correctly with template variables
+* **Improved template processing** - Moved template processing logic to the appropriate module and simplified type conversion using serde_yaml's built-in parsing
+
+### Technical
+
+* Refactored `process_template_in_value` function to use serde_yaml's built-in type parsing
+* Moved template processing from cookbook.rs to template.rs for better code organization
+* Added comprehensive tests for type preservation in template processing
+* Enhanced error handling for template variable resolution
+
 ## v0.6.0
 
 This release adds comprehensive configuration variable support throughout bake projects, allowing variables to be used in cache inputs/outputs, cookbook names, and all configuration files.

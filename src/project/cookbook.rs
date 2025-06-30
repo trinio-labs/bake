@@ -30,39 +30,6 @@ pub struct Cookbook {
     pub config_path: PathBuf,
 }
 impl Cookbook {
-    /// Processes template variables in a YAML value recursively
-    fn process_template_in_value(
-        value: &mut Value,
-        context: &VariableContext,
-        skip_variables_and_run: bool,
-    ) -> anyhow::Result<()> {
-        match value {
-            Value::String(s) => {
-                // Only process strings that contain template syntax
-                if s.contains("{{") && s.contains("}}") {
-                    let processed = context.parse_template(s)?;
-                    *s = processed;
-                }
-            }
-            Value::Mapping(map) => {
-                for (k, v) in map.iter_mut() {
-                    // Skip processing the "variables" and "run" fields if requested
-                    if skip_variables_and_run && (k.as_str() == Some("variables") || k.as_str() == Some("run")) {
-                        continue;
-                    }
-                    Self::process_template_in_value(v, context, skip_variables_and_run)?;
-                }
-            }
-            Value::Sequence(seq) => {
-                for item in seq.iter_mut() {
-                    Self::process_template_in_value(item, context, skip_variables_and_run)?;
-                }
-            }
-            _ => {} // Other types (Number, Bool, Null) don't need processing
-        }
-        Ok(())
-    }
-
     /// Creates a cookbook config from a path to a cookbook file
     ///
     /// # Arguments
@@ -96,7 +63,7 @@ impl Cookbook {
         cookbook_context.merge(&VariableContext::with_cookbook_constants(path));
 
         // Process template variables in the YAML structure (but skip the variables and run fields)
-        Self::process_template_in_value(&mut yaml_value, &cookbook_context, true)?;
+        VariableContext::process_template_in_value(&mut yaml_value, &cookbook_context, true)?;
 
         // Now deserialize into the Cookbook struct
         match serde_yaml::from_value::<Self>(yaml_value) {
@@ -259,5 +226,58 @@ mod test {
                 .overrides(IndexMap::new())
                 .build(),
         )
+    }
+
+    #[test]
+    fn test_yaml_type_preservation() {
+        use serde_yaml::Value;
+        use crate::template::VariableContext;
+
+        // Create a YAML value with mixed types
+        let yaml_str = r#"
+name: test-cookbook
+variables:
+  force_build: false
+  max_parallel: 4
+  debug_enabled: true
+  cache_path: "/tmp/cache"
+  template_value: "{{ var.force_build }}"
+  template_number: "{{ var.max_parallel }}"
+  template_bool: "{{ var.debug_enabled }}"
+recipes:
+  build:
+    run: echo "building"
+    force_build: "{{ var.force_build }}"
+    max_workers: "{{ var.max_parallel }}"
+    debug: "{{ var.debug_enabled }}"
+"#;
+
+        let mut yaml_value: Value = serde_yaml::from_str(yaml_str).unwrap();
+        
+        // Create a context with the variables
+        let variables = IndexMap::from([
+            ("force_build".to_owned(), "false".to_owned()),
+            ("max_parallel".to_owned(), "4".to_owned()),
+            ("debug_enabled".to_owned(), "true".to_owned()),
+        ]);
+        
+        let context = VariableContext::builder()
+            .variables(variables)
+            .build();
+
+        // Process the template
+        VariableContext::process_template_in_value(&mut yaml_value, &context, true).unwrap();
+
+        // Check that the processed values have the correct types
+        if let Value::Mapping(map) = &yaml_value {
+            if let Some(Value::Mapping(recipes)) = map.get("recipes") {
+                if let Some(Value::Mapping(build_recipe)) = recipes.get("build") {
+                    // These should be converted back to their original types
+                    assert!(matches!(build_recipe.get("force_build"), Some(Value::Bool(false))));
+                    assert!(matches!(build_recipe.get("max_workers"), Some(Value::Number(n)) if n.as_i64() == Some(4)));
+                    assert!(matches!(build_recipe.get("debug"), Some(Value::Bool(true))));
+                }
+            }
+        }
     }
 }
