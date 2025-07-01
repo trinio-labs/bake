@@ -120,6 +120,11 @@ pub struct ToolConfig {
 
     #[serde(default)]
     pub update: UpdateConfig,
+
+    /// The minimum version of bake required to work with this project configuration.
+    /// This helps detect configuration mismatches due to breaking changes.
+    #[serde(default, rename = "minVersion")]
+    pub min_version: Option<String>,
 }
 
 impl Default for ToolConfig {
@@ -131,6 +136,7 @@ impl Default for ToolConfig {
             cache: CacheConfig::default(),
             clean_environment: false,
             update: UpdateConfig::default(),
+            min_version: None,
         }
     }
 }

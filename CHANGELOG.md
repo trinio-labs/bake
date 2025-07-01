@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.6.2
+
+### Changed
+
+* **Configuration field naming** - Renamed `bake_version` to `config.minVersion` for better organization and clarity
+* The minimum required bake version is now specified under the `config` section as `minVersion`
+* Updated validation logic to use the new field location and naming convention
+
+### Technical
+
+* Refactored project configuration structure to move version requirements into the config section
+* Updated serialization/deserialization logic for new field structure
+* Enhanced test coverage for new configuration format
+* Maintained backward compatibility for projects without version specifications
+
 ## v0.6.1
 
 This release fixes a critical issue where template variable substitution was converting all values to strings, causing deserialization errors when configuration structs expected specific types like booleans.

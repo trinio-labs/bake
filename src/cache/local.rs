@@ -101,7 +101,7 @@ mod tests {
             variables: IndexMap::new(),
             environment: Vec::new(),
             config: tool_config,
-            bake_version: None,
+
             root_path: project_root_path,
         })
     }

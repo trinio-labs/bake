@@ -71,10 +71,7 @@ pub struct BakeProject {
     /// The main configuration settings for the Bake tool within this project.
     pub config: ToolConfig,
 
-    /// The version of bake that was used to create this project configuration.
-    /// This helps detect configuration mismatches due to breaking changes.
-    #[serde(default)]
-    pub bake_version: Option<String>,
+
 
     #[serde(skip)]
     /// The root path of the project, typically the directory containing the `bake.yml` file.
@@ -221,12 +218,12 @@ impl BakeProject {
         Ok(())
     }
 
-    /// Validates the bake version used to create this project configuration.
+    /// Validates the minimum bake version required by this project configuration.
     /// Prevents running if the config version is greater (newer) than the current running version, unless force_version_override is true.
-    fn validate_bake_version(&self, force_version_override: bool) -> anyhow::Result<()> {
+    fn validate_min_version(&self, force_version_override: bool) -> anyhow::Result<()> {
         let current_version = env!("CARGO_PKG_VERSION");
 
-        if let Some(project_version) = &self.bake_version {
+        if let Some(project_version) = &self.config.min_version {
             if project_version != current_version {
                 // Parse versions to compare
                 let current_parts: Vec<u32> = current_version
@@ -244,42 +241,42 @@ impl BakeProject {
                     if !force_version_override {
                         // Config version is newer than running version
                         anyhow::bail!(
-                            "❌ This project was created with bake v{} but you're running v{}.\n   Please upgrade your bake installation to match or exceed the project version, or use --force-version-override to bypass this check.",
+                            "❌ This project requires bake v{} but you're running v{}.\n   Please upgrade your bake installation to match or exceed the project version, or use --force-version-override to bypass this check.",
                             project_version, current_version
                         );
                     } else {
                         eprintln!(
-                            "⚠️  Forced override: This project was created with bake v{project_version} but you're running v{current_version}. Proceeding with force override.",
+                            "⚠️  Forced override: This project requires bake v{project_version} but you're running v{current_version}. Proceeding with force override.",
                         );
                     }
                 } else if project_parts.first() != current_parts.first() {
                     // Major version mismatch - this could indicate breaking changes
                     eprintln!(
-                        "⚠️  Warning: This project was created with bake v{project_version} but you're running v{current_version}",
+                        "⚠️  Warning: This project requires bake v{project_version} but you're running v{current_version}",
                     );
                     eprintln!("   This major version difference may cause configuration issues.");
                     eprintln!("   Consider updating your project configuration or using the same bake version.");
                 } else {
                     // Minor/patch version difference - less likely to cause issues
                     eprintln!(
-                        "ℹ️  Info: This project was created with bake v{project_version} (you're running v{current_version})",
+                        "ℹ️  Info: This project requires bake v{project_version} (you're running v{current_version})",
                     );
                 }
             }
         } else {
             // No version specified - this is an older project
             eprintln!(
-                "ℹ️  Info: This project doesn't specify a bake version (created with bake v{current_version})",
+                "ℹ️  Info: This project doesn't specify a minimum bake version (created with bake v{current_version})",
             );
         }
 
         Ok(())
     }
 
-    /// Updates the bake version to the current version.
+    /// Updates the minimum bake version to the current version.
     /// This should be called when the project configuration is modified.
-    pub fn update_bake_version(&mut self) {
-        self.bake_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    pub fn update_min_version(&mut self) {
+        self.config.min_version = Some(env!("CARGO_PKG_VERSION").to_string());
     }
 
     /// Saves the project configuration back to the original file.
@@ -295,7 +292,6 @@ impl BakeProject {
             variables: &'a IndexMap<String, String>,
             environment: &'a Vec<String>,
             config: &'a ToolConfig,
-            bake_version: &'a Option<String>,
         }
 
         let config = BakeProjectConfig {
@@ -304,7 +300,6 @@ impl BakeProject {
             variables: &self.variables,
             environment: &self.environment,
             config: &self.config,
-            bake_version: &self.bake_version,
         };
 
         let yaml = serde_yaml::to_string(&config)?;
@@ -325,7 +320,7 @@ impl BakeProject {
         let mut project = Self::parse_and_validate_project(&file_path, &config_str)?;
 
         // Validate bake version compatibility
-        project.validate_bake_version(force_version_override)?;
+        project.validate_min_version(force_version_override)?;
 
         // Initialize project-level variables.
         project.initialize_project_variables(&override_variables)?;
@@ -615,17 +610,18 @@ mod tests {
     }
 
     #[test]
-    fn test_bake_version_validation() {
+    fn test_min_version_validation() {
         use std::fs;
         use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let config_path = temp_dir.path().join("bake.yml");
 
-        // Create a test configuration with a specific bake version
+        // Create a test configuration with a specific minimum version
         let config_content = r#"
 name: test_project
-bake_version: "0.4.0"
+config:
+  minVersion: "0.4.0"
 variables:
   test_var: "test_value"
 "#;
@@ -637,18 +633,18 @@ variables:
         assert!(result.is_ok());
 
         let project = result.unwrap();
-        assert_eq!(project.bake_version, Some("0.4.0".to_string()));
+        assert_eq!(project.config.min_version, Some("0.4.0".to_string()));
     }
 
     #[test]
-    fn test_update_bake_version() {
+    fn test_update_min_version() {
         use std::fs;
         use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let config_path = temp_dir.path().join("bake.yml");
 
-        // Create a test configuration without bake version
+        // Create a test configuration without minimum version
         let config_content = r#"
 name: test_project
 variables:
@@ -660,14 +656,14 @@ variables:
         // Load project and update version
         let mut project =
             super::BakeProject::from(temp_dir.path(), IndexMap::new(), false).unwrap();
-        project.update_bake_version();
+        project.update_min_version();
 
         // Save configuration
         project.save_configuration().unwrap();
 
         // Verify the version was updated
         let updated_content = fs::read_to_string(&config_path).unwrap();
-        assert!(updated_content.contains("bake_version:"));
+        assert!(updated_content.contains("minVersion:"));
         assert!(updated_content.contains(env!("CARGO_PKG_VERSION")));
     }
 }

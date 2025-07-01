@@ -122,8 +122,8 @@ async fn main() -> anyhow::Result<()> {
 
         match BakeProject::from(&bake_path, IndexMap::new(), args.force_version_override) {
             Ok(mut project) => {
-                let old_version = project.bake_version.clone();
-                project.update_bake_version();
+                let old_version = project.config.min_version.clone();
+                project.update_min_version();
 
                 match project.save_configuration() {
                     Ok(_) => {
