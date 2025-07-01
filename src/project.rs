@@ -71,8 +71,6 @@ pub struct BakeProject {
     /// The main configuration settings for the Bake tool within this project.
     pub config: ToolConfig,
 
-
-
     #[serde(skip)]
     /// The root path of the project, typically the directory containing the `bake.yml` file.
     pub root_path: PathBuf,

@@ -44,7 +44,16 @@ fn get_update_check_file(cache_dir: Option<&PathBuf>) -> Result<PathBuf> {
 }
 
 /// Check if enough time has passed since the last update check
-fn should_check_for_updates(config: &UpdateConfig, cache_dir: Option<&PathBuf>) -> Result<bool> {
+fn should_check_for_updates(
+    config: &UpdateConfig,
+    cache_dir: Option<&PathBuf>,
+    force_check: bool,
+) -> Result<bool> {
+    // If force_check is true (manual check), always allow the check
+    if force_check {
+        return Ok(true);
+    }
+
     let check_file = get_update_check_file(cache_dir)?;
     if !check_file.exists() {
         return Ok(true);
@@ -65,14 +74,14 @@ fn update_last_check_timestamp(cache_dir: Option<&PathBuf>) -> Result<()> {
 }
 
 /// Check if an update is available and optionally perform the update
-pub async fn check_for_updates(config: &UpdateConfig) -> Result<Option<String>> {
+pub async fn check_for_updates(config: &UpdateConfig, force_check: bool) -> Result<Option<String>> {
     if !config.enabled {
         return Ok(None);
     }
     if should_skip_update_check() {
         return Ok(None);
     }
-    if !should_check_for_updates(config, None)? {
+    if !should_check_for_updates(config, None, force_check)? {
         return Ok(None);
     }
     let current_version = cargo_crate_version!();
@@ -80,6 +89,7 @@ pub async fn check_for_updates(config: &UpdateConfig) -> Result<Option<String>> 
         .repo_owner(GITHUB_REPO_OWNER)
         .repo_name(GITHUB_REPO_NAME)
         .bin_name(BINARY_NAME)
+        .bin_path_in_archive("bake-cli-{{ target }}/{{ bin }}")
         .current_version(current_version)
         .show_download_progress(true)
         .build()
@@ -119,7 +129,7 @@ pub async fn check_for_updates(config: &UpdateConfig) -> Result<Option<String>> 
                         println!(
                             "{} {}",
                             style("Run").dim(),
-                            style("bake self-update").cyan()
+                            style("bake --self-update").cyan()
                         );
                         let _ = update_last_check_timestamp(None);
                         return Ok(Some(latest_version));
@@ -283,7 +293,7 @@ mod tests {
             prerelease: false,
         };
         // Should check if no file exists
-        assert!(should_check_for_updates(&config, Some(&bake_cache)).unwrap());
+        assert!(should_check_for_updates(&config, Some(&bake_cache), false).unwrap());
     }
 
     #[test]
@@ -306,7 +316,7 @@ mod tests {
             prerelease: false,
         };
         // Should not check if file is recent
-        assert!(!should_check_for_updates(&config, Some(&bake_cache)).unwrap());
+        assert!(!should_check_for_updates(&config, Some(&bake_cache), false).unwrap());
     }
 
     #[test]
@@ -329,7 +339,32 @@ mod tests {
             prerelease: false,
         };
         // Should check if file is old
-        assert!(should_check_for_updates(&config, Some(&bake_cache)).unwrap());
+        assert!(should_check_for_updates(&config, Some(&bake_cache), false).unwrap());
+    }
+
+    #[test]
+    fn test_should_check_for_updates_force_check() {
+        let temp_dir = TempDir::new().unwrap();
+        let bake_cache = temp_dir.path().join("bake");
+        fs::create_dir_all(&bake_cache).unwrap();
+        // Write a recent timestamp (1 day ago)
+        let recent_timestamp = (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 24 * 60 * 60)
+            .to_string();
+        fs::write(bake_cache.join("last_update_check"), recent_timestamp).unwrap();
+        let config = UpdateConfig {
+            enabled: true,
+            check_interval_days: 7,
+            auto_update: false,
+            prerelease: false,
+        };
+        // Should check even with recent file when force_check is true
+        assert!(should_check_for_updates(&config, Some(&bake_cache), true).unwrap());
+        // Should not check with recent file when force_check is false
+        assert!(!should_check_for_updates(&config, Some(&bake_cache), false).unwrap());
     }
 
     #[test]

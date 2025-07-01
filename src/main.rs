@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
             prerelease: args.prerelease,
         };
 
-        match check_for_updates(&update_config).await {
+        match check_for_updates(&update_config, true).await {
             Ok(Some(version)) => {
                 println!("New version available: {version}");
                 return Ok(());
@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 // Run update check in background to not block the main workflow
-                let _ = check_for_updates(&update_config).await;
+                let _ = check_for_updates(&update_config, false).await;
             }
 
             // Build cache using project and Local, S3 and GCS strategies

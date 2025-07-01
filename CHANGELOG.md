@@ -2,20 +2,31 @@
 
 ## Unreleased
 
-## v0.6.2
+## v0.7.0
 
 ### Changed
 
-* **Configuration field naming** - Renamed `bake_version` to `config.minVersion` for better organization and clarity
+* **BREAKING: Configuration field naming** - Renamed `bake_version` to `config.minVersion` for better organization and clarity
 * The minimum required bake version is now specified under the `config` section as `minVersion`
 * Updated validation logic to use the new field location and naming convention
+
+### Added
+
+* **Enhanced update check behavior** - Manual update checks (`--check-updates`) now bypass the time interval and always check for updates
+* Automatic background update checks still respect the configured check interval to avoid excessive API calls
+
+### Fixed
+
+* **Update check functionality** - Resolved issue where update checks were being skipped in development environments
+* Added comprehensive debug logging to help diagnose update check issues
 
 ### Technical
 
 * Refactored project configuration structure to move version requirements into the config section
 * Updated serialization/deserialization logic for new field structure
-* Enhanced test coverage for new configuration format
+* Enhanced test coverage for new configuration format and update functionality
 * Maintained backward compatibility for projects without version specifications
+* Added `force_check` parameter to update functions to distinguish manual vs automatic checks
 
 ## v0.6.1
 
