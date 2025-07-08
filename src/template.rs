@@ -4,7 +4,6 @@ use anyhow::bail;
 use handlebars::Handlebars;
 use indexmap::IndexMap;
 use serde_json::json;
-use serde_yaml;
 
 /// Represents the context for template variable processing, containing all
 /// available variables, environment variables, and constants.
@@ -342,7 +341,7 @@ mod test {
             .build();
 
         let processed_cookbook_vars = cookbook_context.process_variables().unwrap();
-        println!("Project variables: {:?}", processed_cookbook_vars);
+        println!("Project variables: {processed_cookbook_vars:?}");
 
         // Now process cookbook variables with project variables
         let mut cookbook_context = VariableContext::builder()
@@ -351,7 +350,7 @@ mod test {
         cookbook_context.variables.extend(cookbook_variables);
 
         let processed_cookbook_vars = cookbook_context.process_variables().unwrap();
-        println!("Cookbook variables: {:?}", processed_cookbook_vars);
+        println!("Cookbook variables: {processed_cookbook_vars:?}");
 
         // Now process recipe variables with access to cookbook variables
         let mut recipe_context = VariableContext::builder()
@@ -360,7 +359,7 @@ mod test {
         recipe_context.variables.extend(recipe_variables);
 
         let processed_recipe_vars = recipe_context.process_variables().unwrap();
-        println!("Recipe variables: {:?}", processed_recipe_vars);
+        println!("Recipe variables: {processed_recipe_vars:?}");
 
         // The cookbook-level baz should still be "bar" (from project foo), not "build-bar"
         assert_eq!(processed_recipe_vars.get("baz"), Some(&"bar".to_owned()));

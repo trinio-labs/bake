@@ -41,7 +41,8 @@ struct Args {
     /// Recipe to bake. Use:{n}{n}
     /// <cookbook>:<recipe>  - for a cookbook's recipe{n}
     /// <cookbook>:          - for all recipes in a cookbook{n}
-    /// :<recipe>            - for all recipes in all cookbooks{n}
+    /// :<recipe>            - for all recipes with that name across all cookbooks{n}
+    /// Both cookbook and recipe parts support regex patterns.{n}
     recipe: Option<String>,
 
     /// Path fo config file or directory containing a bake.yml file

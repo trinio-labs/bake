@@ -240,10 +240,12 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
 
     // Mock GCS client for testing
+    type UploadList = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
     #[derive(Clone)]
     struct MockGcsClient {
         downloads: Arc<Mutex<HashMap<String, Vec<u8>>>>,
-        uploads: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+        uploads: UploadList,
         should_fail_download: bool,
         should_fail_upload: bool,
     }

@@ -3,10 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    project::Recipe,
-    template::VariableContext,
-};
+use crate::{project::Recipe, template::VariableContext};
 use anyhow::bail;
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
@@ -57,7 +54,7 @@ impl Cookbook {
 
         // Create a new context for this cookbook, inheriting from the project context
         let mut cookbook_context = context.clone();
-        
+
         // Add project and cookbook constants
         cookbook_context.merge(&VariableContext::with_project_constants(project_root));
         cookbook_context.merge(&VariableContext::with_cookbook_constants(path));
@@ -98,12 +95,11 @@ impl Cookbook {
                     // Start with resolved cookbook variables, then add recipe variables
                     let mut recipe_variables = resolved_cookbook_vars.clone();
                     recipe_variables.extend(recipe.variables.clone());
-                    
+
                     // Process recipe variables with access to cookbook variables
                     let mut recipe_context = cookbook_context.clone();
                     recipe_context.environment = recipe_environment;
                     recipe_context.variables = recipe_variables;
-                    
                     match recipe_context.process_variables() {
                         Ok(variables) => {
                             recipe.variables = variables;
@@ -160,11 +156,7 @@ impl Cookbook {
                 Ok(file) => {
                     let filename = file.file_name().to_str().unwrap();
                     if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::from(
-                            &file.into_path(),
-                            path,
-                            context,
-                        ) {
+                        match Self::from(&file.into_path(), path, context) {
                             Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
                             Err(err) => Some(Err(err)),
                         }
@@ -184,9 +176,9 @@ impl Cookbook {
 mod test {
     use std::{collections::BTreeMap, path::PathBuf};
 
+    use crate::template::VariableContext;
     use indexmap::IndexMap;
     use test_case::test_case;
-    use crate::template::VariableContext;
 
     fn config_path(path_str: &str) -> String {
         env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/tests" + path_str
@@ -230,8 +222,8 @@ mod test {
 
     #[test]
     fn test_yaml_type_preservation() {
-        use serde_yaml::Value;
         use crate::template::VariableContext;
+        use serde_yaml::Value;
 
         // Create a YAML value with mixed types
         let yaml_str = r#"
@@ -253,17 +245,15 @@ recipes:
 "#;
 
         let mut yaml_value: Value = serde_yaml::from_str(yaml_str).unwrap();
-        
+
         // Create a context with the variables
         let variables = IndexMap::from([
             ("force_build".to_owned(), "false".to_owned()),
             ("max_parallel".to_owned(), "4".to_owned()),
             ("debug_enabled".to_owned(), "true".to_owned()),
         ]);
-        
-        let context = VariableContext::builder()
-            .variables(variables)
-            .build();
+
+        let context = VariableContext::builder().variables(variables).build();
 
         // Process the template
         VariableContext::process_template_in_value(&mut yaml_value, &context, true).unwrap();
@@ -273,8 +263,13 @@ recipes:
             if let Some(Value::Mapping(recipes)) = map.get("recipes") {
                 if let Some(Value::Mapping(build_recipe)) = recipes.get("build") {
                     // These should be converted back to their original types
-                    assert!(matches!(build_recipe.get("force_build"), Some(Value::Bool(false))));
-                    assert!(matches!(build_recipe.get("max_workers"), Some(Value::Number(n)) if n.as_i64() == Some(4)));
+                    assert!(matches!(
+                        build_recipe.get("force_build"),
+                        Some(Value::Bool(false))
+                    ));
+                    assert!(
+                        matches!(build_recipe.get("max_workers"), Some(Value::Number(n)) if n.as_i64() == Some(4))
+                    );
                     assert!(matches!(build_recipe.get("debug"), Some(Value::Bool(true))));
                 }
             }

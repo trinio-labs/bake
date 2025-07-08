@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+## v0.8.0
+
+### Changed
+
+* **BREAKING: Command format now requires ':' separator** - All recipe commands must now include a colon separator for consistency and clarity
+  - `bake build` → `bake :build` or `bake cookbook:build`
+  - `bake cookbook` → `bake cookbook:`
+* Enhanced help text to clearly explain the new command format requirements
+* Improved error messages with helpful guidance for correct usage
+
+### Added
+
+* **Colon-separated command parsing** - New structured command format with three patterns:
+  - `bake cookbook:recipe` - Execute specific recipe from specific cookbook
+  - `bake cookbook:` - Execute all recipes in a cookbook
+  - `bake :recipe` - Execute all recipes with that name across all cookbooks
+* **Regex pattern support** - Both cookbook and recipe parts now support full regex patterns:
+  - `bake '^f.*:'` - Match cookbooks starting with 'f'
+  - `bake ':^build'` - Match recipes starting with 'build'
+  - `bake '^f.*:^build'` - Combine regex patterns for both parts
+* **Comprehensive test coverage** - Added 22 new tests using `test_case` macro covering:
+  - Pattern matching functionality
+  - Error handling for invalid patterns
+  - Regex pattern validation
+  - Edge cases and no-match scenarios
+  - Integration with execution planning
+
+### Fixed
+
+* **Code quality improvements** - Fixed all clippy warnings:
+  - Removed redundant imports
+  - Updated format strings to use inline arguments
+  - Simplified complex type definitions
+  - Improved code formatting and consistency
+
+### Technical
+
+* Added `filter_recipes_by_pattern()` method with comprehensive regex support
+* Enhanced pattern validation with detailed error messages
+* Improved test organization using parameterized tests
+* Maintained backward compatibility for valid colon-separated patterns
+* Added type aliases to reduce code complexity
+
 ## v0.7.0
 
 ### Changed

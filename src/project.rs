@@ -414,9 +414,12 @@ impl BakeProject {
     ///
     /// # Arguments
     ///
-    /// * `pattern` - An optional string pattern. Recipes whose fully qualified names
-    ///   contain this pattern are initially selected as targets. If `None`, all recipes
-    ///   are considered initial targets.
+    /// * `pattern` - An optional string pattern in the format:
+    ///   - `cookbook:recipe` - Execute a specific recipe from a specific cookbook
+    ///   - `cookbook:` - Execute all recipes in a cookbook
+    ///   - `:recipe` - Execute all recipes with that name across all cookbooks
+    ///     Both cookbook and recipe parts support regex patterns.
+    ///     If `None`, all recipes are considered initial targets.
     ///
     /// # Returns
     ///
@@ -428,6 +431,8 @@ impl BakeProject {
     ///   - A cycle is detected in the recipe dependency graph for the targeted recipes.
     ///   - A recipe specified in the graph cannot be found in the project's cookbooks.
     ///   - An unexpected state occurs during the planning process.
+    ///   - Invalid regex pattern is provided.
+    ///   - Pattern does not contain required ':' separator.
     ///
     /// If no recipes match the pattern or if the project has no recipes, an empty
     /// vector `Vec::new()` is returned successfully.
@@ -436,12 +441,7 @@ impl BakeProject {
         pattern: Option<&str>,
     ) -> anyhow::Result<Vec<Vec<Recipe>>> {
         let initial_target_fqns: HashSet<String> = if let Some(p_str) = pattern {
-            self.recipe_dependency_graph
-                .fqn_to_node_index
-                .keys()
-                .filter(|fqn| fqn.contains(p_str))
-                .cloned()
-                .collect()
+            self.filter_recipes_by_pattern(p_str)?
         } else {
             // If no pattern is provided, all recipes in the project are initial targets.
             self.recipe_dependency_graph
@@ -525,6 +525,88 @@ impl BakeProject {
     /// This directory is used for storing Bake-specific files like cache and logs.
     pub fn get_project_bake_path(&self) -> PathBuf {
         self.root_path.join(".bake")
+    }
+
+    /// Filters recipes based on a colon-separated pattern with regex support.
+    ///
+    /// # Arguments
+    ///
+    /// * `pattern` - The pattern in format:
+    ///   - `cookbook:recipe` - Execute a specific recipe from a specific cookbook
+    ///   - `cookbook:` - Execute all recipes in a cookbook
+    ///   - `:recipe` - Execute all recipes with that name across all cookbooks
+    ///     Both cookbook and recipe parts support regex patterns.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<HashSet<String>, anyhow::Error>` containing the FQNs of matching recipes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The pattern does not contain a ':' separator
+    /// - The regex pattern is invalid
+    fn filter_recipes_by_pattern(&self, pattern: &str) -> anyhow::Result<HashSet<String>> {
+        // Require ':' separator
+        if !pattern.contains(':') {
+            bail!(
+                "Command Error: Pattern '{}' must contain ':' separator. Use:\n  \
+                 <cookbook>:<recipe> - for a specific recipe\n  \
+                 <cookbook>: - for all recipes in a cookbook\n  \
+                 :<recipe> - for all recipes with that name across all cookbooks",
+                pattern
+            );
+        }
+
+        let (cookbook_pattern, recipe_pattern) = pattern.split_once(':').unwrap();
+
+        // Compile regex patterns
+        let cookbook_regex = if cookbook_pattern.is_empty() {
+            None
+        } else {
+            Some(regex::Regex::new(cookbook_pattern).map_err(|e| {
+                anyhow::anyhow!(
+                    "Command Error: Invalid regex pattern for cookbook '{}': {}",
+                    cookbook_pattern,
+                    e
+                )
+            })?)
+        };
+
+        let recipe_regex = if recipe_pattern.is_empty() {
+            None
+        } else {
+            Some(regex::Regex::new(recipe_pattern).map_err(|e| {
+                anyhow::anyhow!(
+                    "Command Error: Invalid regex pattern for recipe '{}': {}",
+                    recipe_pattern,
+                    e
+                )
+            })?)
+        };
+
+        let mut matching_fqns = HashSet::new();
+
+        // Filter recipes based on the pattern
+        for fqn in self.recipe_dependency_graph.fqn_to_node_index.keys() {
+            if let Some((cookbook_name, recipe_name)) = fqn.split_once(':') {
+                let cookbook_matches = cookbook_regex
+                    .as_ref()
+                    .map(|re| re.is_match(cookbook_name))
+                    .unwrap_or(true);
+
+                let recipe_matches = recipe_regex
+                    .as_ref()
+                    .map(|re| re.is_match(recipe_name))
+                    .unwrap_or(true);
+
+                if cookbook_matches && recipe_matches {
+                    matching_fqns.insert(fqn.clone());
+                }
+            }
+        }
+
+        Ok(matching_fqns)
     }
 }
 
@@ -663,5 +745,129 @@ variables:
         let updated_content = fs::read_to_string(&config_path).unwrap();
         assert!(updated_content.contains("minVersion:"));
         assert!(updated_content.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    fn get_test_project() -> super::BakeProject {
+        std::env::set_var("TEST_BAKE_VAR", "test");
+        super::BakeProject::from(
+            &PathBuf::from(config_path("/valid")),
+            IndexMap::new(),
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test_case("build" => matches Err(_); "Missing colon separator")]
+    #[test_case("build-test" => matches Err(_); "Missing colon separator with dash")]
+    #[test_case("^[unclosed:" => matches Err(_); "Invalid regex in cookbook")]
+    #[test_case(":^[unclosed" => matches Err(_); "Invalid regex in recipe")]
+    fn test_filter_recipes_by_pattern_errors(
+        pattern: &str,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let project = get_test_project();
+        project.filter_recipes_by_pattern(pattern)
+    }
+
+    #[test_case("foo:"; "Cookbook only")]
+    #[test_case(":test"; "Recipe only")]
+    #[test_case("foo:build"; "Specific recipe")]
+    #[test_case("^f.*:"; "Regex cookbook pattern")]
+    #[test_case(":^build"; "Regex recipe pattern")]
+    #[test_case("^f.*:^build"; "Regex both patterns")]
+    fn test_filter_recipes_by_pattern_success(pattern: &str) {
+        let project = get_test_project();
+        let result = project.filter_recipes_by_pattern(pattern).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test_case("nonexistent:recipe"; "Nonexistent cookbook and recipe")]
+    #[test_case("foo:nonexistent"; "Existing cookbook, nonexistent recipe")]
+    #[test_case("nonexistent:"; "Nonexistent cookbook")]
+    #[test_case(":nonexistent"; "Nonexistent recipe")]
+    fn test_filter_recipes_by_pattern_no_matches(pattern: &str) {
+        let project = get_test_project();
+        let result = project.filter_recipes_by_pattern(pattern).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test_case("foo:"; "Cookbook filter")]
+    #[test_case(":test"; "Recipe filter")]
+    #[test_case(":"; "Match all")]
+    fn test_filter_recipes_by_pattern_validation(pattern: &str) {
+        let project = get_test_project();
+        let result = project.filter_recipes_by_pattern(pattern).unwrap();
+        assert!(!result.is_empty());
+
+        match pattern {
+            p if p.starts_with(':') && !p.ends_with(':') => {
+                // Recipe only pattern (:recipe)
+                let recipe_name = &p[1..];
+                for fqn in &result {
+                    let fqn_recipe = fqn.split(':').nth(1).unwrap();
+                    // Current implementation uses regex matching, so "test" matches "post-test"
+                    let re = regex::Regex::new(recipe_name).unwrap();
+                    assert!(re.is_match(fqn_recipe));
+                }
+            }
+            p if p.ends_with(':') && !p.starts_with(':') => {
+                // Cookbook only pattern (cookbook:)
+                let cookbook_name = &p[..p.len() - 1];
+                for fqn in &result {
+                    if cookbook_name.contains('^') || cookbook_name.contains('*') {
+                        // Regex pattern - just check it matches something from expected cookbook
+                        let cookbook = fqn.split(':').next().unwrap();
+                        let re = regex::Regex::new(cookbook_name).unwrap();
+                        assert!(re.is_match(cookbook));
+                    } else {
+                        // Exact match for cookbook
+                        assert!(fqn.starts_with(&format!("{cookbook_name}:")));
+                    }
+                }
+            }
+            ":" => {
+                // Match all - just verify we got results
+                assert!(!result.is_empty());
+            }
+            _ => {
+                // Specific recipe pattern (cookbook:recipe)
+                if pattern.contains('^') || pattern.contains('*') {
+                    // Contains regex - verify each part matches
+                    let parts: Vec<&str> = pattern.split(':').collect();
+                    for fqn in &result {
+                        let fqn_parts: Vec<&str> = fqn.split(':').collect();
+                        if !parts[0].is_empty() {
+                            let cookbook_re = regex::Regex::new(parts[0]).unwrap();
+                            assert!(cookbook_re.is_match(fqn_parts[0]));
+                        }
+                        if !parts[1].is_empty() {
+                            let recipe_re = regex::Regex::new(parts[1]).unwrap();
+                            assert!(recipe_re.is_match(fqn_parts[1]));
+                        }
+                    }
+                } else {
+                    // Exact match
+                    assert!(result.contains(pattern));
+                }
+            }
+        }
+    }
+
+    #[test_case("foo:"; "Valid cookbook pattern")]
+    #[test_case(":test"; "Valid recipe pattern")]
+    #[test_case("foo:build"; "Valid specific pattern")]
+    fn test_get_recipes_for_execution_with_patterns(pattern: &str) {
+        let project = get_test_project();
+        let result = project.get_recipes_for_execution(Some(pattern));
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test_case("build" => matches Err(_); "Missing colon in execution")]
+    #[test_case("^[invalid" => matches Err(_); "Invalid regex in execution")]
+    fn test_get_recipes_for_execution_errors(
+        pattern: &str,
+    ) -> anyhow::Result<Vec<Vec<super::Recipe>>> {
+        let project = get_test_project();
+        project.get_recipes_for_execution(Some(pattern))
     }
 }

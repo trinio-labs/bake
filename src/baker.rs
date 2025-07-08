@@ -602,7 +602,7 @@ mod tests {
                     .map(|r_name| format!("{}:{}", cb.name, r_name))
             })
             .collect();
-        
+
         CacheBuilder::new(project)
             .add_strategy("local", TestCacheStrategy::from_config)
             .add_strategy("s3", TestCacheStrategy::from_config)
