@@ -9,12 +9,12 @@ construction. It's the core of bake's project model and execution planning.
 
 ## Key Files
 
+- **mod.rs** - Main project module with project loading
 - **config.rs** - Tool configuration (parallelism, caching, updates)
 - **cookbook.rs** - Cookbook (collection of recipes) management and parsing
 - **recipe.rs** - Individual recipe definitions and execution context
 - **graph.rs** - Recipe dependency graph construction using petgraph
 - **hashing.rs** - Input/output fingerprinting for cache keys
-- **mod.rs** (project.rs) - Main project module with project loading and coordination
 
 ## Architecture
 
@@ -34,7 +34,7 @@ Project (bake.yml)
     │       │   ├── dependencies
     │       │   ├── cache (inputs/outputs)
     │       │   └── variables
-    ```
+```
 
 ### Dependency Graph
 
@@ -51,11 +51,13 @@ Project (bake.yml)
 2. **Parsing**: Parse project configuration and validate
 3. **Cookbook Loading**: Load and parse all referenced cookbooks
 4. **Recipe Collection**: Gather all recipes from all cookbooks
-5. **Graph Construction**: Build dependency graph for execution planning
+5. **Execution planning**: Find out which recipes are the target based on the CLI arguments
+6. **Graph Construction**: Build dependency graph for execution planning
 
 ### Recipe Execution Context
 
 Each recipe runs with:
+
 - Working directory set to cookbook directory
 - Environment variables from multiple sources
 - Template variables resolved from hierarchy
@@ -64,6 +66,7 @@ Each recipe runs with:
 ### Variable Resolution
 
 Variables are resolved in order of precedence:
+
 1. CLI overrides (`--var key=value`)
 2. Recipe-level variables
 3. Cookbook-level variables
@@ -122,7 +125,7 @@ parallelism: 4
 name: "my-cookbook"
 variables:
   PORT: 3000
-  
+
 recipes:
   install:
     description: "Install dependencies"
@@ -130,7 +133,7 @@ recipes:
     cache:
       inputs: [package.json, package-lock.json]
       outputs: [node_modules]
-    
+
   build:
     description: "Build the application"
     run: npm run build
@@ -193,11 +196,11 @@ recipes:
   test:
     run: npm test
     dependencies: [build]
-    
+
   build:
     run: npm run build
     dependencies: [install]
-    
+
   install:
     run: npm install
 ```
@@ -208,7 +211,7 @@ recipes:
 recipes:
   typescript:
     cache:
-      inputs: 
+      inputs:
         - "src/**/*.ts"
         - "*.json"
       outputs:
@@ -221,7 +224,7 @@ recipes:
 ```yaml
 variables:
   API_URL: "https://api.example.com"
-  
+
 recipes:
   deploy:
     run: ./deploy.sh {{var.API_URL}}
@@ -235,7 +238,7 @@ recipes:
 recipes:
   integration-test:
     run: npm run test:integration
-    dependencies: 
+    dependencies:
       - backend:build
       - frontend:build
 ```

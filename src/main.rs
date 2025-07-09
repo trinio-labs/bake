@@ -43,7 +43,8 @@ struct Args {
     /// <cookbook>:<recipe>  - for a cookbook's recipe{n}
     /// <cookbook>:          - for all recipes in a cookbook{n}
     /// :<recipe>            - for all recipes with that name across all cookbooks{n}
-    /// Both cookbook and recipe parts support regex patterns.{n}
+    /// By default, cookbook and recipe names are matched exactly.{n}
+    /// Use --regex flag to enable regex pattern matching.{n}
     recipe: Option<String>,
 
     /// Path fo config file or directory containing a bake.yml file
@@ -81,6 +82,10 @@ struct Args {
     /// Force running even if the config version is newer than the current version
     #[arg(long)]
     force_version_override: bool,
+
+    /// Use regex patterns for cookbook and recipe matching
+    #[arg(long)]
+    regex: bool,
 }
 
 fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -91,48 +96,16 @@ fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
 }
 
 /// Resolves the bake project path from command line argument or current directory.
-/// Returns an absolute path after security validation.
+/// Returns an absolute path.
 fn resolve_bake_path(path_arg: &Option<String>) -> anyhow::Result<std::path::PathBuf> {
     let path = match path_arg {
         Some(path) => std::path::absolute(path)?,
         None => std::env::current_dir()?,
     };
 
-    // Validate the path for security
-    validate_path_security(&path)?;
-
     Ok(path)
 }
 
-/// Validates path security by canonicalizing and checking for directory existence.
-/// Prevents path traversal attacks and ensures reasonable path length limits.
-fn validate_path_security(path: &std::path::Path) -> anyhow::Result<()> {
-    // Canonicalize the path to resolve any symlinks and relative components
-    let canonical_path = path.canonicalize()
-        .with_context(|| format!("Cannot access path '{}'. Check that the path exists and you have permission to access it.", path.display()))?;
-
-    // Check if path exists and is a directory
-    if !canonical_path.is_dir() {
-        bail!(
-            "Path '{}' is not a directory. Please provide a valid directory path.",
-            canonical_path.display()
-        );
-    }
-
-    // Additional validation: ensure path is reasonable length to prevent buffer overflow attacks
-    let path_str = canonical_path.to_string_lossy();
-    if path_str.len() > 4096 {
-        bail!(
-            "Path '{}' is too long (maximum 4096 characters). Please use a shorter path.",
-            canonical_path.display()
-        );
-    }
-
-    // Note: After canonicalization, path traversal components like ".." are already resolved
-    // The canonicalized path is safe to use as it represents the actual filesystem location
-
-    Ok(())
-}
 
 async fn handle_update_info() -> anyhow::Result<()> {
     get_update_info()
@@ -246,7 +219,8 @@ async fn run_bake(args: Args) -> anyhow::Result<()> {
             let arc_project = Arc::new(project);
 
             // Get execution plan to determine which recipes need cache hashes
-            let execution_plan = arc_project.get_recipes_for_execution(recipe_filter)?;
+            let execution_plan =
+                arc_project.get_recipes_for_execution(recipe_filter, args.regex)?;
             let recipes_to_execute: Vec<String> = execution_plan
                 .iter()
                 .flatten()

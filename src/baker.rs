@@ -688,7 +688,7 @@ mod tests {
     async fn run_all_recipes() {
         let project = Arc::new(create_test_project());
         let cache = build_cache(project.clone()).await;
-        let execution_plan = project.get_recipes_for_execution(None).unwrap();
+        let execution_plan = project.get_recipes_for_execution(None, false).unwrap();
         let res = super::bake(project.clone(), cache, execution_plan).await;
         assert!(res.is_ok());
     }
@@ -699,7 +699,9 @@ mod tests {
         project.config.verbose = true;
         let project = Arc::new(project);
         let cache = build_cache(project.clone()).await;
-        let execution_plan = project.get_recipes_for_execution(Some("bar:")).unwrap();
+        let execution_plan = project
+            .get_recipes_for_execution(Some("bar:"), false)
+            .unwrap();
         let res = super::bake(project.clone(), cache, execution_plan).await;
         assert!(res.is_ok());
     }
@@ -736,7 +738,9 @@ mod tests {
 
         let project_arc = Arc::new(project);
         let cache = build_cache(project_arc.clone()).await;
-        let execution_plan = project_arc.get_recipes_for_execution(Some("bar:")).unwrap();
+        let execution_plan = project_arc
+            .get_recipes_for_execution(Some("bar:"), false)
+            .unwrap();
         let res = super::bake(project_arc.clone(), cache, execution_plan).await;
 
         // Assert that the bake operation failed as expected.

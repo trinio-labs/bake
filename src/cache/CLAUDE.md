@@ -9,11 +9,11 @@ haven't changed. It supports multiple cache backends including local filesystem,
 
 ## Key Files
 
+- **mod.rs** - Main cache module with traits and common functionality
 - **builder.rs** - Cache strategy composition and configuration
 - **local.rs** - Local filesystem cache implementation
 - **s3.rs** - AWS S3 remote cache implementation
 - **gcs.rs** - Google Cloud Storage cache implementation
-- **mod.rs** (cache.rs) - Main cache module with traits and common functionality
 
 ## Architecture
 

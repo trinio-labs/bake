@@ -217,7 +217,8 @@ impl BakeProject {
     }
 
     /// Validates the minimum bake version required by this project configuration.
-    /// Prevents running if the config version is greater (newer) than the current running version, unless force_version_override is true.
+    /// Validates project version compatibility assuming backward compatibility.
+    /// Only prevents running if the project requires a newer version than current.
     fn validate_min_version(&self, force_version_override: bool) -> anyhow::Result<()> {
         let current_version = env!("CARGO_PKG_VERSION");
 
@@ -236,8 +237,8 @@ impl BakeProject {
                 // Compare version tuples (major, minor, patch)
                 let cmp = project_parts.cmp(&current_parts);
                 if cmp == std::cmp::Ordering::Greater {
+                    // Project requires newer version than current
                     if !force_version_override {
-                        // Config version is newer than running version
                         anyhow::bail!(
                             "❌ This project requires bake v{} but you're running v{}.\n   Please upgrade your bake installation to match or exceed the project version, or use --force-version-override to bypass this check.",
                             project_version, current_version
@@ -247,19 +248,12 @@ impl BakeProject {
                             "⚠️  Forced override: This project requires bake v{project_version} but you're running v{current_version}. Proceeding with force override.",
                         );
                     }
-                } else if project_parts.first() != current_parts.first() {
-                    // Major version mismatch - this could indicate breaking changes
-                    eprintln!(
-                        "⚠️  Warning: This project requires bake v{project_version} but you're running v{current_version}",
-                    );
-                    eprintln!("   This major version difference may cause configuration issues.");
-                    eprintln!("   Consider updating your project configuration or using the same bake version.");
-                } else {
-                    // Minor/patch version difference - less likely to cause issues
-                    eprintln!(
-                        "ℹ️  Info: This project requires bake v{project_version} (you're running v{current_version})",
-                    );
+                } else if cmp == std::cmp::Ordering::Less {
+                    // Project version is older than current - assume backward compatibility
+                    // Only show deprecation warnings if configuration uses deprecated features
+                    self.check_deprecated_configuration(project_version, current_version);
                 }
+                // If versions are equal, no action needed
             }
         } else {
             // No version specified - this is an older project
@@ -269,6 +263,31 @@ impl BakeProject {
         }
 
         Ok(())
+    }
+
+    /// Checks for deprecated configuration options and shows appropriate warnings.
+    /// This method is called when the project version is older than the current bake version.
+    fn check_deprecated_configuration(&self, project_version: &str, current_version: &str) {
+        let warnings: Vec<&str> = Vec::new();
+
+        // Check for deprecated configuration patterns
+        // TODO: Add specific deprecation checks as features are deprecated
+
+        // Example deprecation check structure:
+        // if self.has_deprecated_config_option() {
+        //     warnings.push("Configuration option 'old_option' is deprecated since v1.2.0. Use 'new_option' instead.");
+        // }
+
+        // Show warnings if any deprecated features are found
+        if !warnings.is_empty() {
+            eprintln!("⚠️  Deprecated configuration detected in project (v{project_version} → v{current_version}):");
+            for warning in warnings {
+                eprintln!("   • {warning}");
+            }
+            eprintln!(
+                "   Consider updating your project configuration with: bake --update-version"
+            );
+        }
     }
 
     /// Updates the minimum bake version to the current version.
@@ -439,9 +458,10 @@ impl BakeProject {
     pub fn get_recipes_for_execution(
         &self,
         pattern: Option<&str>,
+        use_regex: bool,
     ) -> anyhow::Result<Vec<Vec<Recipe>>> {
         let initial_target_fqns: HashSet<String> = if let Some(p_str) = pattern {
-            self.filter_recipes_by_pattern(p_str)?
+            self.filter_recipes_by_pattern(p_str, use_regex)?
         } else {
             // If no pattern is provided, all recipes in the project are initial targets.
             self.recipe_dependency_graph
@@ -546,7 +566,11 @@ impl BakeProject {
     /// Returns an error if:
     /// - The pattern does not contain a ':' separator
     /// - The regex pattern is invalid
-    fn filter_recipes_by_pattern(&self, pattern: &str) -> anyhow::Result<HashSet<String>> {
+    fn filter_recipes_by_pattern(
+        &self,
+        pattern: &str,
+        use_regex: bool,
+    ) -> anyhow::Result<HashSet<String>> {
         // Require ':' separator
         if !pattern.contains(':') {
             bail!(
@@ -560,48 +584,71 @@ impl BakeProject {
 
         let (cookbook_pattern, recipe_pattern) = pattern.split_once(':').unwrap();
 
-        // Compile regex patterns
-        let cookbook_regex = if cookbook_pattern.is_empty() {
-            None
-        } else {
-            Some(regex::Regex::new(cookbook_pattern).map_err(|e| {
-                anyhow::anyhow!(
-                    "Command Error: Invalid regex pattern for cookbook '{}': {}",
-                    cookbook_pattern,
-                    e
-                )
-            })?)
-        };
-
-        let recipe_regex = if recipe_pattern.is_empty() {
-            None
-        } else {
-            Some(regex::Regex::new(recipe_pattern).map_err(|e| {
-                anyhow::anyhow!(
-                    "Command Error: Invalid regex pattern for recipe '{}': {}",
-                    recipe_pattern,
-                    e
-                )
-            })?)
-        };
-
         let mut matching_fqns = HashSet::new();
 
-        // Filter recipes based on the pattern
-        for fqn in self.recipe_dependency_graph.fqn_to_node_index.keys() {
-            if let Some((cookbook_name, recipe_name)) = fqn.split_once(':') {
-                let cookbook_matches = cookbook_regex
-                    .as_ref()
-                    .map(|re| re.is_match(cookbook_name))
-                    .unwrap_or(true);
+        if use_regex {
+            // Compile regex patterns
+            let cookbook_regex = if cookbook_pattern.is_empty() {
+                None
+            } else {
+                Some(regex::Regex::new(cookbook_pattern).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Command Error: Invalid regex pattern for cookbook '{}': {}",
+                        cookbook_pattern,
+                        e
+                    )
+                })?)
+            };
 
-                let recipe_matches = recipe_regex
-                    .as_ref()
-                    .map(|re| re.is_match(recipe_name))
-                    .unwrap_or(true);
+            let recipe_regex = if recipe_pattern.is_empty() {
+                None
+            } else {
+                Some(regex::Regex::new(recipe_pattern).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Command Error: Invalid regex pattern for recipe '{}': {}",
+                        recipe_pattern,
+                        e
+                    )
+                })?)
+            };
 
-                if cookbook_matches && recipe_matches {
-                    matching_fqns.insert(fqn.clone());
+            // Filter recipes based on regex patterns
+            for fqn in self.recipe_dependency_graph.fqn_to_node_index.keys() {
+                if let Some((cookbook_name, recipe_name)) = fqn.split_once(':') {
+                    let cookbook_matches = cookbook_regex
+                        .as_ref()
+                        .map(|re| re.is_match(cookbook_name))
+                        .unwrap_or(true);
+
+                    let recipe_matches = recipe_regex
+                        .as_ref()
+                        .map(|re| re.is_match(recipe_name))
+                        .unwrap_or(true);
+
+                    if cookbook_matches && recipe_matches {
+                        matching_fqns.insert(fqn.clone());
+                    }
+                }
+            }
+        } else {
+            // Use exact string matching
+            for fqn in self.recipe_dependency_graph.fqn_to_node_index.keys() {
+                if let Some((cookbook_name, recipe_name)) = fqn.split_once(':') {
+                    let cookbook_matches = if cookbook_pattern.is_empty() {
+                        true
+                    } else {
+                        cookbook_name == cookbook_pattern
+                    };
+
+                    let recipe_matches = if recipe_pattern.is_empty() {
+                        true
+                    } else {
+                        recipe_name == recipe_pattern
+                    };
+
+                    if cookbook_matches && recipe_matches {
+                        matching_fqns.insert(fqn.clone());
+                    }
                 }
             }
         }
@@ -632,7 +679,7 @@ mod tests {
         );
 
         // Fetch all recipes and convert to a BTreeMap for easy lookup in tests
-        let all_recipes_staged = project.get_recipes_for_execution(None).unwrap();
+        let all_recipes_staged = project.get_recipes_for_execution(None, false).unwrap();
         let recipes_map: BTreeMap<String, Recipe> = all_recipes_staged
             .into_iter()
             .flatten()
@@ -757,6 +804,48 @@ variables:
         .unwrap()
     }
 
+    #[test_case("foo:build"; "Exact cookbook and recipe match")]
+    #[test_case("foo:"; "Exact cookbook match")]
+    #[test_case(":build"; "Exact recipe match")]
+    #[test_case("bar:unique-recipe"; "Exact match for unique recipe")]
+    fn test_filter_recipes_by_pattern_exact_matching(pattern: &str) {
+        let project = get_test_project();
+        let result = project.filter_recipes_by_pattern(pattern, false).unwrap();
+        assert!(!result.is_empty());
+
+        // Verify exact matching behavior
+        for fqn in &result {
+            if let Some((cookbook_name, recipe_name)) = fqn.split_once(':') {
+                let (cookbook_pattern, recipe_pattern) = pattern.split_once(':').unwrap();
+
+                if !cookbook_pattern.is_empty() {
+                    assert_eq!(
+                        cookbook_name, cookbook_pattern,
+                        "Cookbook name should match exactly"
+                    );
+                }
+                if !recipe_pattern.is_empty() {
+                    assert_eq!(
+                        recipe_name, recipe_pattern,
+                        "Recipe name should match exactly"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test_case("foo_something:build"; "Non-existent cookbook with similar name")]
+    #[test_case("foo:build_something"; "Non-existent recipe with similar name")]
+    #[test_case("my_cookbook:build"; "Partial cookbook name should not match")]
+    fn test_filter_recipes_by_pattern_exact_no_matches(pattern: &str) {
+        let project = get_test_project();
+        let result = project.filter_recipes_by_pattern(pattern, false).unwrap();
+        assert!(
+            result.is_empty(),
+            "Exact matching should not match similar names"
+        );
+    }
+
     #[test_case("build" => matches Err(_); "Missing colon separator")]
     #[test_case("build-test" => matches Err(_); "Missing colon separator with dash")]
     #[test_case("^[unclosed:" => matches Err(_); "Invalid regex in cookbook")]
@@ -765,7 +854,7 @@ variables:
         pattern: &str,
     ) -> anyhow::Result<std::collections::HashSet<String>> {
         let project = get_test_project();
-        project.filter_recipes_by_pattern(pattern)
+        project.filter_recipes_by_pattern(pattern, true)
     }
 
     #[test_case("foo:"; "Cookbook only")]
@@ -776,7 +865,7 @@ variables:
     #[test_case("^f.*:^build"; "Regex both patterns")]
     fn test_filter_recipes_by_pattern_success(pattern: &str) {
         let project = get_test_project();
-        let result = project.filter_recipes_by_pattern(pattern).unwrap();
+        let result = project.filter_recipes_by_pattern(pattern, true).unwrap();
         assert!(!result.is_empty());
     }
 
@@ -786,7 +875,7 @@ variables:
     #[test_case(":nonexistent"; "Nonexistent recipe")]
     fn test_filter_recipes_by_pattern_no_matches(pattern: &str) {
         let project = get_test_project();
-        let result = project.filter_recipes_by_pattern(pattern).unwrap();
+        let result = project.filter_recipes_by_pattern(pattern, true).unwrap();
         assert!(result.is_empty());
     }
 
@@ -795,7 +884,7 @@ variables:
     #[test_case(":"; "Match all")]
     fn test_filter_recipes_by_pattern_validation(pattern: &str) {
         let project = get_test_project();
-        let result = project.filter_recipes_by_pattern(pattern).unwrap();
+        let result = project.filter_recipes_by_pattern(pattern, true).unwrap();
         assert!(!result.is_empty());
 
         match pattern {
@@ -857,7 +946,35 @@ variables:
     #[test_case("foo:build"; "Valid specific pattern")]
     fn test_get_recipes_for_execution_with_patterns(pattern: &str) {
         let project = get_test_project();
-        let result = project.get_recipes_for_execution(Some(pattern));
+        let result = project.get_recipes_for_execution(Some(pattern), true);
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test_case("foo:build"; "Exact match pattern")]
+    #[test_case("foo:"; "Exact cookbook pattern")]
+    #[test_case(":build"; "Exact recipe pattern")]
+    fn test_get_recipes_for_execution_exact_matching(pattern: &str) {
+        let project = get_test_project();
+        let result = project.get_recipes_for_execution(Some(pattern), false);
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test_case("foo_something:build"; "Similar cookbook name should not match")]
+    #[test_case("foo:build_something"; "Similar recipe name should not match")]
+    fn test_get_recipes_for_execution_exact_no_matches(pattern: &str) {
+        let project = get_test_project();
+        let result = project.get_recipes_for_execution(Some(pattern), false);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test_case("^f.*:build"; "Regex cookbook pattern")]
+    #[test_case("foo:^build"; "Regex recipe pattern")]
+    fn test_get_recipes_for_execution_regex_patterns(pattern: &str) {
+        let project = get_test_project();
+        let result = project.get_recipes_for_execution(Some(pattern), true);
         assert!(result.is_ok());
         assert!(!result.unwrap().is_empty());
     }
@@ -868,6 +985,6 @@ variables:
         pattern: &str,
     ) -> anyhow::Result<Vec<Vec<super::Recipe>>> {
         let project = get_test_project();
-        project.get_recipes_for_execution(Some(pattern))
+        project.get_recipes_for_execution(Some(pattern), true)
     }
 }

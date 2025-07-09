@@ -9,6 +9,17 @@ This file provides guidance for working with the core source files in the bake p
 - **template.rs** - Variable substitution system using Handlebars with type preservation
 - **update.rs** - Self-update functionality via GitHub releases API
 - **test_utils.rs** - Shared testing utilities and TestProjectBuilder
+- **project/** - Project management module (uses mod.rs pattern)
+- **cache/** - Multi-tier caching system (uses mod.rs pattern)
+
+## Module Structure
+
+The bake project uses the modern Rust `mod.rs` pattern for organizing modules:
+
+- **project/mod.rs** - Main project module (handles project loading and coordination)
+- **cache/mod.rs** - Main cache module (cache traits and common functionality)
+
+This structure provides cleaner separation between module interface and implementation, making it easier to navigate and maintain the codebase.
 
 ## Template System (`template.rs`)
 
@@ -36,8 +47,8 @@ variables:
   port: 8080
 recipes:
   build:
-    debug_mode: "{{var.debug}}"  # Becomes boolean true
-    server_port: "{{var.port}}"  # Becomes number 8080
+    debug_mode: "{{var.debug}}" # Becomes boolean true
+    server_port: "{{var.port}}" # Becomes number 8080
 ```
 
 ## Baker (`baker.rs`)
@@ -70,7 +81,7 @@ recipes:
 ```yaml
 update:
   check: true
-  interval: 86400  # seconds
+  interval: 86400 # seconds
   auto: false
 ```
 

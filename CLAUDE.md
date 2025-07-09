@@ -30,8 +30,9 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
    - Implements fast-fail and cancellation logic
    - Manages progress reporting and output handling
 
-2. **project/** - Project configuration and management
+2. **project/** - Project configuration and execution planning
 
+   - `mod.rs` - Main project module with project loading and execution planning
    - `config.rs` - Tool configuration (parallelism, caching, updates)
    - `cookbook.rs` - Cookbook (collection of recipes) management
    - `recipe.rs` - Individual recipe definitions and execution context
@@ -71,6 +72,8 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 - Unit tests use `TestProjectBuilder` helper for creating test projects
 - Integration tests verify recipe execution, caching, and error handling
 - Mock cache strategies for testing cache behavior
+- Use the macro test_case whenever possible to make code dryer
+- Always run the tool with a valid project configuration to ensure correct behavior.
 
 ### Running Tests
 
@@ -78,6 +81,7 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 - Specific test: `cargo test <test_name>`
 - Verbose output: `cargo test -- --nocapture`
 - Parallel test execution: `cargo test -- --test-threads=1` (if needed)
+- Run the tool on a valid project: `cargo run -- -p ./resources/tests/valid/`
 
 ### Test Patterns
 
