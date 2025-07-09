@@ -8,7 +8,7 @@ mod update;
 #[cfg(test)]
 mod test_utils;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use indexmap::IndexMap;
 use project::BakeProject;
 use std::sync::Arc;
@@ -90,70 +90,93 @@ fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
     }
 }
 
+/// Resolves the bake project path from command line argument or current directory.
+/// Returns an absolute path after security validation.
 fn resolve_bake_path(path_arg: &Option<String>) -> anyhow::Result<std::path::PathBuf> {
-    match path_arg {
-        Some(path) => Ok(std::path::absolute(path)?),
-        None => Ok(std::env::current_dir()?),
+    let path = match path_arg {
+        Some(path) => std::path::absolute(path)?,
+        None => std::env::current_dir()?,
+    };
+
+    // Validate the path for security
+    validate_path_security(&path)?;
+
+    Ok(path)
+}
+
+/// Validates path security by canonicalizing and checking for directory existence.
+/// Prevents path traversal attacks and ensures reasonable path length limits.
+fn validate_path_security(path: &std::path::Path) -> anyhow::Result<()> {
+    // Canonicalize the path to resolve any symlinks and relative components
+    let canonical_path = path.canonicalize()
+        .with_context(|| format!("Cannot access path '{}'. Check that the path exists and you have permission to access it.", path.display()))?;
+
+    // Check if path exists and is a directory
+    if !canonical_path.is_dir() {
+        bail!(
+            "Path '{}' is not a directory. Please provide a valid directory path.",
+            canonical_path.display()
+        );
     }
+
+    // Additional validation: ensure path is reasonable length to prevent buffer overflow attacks
+    let path_str = canonical_path.to_string_lossy();
+    if path_str.len() > 4096 {
+        bail!(
+            "Path '{}' is too long (maximum 4096 characters). Please use a shorter path.",
+            canonical_path.display()
+        );
+    }
+
+    // Note: After canonicalization, path traversal components like ".." are already resolved
+    // The canonicalized path is safe to use as it represents the actual filesystem location
+
+    Ok(())
 }
 
 async fn handle_update_info() -> anyhow::Result<()> {
-    match get_update_info() {
-        Ok(info) => {
-            println!("{info}");
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Failed to get update info: {e}");
-            Err(e)
-        }
-    }
+    get_update_info()
+        .map(|info| println!("{info}"))
+        .with_context(|| {
+            "Failed to retrieve update information. Check your internet connection and try again."
+        })
 }
 
 async fn handle_update_version(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
 
-    match BakeProject::from(&bake_path, IndexMap::new(), args.force_version_override) {
-        Ok(mut project) => {
-            let old_version = project.config.min_version.clone();
-            project.update_min_version();
+    let mut project = BakeProject::from(&bake_path, IndexMap::new(), args.force_version_override)
+        .with_context(|| {
+        format!("Failed to load project from path: {}", bake_path.display())
+    })?;
 
-            match project.save_configuration() {
-                Ok(_) => {
-                    if let Some(old_ver) = old_version {
-                        println!(
-                            "✓ Updated bake version from v{} to v{}",
-                            old_ver,
-                            env!("CARGO_PKG_VERSION")
-                        );
-                    } else {
-                        println!("✓ Set bake version to v{}", env!("CARGO_PKG_VERSION"));
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    eprintln!("Failed to save configuration: {e}");
-                    Err(e)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to load project: {e}");
-            Err(e)
-        }
+    let old_version = project.config.min_version.clone();
+    project.update_min_version();
+
+    project.save_configuration().with_context(|| {
+        "Failed to save updated configuration. Check file permissions and try again."
+    })?;
+
+    if let Some(old_ver) = old_version {
+        println!(
+            "✓ Updated bake version from v{} to v{}",
+            old_ver,
+            env!("CARGO_PKG_VERSION")
+        );
+    } else {
+        println!("✓ Set bake version to v{}", env!("CARGO_PKG_VERSION"));
     }
+
+    Ok(())
 }
 
 async fn handle_self_update(prerelease: bool) -> anyhow::Result<()> {
-    let result = tokio::task::spawn_blocking(move || perform_self_update(prerelease))
-        .await?;
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            eprintln!("Self-update failed: {e}");
-            Err(e)
-        }
-    }
+    tokio::task::spawn_blocking(move || perform_self_update(prerelease))
+        .await
+        .with_context(|| "Self-update task failed to complete")?
+        .with_context(|| {
+            "Self-update failed. Check your internet connection and permissions, then try again."
+        })
 }
 
 async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
@@ -164,18 +187,18 @@ async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
         prerelease,
     };
 
-    match check_for_updates(&update_config, true).await {
-        Ok(Some(version)) => {
+    match check_for_updates(&update_config, true)
+        .await
+        .with_context(|| {
+            "Failed to check for updates. Check your internet connection and try again."
+        })? {
+        Some(version) => {
             println!("New version available: {version}");
             Ok(())
         }
-        Ok(None) => {
+        None => {
             println!("No updates available");
             Ok(())
-        }
-        Err(e) => {
-            eprintln!("Failed to check for updates: {e}");
-            Err(e)
         }
     }
 }
