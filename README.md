@@ -44,6 +44,7 @@ variables:
 
 config:
   max_parallel: 4
+  minVersion: "0.8.1"
   cache:
     local:
       enabled: true
@@ -111,6 +112,12 @@ bake --self-update
 
 # Update to latest version (including prereleases)
 bake --self-update --prerelease
+
+# Update project configuration to current bake version
+bake --update-version
+
+# Force run with version mismatch
+bake --force-version-override
 ```
 
 For detailed configuration options, see [Auto-Update Documentation](./docs/auto-update.md).
@@ -128,11 +135,11 @@ Variables are scoped hierarchically: project → cookbook → recipe → command
 
 ## Version Management
 
-Bake tracks the version used to create project configurations:
+Bake tracks the minimum version required by project configurations:
 
 ```yaml
 config:
-  version: "0.6.0"
+  minVersion: "0.8.1"
 ```
 
 This helps detect compatibility issues when using different bake versions:
@@ -221,7 +228,7 @@ For a more detailed explanation of the configuration files, please see [Configur
 By default, bake will run all recipes in all cookbooks if called without any arguments.
 
 If you want to be more granular, you can run `bake` passing a pattern to filter the recipes to run. The pattern is always
-in the form `<cookbook>:<recipe>`.
+in the form `<cookbook>:<recipe>`. By default, cookbook and recipe names are matched exactly, but you can use the `--regex` flag to enable regex pattern matching.
 
 For example, to run the `build` recipe from the `foo` cookbook, run:
 
@@ -239,6 +246,19 @@ Or all recipes named `build` in any cookbook:
 
 ```sh
 bake :build
+```
+
+You can also use regex patterns with the `--regex` flag:
+
+```sh
+# Run all recipes in cookbooks starting with "app"
+bake --regex '^app.*:'
+
+# Run all recipes ending with "test" across all cookbooks
+bake --regex ':.*test$'
+
+# Run build recipes in cookbooks matching a pattern
+bake --regex '^(frontend|backend):build$'
 ```
 
 ## Caching
