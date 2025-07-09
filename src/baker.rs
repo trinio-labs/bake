@@ -1,7 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs::File,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Instant,
@@ -13,7 +11,7 @@ use console::{style, Color};
 use indicatif::{MultiProgress, ProgressBar};
 use log::debug;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::{ChildStderr, ChildStdout},
     task::JoinSet,
 };
@@ -214,7 +212,9 @@ fn handle_fast_fail_for_level(
     execution_results: &Arc<Mutex<BTreeMap<String, RunStatus>>>,
     level_idx: usize,
 ) -> anyhow::Result<()> {
-    let errors = execution_results.lock().unwrap();
+    let errors = execution_results
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Failed to acquire lock on execution results: {}", e))?;
     let failed_recipe_msgs: Vec<String> = errors
         .iter()
         .filter(|(_, status)| status.status == Status::Error)
@@ -248,7 +248,9 @@ fn process_final_results(
     overall_success: bool,
 ) -> anyhow::Result<()> {
     if !overall_success {
-        let locked_results = execution_results.lock().unwrap();
+        let locked_results = execution_results
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire lock on execution results: {}", e))?;
         let final_errors: Vec<String> = locked_results
             .iter()
             .filter_map(|(fqn, status_obj)| {
@@ -409,7 +411,12 @@ pub async fn run_recipe(
         )
     }
     let result = run_cmd
-        .current_dir(recipe.config_path.parent().unwrap())
+        .current_dir(recipe.config_path.parent().ok_or_else(|| {
+            format!(
+                "Recipe config path '{}' has no parent directory",
+                recipe.config_path.display()
+            )
+        })?)
         .arg("-c")
         .arg(format!("set -e; {}", recipe.run.clone()))
         .stdout(std::process::Stdio::piped())
@@ -519,7 +526,9 @@ async fn process_output(
             if verbose {
                 println_recipe(&line, &recipe_name);
             }
-            output_string.lock().unwrap().push_str(&(line + "\n"));
+            if let Ok(mut output) = output_string.lock() {
+                output.push_str(&(line + "\n"));
+            }
         }
     }
 
@@ -539,9 +548,14 @@ async fn process_output(
 
     while (join_set.join_next().await).is_some() {}
 
-    match File::create(log_file_path.clone()) {
+    match tokio::fs::File::create(log_file_path.clone()).await {
         Ok(mut file) => {
-            if let Err(err) = file.write_all(output_str.lock().unwrap().as_bytes()) {
+            let output_bytes = output_str
+                .lock()
+                .map_err(|e| format!("Failed to acquire lock on output string: {e}"))?
+                .as_bytes()
+                .to_vec();
+            if let Err(err) = file.write_all(&output_bytes).await {
                 return Err(format!(
                     "Failed to write to log file for recipe '{}' at '{}': {}",
                     recipe_name,

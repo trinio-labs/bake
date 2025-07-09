@@ -154,7 +154,10 @@ impl Cookbook {
         all_files
             .filter_map(|x| match x {
                 Ok(file) => {
-                    let filename = file.file_name().to_str().unwrap();
+                    let filename = match file.file_name().to_str() {
+                        Some(name) => name,
+                        None => return None, // Skip files with invalid UTF-8 names
+                    };
                     if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
                         match Self::from(&file.into_path(), path, context) {
                             Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),

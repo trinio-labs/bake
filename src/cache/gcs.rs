@@ -394,7 +394,9 @@ mod tests {
         // Create a temporary test file
         let temp_dir = tempfile::tempdir().unwrap();
         let test_file_path = temp_dir.path().join("test_file.txt");
-        std::fs::write(&test_file_path, b"test content").unwrap();
+        tokio::fs::write(&test_file_path, b"test content")
+            .await
+            .unwrap();
 
         let result = strategy.put("test_key", test_file_path).await;
         assert!(result.is_ok());
@@ -414,7 +416,9 @@ mod tests {
         // Create a temporary test file
         let temp_dir = tempfile::tempdir().unwrap();
         let test_file_path = temp_dir.path().join("test_file.txt");
-        std::fs::write(&test_file_path, b"test content").unwrap();
+        tokio::fs::write(&test_file_path, b"test content")
+            .await
+            .unwrap();
 
         let result = strategy.put("test_key", test_file_path).await;
         assert!(result.is_err());

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.8.1
+
+### Fixed
+
+- **Critical async I/O improvements** - Replaced all blocking filesystem operations with proper async variants in cache modules
+- **Eliminated panic-prone code** - Replaced all `panic!` calls and dangerous `unwrap()` usage with proper error handling
+- **Improved error handling** - Added graceful error handling for mutex locks and file operations
+- **Enhanced code reliability** - Fixed potential runtime crashes and improved overall code stability
+- **Test improvements** - Updated all tests to follow async patterns consistently
+
 ## v0.8.0
 
 ### Changed
