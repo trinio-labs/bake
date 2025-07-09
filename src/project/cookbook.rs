@@ -57,7 +57,7 @@ impl Cookbook {
 
         // Add project and cookbook constants
         cookbook_context.merge(&VariableContext::with_project_constants(project_root));
-        cookbook_context.merge(&VariableContext::with_cookbook_constants(path));
+        cookbook_context.merge(&VariableContext::with_cookbook_constants(path)?);
 
         // Process template variables in the YAML structure (but skip the variables and run fields)
         VariableContext::process_template_in_value(&mut yaml_value, &cookbook_context, true)?;

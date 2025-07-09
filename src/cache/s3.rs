@@ -1,6 +1,7 @@
-use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fs::File, path::PathBuf};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
@@ -25,12 +26,13 @@ impl CacheStrategy for S3CacheStrategy {
         let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
         // Try to get file with key from bucket
         let archive_path = std::env::temp_dir().join(&file_name);
-        let file = File::create(archive_path.clone());
-
-        if file.is_err() {
-            warn!("Failed to create file in temp dir: {}", file.unwrap_err());
-            return CacheResult::Miss;
-        }
+        let mut file = match File::create(&archive_path).await {
+            Ok(f) => f,
+            Err(err) => {
+                warn!("Failed to create file in temp dir: {err}");
+                return CacheResult::Miss;
+            }
+        };
 
         match self
             .client
@@ -49,8 +51,7 @@ impl CacheStrategy for S3CacheStrategy {
                         return CacheResult::Miss;
                     }
                 } {
-                    let mut file = file.as_ref().unwrap();
-                    if file.write_all(&bytes).is_err() {
+                    if file.write_all(&bytes).await.is_err() {
                         warn!(
                             "Failed to write to file in temp dir: {}",
                             archive_path.display()

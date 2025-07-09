@@ -498,7 +498,7 @@ async fn process_output(
         verbose: bool,
     ) {
         let mut reader = BufReader::new(output).lines();
-        while let Some(line) = reader.next_line().await.unwrap() {
+        while let Ok(Some(line)) = reader.next_line().await {
             if verbose {
                 println_recipe(&line, &recipe_name);
             }

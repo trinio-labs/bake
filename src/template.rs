@@ -74,11 +74,13 @@ impl VariableContext {
             .collect();
 
         let mut handlebars = Handlebars::new();
-        handlebars
-            .register_template_string("template", template)
-            .unwrap_or_else(|_| {
-                panic!("Template Parsing: Failed to register template string '{template}'")
-            });
+        if let Err(e) = handlebars.register_template_string("template", template) {
+            bail!(
+                "Template Parsing: Failed to register template string '{}': {}",
+                template,
+                e
+            );
+        }
 
         let mut data =
             BTreeMap::from([("env", json!(env_values)), ("var", json!(&self.variables))]);
@@ -109,19 +111,23 @@ impl VariableContext {
     }
 
     /// Creates cookbook constants from a cookbook path
-    pub fn with_cookbook_constants(cookbook_path: &std::path::Path) -> Self {
+    pub fn with_cookbook_constants(cookbook_path: &std::path::Path) -> anyhow::Result<Self> {
         let cookbook_constants = IndexMap::from([(
             "root".to_owned(),
-            cookbook_path.parent().unwrap().display().to_string(),
+            cookbook_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Cookbook path has no parent directory"))?
+                .display()
+                .to_string(),
         )]);
         let constants = IndexMap::from([("cookbook".to_owned(), cookbook_constants)]);
 
-        Self {
+        Ok(Self {
             environment: Vec::new(),
             variables: IndexMap::new(),
             constants,
             overrides: IndexMap::new(),
-        }
+        })
     }
 
     /// Processes template variables in a YAML value recursively, preserving original types
