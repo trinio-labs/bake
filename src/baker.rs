@@ -1,7 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs::File,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Instant,
@@ -13,7 +11,7 @@ use console::{style, Color};
 use indicatif::{MultiProgress, ProgressBar};
 use log::debug;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::{ChildStderr, ChildStdout},
     task::JoinSet,
 };
@@ -199,38 +197,60 @@ pub async fn bake(
 
         // Centralized fast-fail bail for the current level.
         if project.config.fast_fail && !overall_success {
-            let errors = execution_results.lock().unwrap();
-            let failed_recipe_msgs: Vec<String> = errors
-                .iter()
-                .filter(|(_, status)| status.status == Status::Error)
-                .map(|(fqn, status)| {
-                    format!(
-                        "  - Recipe '{}': {}",
-                        fqn,
-                        status.output.lines().next().unwrap_or("failed")
-                    )
-                })
-                .collect();
-
-            if !failed_recipe_msgs.is_empty() {
-                bail!(
-                    "Fast fail triggered due to error(s) in level {}:
-{}
-Aborting bake.",
-                    level_idx,
-                    failed_recipe_msgs.join("\n")
-                );
-            } else {
-                // This case might happen if a panic occurred that wasn't directly tied to a recipe result,
-                // or if a cancellation signal was processed before any recipe error.
-                bail!("Fast fail triggered in level {}, aborting bake.", level_idx);
-            }
+            handle_fast_fail_for_level(&execution_results, level_idx)?;
         }
     }
 
     // Final error reporting based on execution_results.
+    process_final_results(&execution_results, overall_success)?;
+
+    Ok(())
+}
+
+/// Handles fast-fail logic for a specific level
+fn handle_fast_fail_for_level(
+    execution_results: &Arc<Mutex<BTreeMap<String, RunStatus>>>,
+    level_idx: usize,
+) -> anyhow::Result<()> {
+    let errors = execution_results
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Failed to acquire lock on execution results: {}", e))?;
+    let failed_recipe_msgs: Vec<String> = errors
+        .iter()
+        .filter(|(_, status)| status.status == Status::Error)
+        .map(|(fqn, status)| {
+            format!(
+                "  - Recipe '{}': {}",
+                fqn,
+                status.output.lines().next().unwrap_or("failed")
+            )
+        })
+        .collect();
+
+    if !failed_recipe_msgs.is_empty() {
+        bail!(
+            "Fast fail triggered due to error(s) in level {}:
+{}
+Aborting bake.",
+            level_idx,
+            failed_recipe_msgs.join("\n")
+        );
+    } else {
+        // This case might happen if a panic occurred that wasn't directly tied to a recipe result,
+        // or if a cancellation signal was processed before any recipe error.
+        bail!("Fast fail triggered in level {}, aborting bake.", level_idx);
+    }
+}
+
+/// Processes final results and reports errors
+fn process_final_results(
+    execution_results: &Arc<Mutex<BTreeMap<String, RunStatus>>>,
+    overall_success: bool,
+) -> anyhow::Result<()> {
     if !overall_success {
-        let locked_results = execution_results.lock().unwrap();
+        let locked_results = execution_results
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire lock on execution results: {}", e))?;
         let final_errors: Vec<String> = locked_results
             .iter()
             .filter_map(|(fqn, status_obj)| {
@@ -259,7 +279,6 @@ Aborting bake.",
             bail!("Bake process failed or was cancelled without specific recipe errors reported.");
         }
     }
-
     Ok(())
 }
 
@@ -392,7 +411,12 @@ pub async fn run_recipe(
         )
     }
     let result = run_cmd
-        .current_dir(recipe.config_path.parent().unwrap())
+        .current_dir(recipe.config_path.parent().ok_or_else(|| {
+            format!(
+                "Recipe config path '{}' has no parent directory",
+                recipe.config_path.display()
+            )
+        })?)
         .arg("-c")
         .arg(format!("set -e; {}", recipe.run.clone()))
         .stdout(std::process::Stdio::piped())
@@ -498,11 +522,13 @@ async fn process_output(
         verbose: bool,
     ) {
         let mut reader = BufReader::new(output).lines();
-        while let Some(line) = reader.next_line().await.unwrap() {
+        while let Ok(Some(line)) = reader.next_line().await {
             if verbose {
                 println_recipe(&line, &recipe_name);
             }
-            output_string.lock().unwrap().push_str(&(line + "\n"));
+            if let Ok(mut output) = output_string.lock() {
+                output.push_str(&(line + "\n"));
+            }
         }
     }
 
@@ -522,9 +548,14 @@ async fn process_output(
 
     while (join_set.join_next().await).is_some() {}
 
-    match File::create(log_file_path.clone()) {
+    match tokio::fs::File::create(log_file_path.clone()).await {
         Ok(mut file) => {
-            if let Err(err) = file.write_all(output_str.lock().unwrap().as_bytes()) {
+            let output_bytes = output_str
+                .lock()
+                .map_err(|e| format!("Failed to acquire lock on output string: {e}"))?
+                .as_bytes()
+                .to_vec();
+            if let Err(err) = file.write_all(&output_bytes).await {
                 return Err(format!(
                     "Failed to write to log file for recipe '{}' at '{}': {}",
                     recipe_name,
@@ -657,7 +688,7 @@ mod tests {
     async fn run_all_recipes() {
         let project = Arc::new(create_test_project());
         let cache = build_cache(project.clone()).await;
-        let execution_plan = project.get_recipes_for_execution(None).unwrap();
+        let execution_plan = project.get_recipes_for_execution(None, false).unwrap();
         let res = super::bake(project.clone(), cache, execution_plan).await;
         assert!(res.is_ok());
     }
@@ -668,7 +699,9 @@ mod tests {
         project.config.verbose = true;
         let project = Arc::new(project);
         let cache = build_cache(project.clone()).await;
-        let execution_plan = project.get_recipes_for_execution(Some("bar:")).unwrap();
+        let execution_plan = project
+            .get_recipes_for_execution(Some("bar:"), false)
+            .unwrap();
         let res = super::bake(project.clone(), cache, execution_plan).await;
         assert!(res.is_ok());
     }
@@ -705,7 +738,9 @@ mod tests {
 
         let project_arc = Arc::new(project);
         let cache = build_cache(project_arc.clone()).await;
-        let execution_plan = project_arc.get_recipes_for_execution(Some("bar:")).unwrap();
+        let execution_plan = project_arc
+            .get_recipes_for_execution(Some("bar:"), false)
+            .unwrap();
         let res = super::bake(project_arc.clone(), cache, execution_plan).await;
 
         // Assert that the bake operation failed as expected.

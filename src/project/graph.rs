@@ -94,9 +94,15 @@ impl RecipeDependencyGraph {
             .flat_map(|cookbook| cookbook.recipes.values())
             .flat_map(|recipe| {
                 let source_fqn = recipe.full_name();
-                // This unwrap is safe because all recipes were added to fqn_to_node_index
-                // in the add_recipe_nodes_from_cookbooks step.
-                let source_node_index = *self.fqn_to_node_index.get(&source_fqn).unwrap();
+                let source_node_index = match self.fqn_to_node_index.get(&source_fqn) {
+                    Some(index) => *index,
+                    None => {
+                        // This should not happen in normal operation, but we'll handle it gracefully
+                        // by skipping this recipe and logging an error
+                        eprintln!("Internal graph inconsistency: FQN '{source_fqn}' not found in node map");
+                        return Vec::new();
+                    }
+                };
 
                 recipe.dependencies.as_ref().map_or_else(
                     Vec::new, // No dependencies, so no messages.

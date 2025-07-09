@@ -72,7 +72,7 @@ recipes:
       npm run build
     dependencies:
       - test
-  
+
   test:
     description: "Run tests"
     inputs:
@@ -97,7 +97,8 @@ bake app:build --var environment=production
 
 ## Auto-Updates
 
-Bake includes an auto-update feature that keeps your installation up to date automatically. The tool checks for updates periodically based on your configuration and stores the last check time to avoid excessive API calls.
+Bake includes an auto-update feature that keeps your installation up to date automatically. The tool checks for updates
+periodically based on your configuration and stores the last check time to avoid excessive API calls.
 
 You can configure update behavior in your `bake.yml` file or use CLI commands:
 
@@ -130,7 +131,8 @@ Variables are scoped hierarchically: project → cookbook → recipe → command
 Bake tracks the version used to create project configurations:
 
 ```yaml
-bake_version: "0.6.0"
+config:
+  version: "0.6.0"
 ```
 
 This helps detect compatibility issues when using different bake versions:

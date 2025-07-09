@@ -30,8 +30,9 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
    - Implements fast-fail and cancellation logic
    - Manages progress reporting and output handling
 
-2. **project/** - Project configuration and management
+2. **project/** - Project configuration and execution planning
 
+   - `mod.rs` - Main project module with project loading and execution planning
    - `config.rs` - Tool configuration (parallelism, caching, updates)
    - `cookbook.rs` - Cookbook (collection of recipes) management
    - `recipe.rs` - Individual recipe definitions and execution context
@@ -64,37 +65,6 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 - **Smart Caching**: Recipes are cached based on input file hashes, dependencies, and command content
 - **Variable System**: Hierarchical template variables with environment, user, and built-in variables
 
-## Project Structure
-
-### Configuration Files
-
-- `bake.yml` - Project root configuration defining cookbooks, global variables, and tool settings
-- `cookbook.yml` - Per-cookbook configuration with recipes and local variables
-
-### Recipe Execution Model
-
-- Recipes specify `inputs` (files that affect caching), `outputs` (files produced), and `dependencies`
-- Execution happens in parallel within dependency levels
-- Each recipe runs in its cookbook directory with environment variables
-- Output is captured to log files in `.bake/logs/`
-
-### Cache Strategy
-
-- Cache keys are computed from input file hashes, dependency hashes, and recipe content
-- Multiple cache tiers (local, S3, GCS) with configurable priority order
-- Cache hits skip recipe execution; misses trigger execution and cache storage
-
-### Variable Scoping
-
-Variables are resolved in order of precedence:
-
-1. CLI overrides (`--var key=value`)
-2. Recipe-level variables
-3. Cookbook-level variables
-4. Project-level variables
-5. Environment variables (`{{env.VAR}}`)
-6. Built-in constants (`{{project.root}}`, `{{cookbook.root}}`)
-
 ## Testing
 
 ### Test Structure
@@ -102,6 +72,8 @@ Variables are resolved in order of precedence:
 - Unit tests use `TestProjectBuilder` helper for creating test projects
 - Integration tests verify recipe execution, caching, and error handling
 - Mock cache strategies for testing cache behavior
+- Use the macro test_case whenever possible to make code dryer
+- Always run the tool with a valid project configuration to ensure correct behavior.
 
 ### Running Tests
 
@@ -109,6 +81,7 @@ Variables are resolved in order of precedence:
 - Specific test: `cargo test <test_name>`
 - Verbose output: `cargo test -- --nocapture`
 - Parallel test execution: `cargo test -- --test-threads=1` (if needed)
+- Run the tool on a valid project: `cargo run -- -p ./resources/tests/valid/`
 
 ### Test Patterns
 
@@ -123,16 +96,12 @@ Variables are resolved in order of precedence:
 - Detailed error reporting with recipe context
 - Log files preserved for debugging failed recipes
 
-## Development Tips
+## Code Implementation Guidelines - **CRITICAL**
 
-- Recipe execution uses shell commands with `set -e` for error propagation
-- Progress bars and colored output for better UX
-- Verbose mode available for debugging recipe execution
-- Cache operations are async and use structured concurrency
-
-## Code Implementation Guidelines
-
+- **Principles**: Adhere closely to KISS, DRY, SOLID, YAGNI and the Zen of Python.
+- **Clean up after yourself**: Always ensure that temporary files, directories, and resources are cleaned up after use.
 - **Never create stubs**: Always implement complete, functional code rather than placeholder stubs
-- **Complete implementations only**: All functions, methods, and modules should be fully implemented
 - **No TODO comments**: Avoid leaving TODO markers or incomplete code sections
-
+- **Follow style guidelines**: Adhere to established coding standards and best practices
+- **Ask questions**: If in doubt, seek clarification to ensure understanding and correctness.
+- **Library context**: Use context7 to get the documentation for complex dependencies

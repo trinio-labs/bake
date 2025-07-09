@@ -22,7 +22,12 @@ impl CacheStrategy for LocalCacheStrategy {
         let file_name = format!("{}.{}", key.to_owned(), ARCHIVE_EXTENSION);
         let archive_path = self.path.join(file_name.clone());
         debug!("Checking local cache for key {}", archive_path.display());
-        if archive_path.is_file() {
+        if tokio::fs::try_exists(&archive_path).await.unwrap_or(false)
+            && tokio::fs::metadata(&archive_path)
+                .await
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+        {
             debug!("Cache hit for key {key}");
             return CacheResult::Hit(CacheResultData { archive_path });
         }
@@ -31,8 +36,8 @@ impl CacheStrategy for LocalCacheStrategy {
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
         let file_name = format!("{}.{}", key.to_owned(), ARCHIVE_EXTENSION);
         // Create cache dir if it doesn't exist
-        if !self.path.exists() {
-            match std::fs::create_dir_all(&self.path) {
+        if !tokio::fs::try_exists(&self.path).await.unwrap_or(false) {
+            match tokio::fs::create_dir_all(&self.path).await {
                 Ok(_) => (),
                 Err(err) => {
                     return Err(anyhow!(
@@ -47,12 +52,12 @@ impl CacheStrategy for LocalCacheStrategy {
         // Check if cache folder with that key already exists
         let cache_path = self.path.join(file_name);
         if cache_path.exists() {
-            println!("Cache file already exists: {}", cache_path.display());
+            debug!("Cache file already exists: {}", cache_path.display());
             return Ok(());
         }
 
         // Copy archive to cache folder
-        if let Err(err) = std::fs::copy(archive_path, cache_path.clone()) {
+        if let Err(err) = tokio::fs::copy(archive_path, cache_path.clone()).await {
             Err(anyhow!(
                 "Failed to copy archive to cache folder {}: {}",
                 cache_path.display(),
