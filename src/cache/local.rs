@@ -47,7 +47,7 @@ impl CacheStrategy for LocalCacheStrategy {
         // Check if cache folder with that key already exists
         let cache_path = self.path.join(file_name);
         if cache_path.exists() {
-            println!("Cache file already exists: {}", cache_path.display());
+            debug!("Cache file already exists: {}", cache_path.display());
             return Ok(());
         }
 

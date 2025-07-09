@@ -199,36 +199,54 @@ pub async fn bake(
 
         // Centralized fast-fail bail for the current level.
         if project.config.fast_fail && !overall_success {
-            let errors = execution_results.lock().unwrap();
-            let failed_recipe_msgs: Vec<String> = errors
-                .iter()
-                .filter(|(_, status)| status.status == Status::Error)
-                .map(|(fqn, status)| {
-                    format!(
-                        "  - Recipe '{}': {}",
-                        fqn,
-                        status.output.lines().next().unwrap_or("failed")
-                    )
-                })
-                .collect();
-
-            if !failed_recipe_msgs.is_empty() {
-                bail!(
-                    "Fast fail triggered due to error(s) in level {}:
-{}
-Aborting bake.",
-                    level_idx,
-                    failed_recipe_msgs.join("\n")
-                );
-            } else {
-                // This case might happen if a panic occurred that wasn't directly tied to a recipe result,
-                // or if a cancellation signal was processed before any recipe error.
-                bail!("Fast fail triggered in level {}, aborting bake.", level_idx);
-            }
+            handle_fast_fail_for_level(&execution_results, level_idx)?;
         }
     }
 
     // Final error reporting based on execution_results.
+    process_final_results(&execution_results, overall_success)?;
+
+    Ok(())
+}
+
+/// Handles fast-fail logic for a specific level
+fn handle_fast_fail_for_level(
+    execution_results: &Arc<Mutex<BTreeMap<String, RunStatus>>>,
+    level_idx: usize,
+) -> anyhow::Result<()> {
+    let errors = execution_results.lock().unwrap();
+    let failed_recipe_msgs: Vec<String> = errors
+        .iter()
+        .filter(|(_, status)| status.status == Status::Error)
+        .map(|(fqn, status)| {
+            format!(
+                "  - Recipe '{}': {}",
+                fqn,
+                status.output.lines().next().unwrap_or("failed")
+            )
+        })
+        .collect();
+
+    if !failed_recipe_msgs.is_empty() {
+        bail!(
+            "Fast fail triggered due to error(s) in level {}:
+{}
+Aborting bake.",
+            level_idx,
+            failed_recipe_msgs.join("\n")
+        );
+    } else {
+        // This case might happen if a panic occurred that wasn't directly tied to a recipe result,
+        // or if a cancellation signal was processed before any recipe error.
+        bail!("Fast fail triggered in level {}, aborting bake.", level_idx);
+    }
+}
+
+/// Processes final results and reports errors
+fn process_final_results(
+    execution_results: &Arc<Mutex<BTreeMap<String, RunStatus>>>,
+    overall_success: bool,
+) -> anyhow::Result<()> {
     if !overall_success {
         let locked_results = execution_results.lock().unwrap();
         let final_errors: Vec<String> = locked_results
@@ -259,7 +277,6 @@ Aborting bake.",
             bail!("Bake process failed or was cancelled without specific recipe errors reported.");
         }
     }
-
     Ok(())
 }
 

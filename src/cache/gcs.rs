@@ -5,7 +5,7 @@ use tokio_stream::StreamExt;
 
 use anyhow::bail;
 use async_trait::async_trait;
-use log::{debug, error, warn};
+use log::{debug, warn};
 
 use crate::{
     cache::{CacheResultData, ARCHIVE_EXTENSION},
@@ -149,7 +149,7 @@ impl CacheStrategy for GcsCacheStrategy {
                             archive_path.display()
                         );
                         if let Err(err) = file.shutdown().await {
-                            error!("Error saving archive file: {err:?}");
+                            warn!("Error saving archive file: {err:?}");
                             return CacheResult::Miss;
                         }
 
