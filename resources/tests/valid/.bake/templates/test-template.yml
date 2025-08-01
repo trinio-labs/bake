@@ -1,0 +1,18 @@
+name: "test-template"
+description: "Generic test template"
+parameters:
+  test_command:
+    type: string
+    default: "npm test"
+    description: "Command to run tests"
+  coverage:
+    type: boolean
+    default: false
+    description: "Enable coverage reporting"
+template:
+  description: "Run tests with {{ params.test_command }}"
+  dependencies: ["build"]
+  run: |
+    echo "Running tests..."
+    {% if params.coverage %}echo "Coverage enabled"{% endif %}
+    {{ params.test_command }}

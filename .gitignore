@@ -1,6 +1,7 @@
 target
 
 *.profraw
-.bake
+.bake/cache
+.bake/logs
 .serena
 lcov.info

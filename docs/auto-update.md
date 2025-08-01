@@ -8,10 +8,10 @@ You can configure the auto-update behavior in your `bake.yml` file:
 
 ```yaml
 update:
-  enabled: true                    # Enable/disable auto-update checks
-  check_interval_days: 7          # How often to check for updates (default: 7)
-  auto_update: false              # Automatically install updates (default: false)
-  prerelease: false               # Include prereleases in update checks (default: false)
+  enabled: true # Enable/disable auto-update checks
+  check_interval_days: 7 # How often to check for updates (default: 7)
+  auto_update: false # Automatically install updates (default: false)
+  prerelease: false # Include prereleases in update checks (default: false)
 ```
 
 ### Configuration Options
@@ -67,6 +67,7 @@ This displays information about the current installation.
 ## Storage
 
 Update check timestamps are stored in the system cache directory:
+
 - **macOS**: `~/Library/Caches/bake/last_update_check`
 - **Linux**: `~/.cache/bake/last_update_check`
 - **Windows**: `%LOCALAPPDATA%\bake\cache\last_update_check`
@@ -82,6 +83,7 @@ Update check timestamps are stored in the system cache directory:
 ### Update Check Fails
 
 If update checks fail, check:
+
 - Internet connectivity
 - GitHub API access
 - Firewall settings
@@ -89,6 +91,7 @@ If update checks fail, check:
 ### Update Installation Fails
 
 Common issues:
+
 - Insufficient permissions to write to the binary location
 - Antivirus software blocking the update
 - Disk space issues
@@ -96,6 +99,7 @@ Common issues:
 ### Skip Update Checks
 
 To skip update checks in specific environments:
+
 - Set `CI=true` or `GITHUB_ACTIONS=true` environment variables
 - Run from a development build (target/debug or target/release)
 - Disable updates in the configuration file
@@ -103,6 +107,7 @@ To skip update checks in specific environments:
 ### Reset Update Check Interval
 
 To force an immediate update check, you can delete the timestamp file:
+
 ```bash
 # macOS/Linux
 rm ~/.cache/bake/last_update_check
@@ -120,7 +125,7 @@ del "%LOCALAPPDATA%\bake\cache\last_update_check"
 update:
   enabled: true
   check_interval_days: 7
-  auto_update: false  # Manual updates only
+  auto_update: false # Manual updates only
 ```
 
 ### Automatic Updates
@@ -129,8 +134,8 @@ update:
 # bake.yml
 update:
   enabled: true
-  check_interval_days: 1  # Check daily
-  auto_update: true   # Automatically install updates
+  check_interval_days: 1 # Check daily
+  auto_update: true # Automatically install updates
 ```
 
 ### Prerelease Testing
@@ -139,7 +144,8 @@ update:
 # bake.yml
 update:
   enabled: true
-  check_interval_days: 3  # Check every 3 days
-  prerelease: true    # Include prereleases
-  auto_update: false  # Manual control for prereleases
-``` 
+  check_interval_days: 3 # Check every 3 days
+  prerelease: true # Include prereleases
+  auto_update: false # Manual control for prereleases
+```
+

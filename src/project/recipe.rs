@@ -23,7 +23,7 @@ pub struct RunStatus {
     pub output: String,
 }
 
-#[derive(Debug, PartialOrd, Ord, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, PartialOrd, Ord, Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Default)]
 pub struct RecipeCacheConfig {
     #[serde(default)]
     pub inputs: Vec<String>,
@@ -59,6 +59,13 @@ pub struct Recipe {
 
     pub dependencies: Option<Vec<String>>,
     pub run: String,
+
+    /// Template to use for this recipe (alternative to inline definition)
+    pub template: Option<String>,
+
+    /// Parameters to pass to the template
+    #[serde(default)]
+    pub parameters: std::collections::BTreeMap<String, serde_yaml::Value>,
 
     #[serde(skip)]
     pub run_status: RunStatus,

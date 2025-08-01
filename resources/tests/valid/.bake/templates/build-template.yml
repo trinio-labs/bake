@@ -1,0 +1,23 @@
+name: "build-template"
+description: "Generic build template for various languages"
+parameters:
+  language:
+    type: string
+    required: true
+    description: "Programming language (node, rust, go, etc.)"
+  build_command:
+    type: string
+    default: "npm run build"
+    description: "Command to run for building"
+  cache_inputs:
+    type: array
+    default: ["src/**/*", "package.json"]
+    description: "Input files to cache"
+template:
+  description: "Build {{ params.language }} application"
+  cache:
+    inputs: ["src/**/*", "package.json"]
+    outputs: ["dist/**/*", "build/**/*"]
+  run: |
+    echo "Building {{ params.language }} application..."
+    {{ params.build_command }}

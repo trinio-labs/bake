@@ -1,0 +1,25 @@
+name: "templates"
+description: "Test cookbook using templates"
+recipes:
+  build:
+    template: "build-template"
+    run: "echo 'placeholder - will be replaced by template'"
+    parameters:
+      language: "typescript"
+      build_command: "echo 'Build completed successfully!'"
+      cache_inputs: ["src/**/*.ts", "package.json", "tsconfig.json"]
+  
+  test:
+    template: "test-template"
+    run: "echo 'placeholder - will be replaced by template'"
+    parameters:
+      test_command: "npm run test:ci"
+      coverage: true
+  
+  # Regular recipe without template
+  deploy:
+    description: "Deploy the application"
+    run: |
+      echo "Deploying application..."
+      echo "Deployment complete!"
+    dependencies: ["build", "test"]

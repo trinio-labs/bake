@@ -3,10 +3,12 @@ pub mod cookbook;
 pub mod graph;
 pub mod hashing;
 pub mod recipe;
+pub mod recipe_template;
 
 use anyhow::bail;
 
 pub use cookbook::*;
+pub use recipe_template::*;
 use indexmap::IndexMap;
 // Note: Some petgraph imports were moved or are now managed by RecipeDependencyGraph.
 use self::graph::RecipeDependencyGraph;
@@ -52,6 +54,10 @@ pub struct BakeProject {
     /// querying dependencies and execution order.
     #[serde(skip)]
     pub recipe_dependency_graph: RecipeDependencyGraph,
+
+    /// Registry of all available recipe templates, keyed by template name.
+    #[serde(skip)]
+    pub template_registry: BTreeMap<String, RecipeTemplate>,
 
     /// An optional description of the project.
     pub description: Option<String>,
@@ -208,6 +214,138 @@ impl BakeProject {
         Ok(())
     }
 
+    /// Loads recipe templates for the project.
+    fn load_project_templates(&mut self) -> anyhow::Result<()> {
+        use ignore::WalkBuilder;
+
+        let templates_path = self.get_project_templates_path();
+        
+        // If templates directory doesn't exist, that's fine - just return empty registry
+        if !templates_path.exists() {
+            self.template_registry = BTreeMap::new();
+            return Ok(());
+        }
+
+        let all_files = WalkBuilder::new(&templates_path)
+            .add_custom_ignore_filename(".bakeignore")
+            .build();
+
+        self.template_registry = all_files
+            .filter_map(|entry_result| match entry_result {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if !entry.file_type().unwrap().is_file() {
+                        return None;
+                    }
+
+                    let filename = match path.file_name().and_then(|name| name.to_str()) {
+                        Some(name) => name,
+                        None => return None,
+                    };
+
+                    // Look for .yml or .yaml template files
+                    if filename.ends_with(".yml") || filename.ends_with(".yaml") {
+                        match RecipeTemplate::from_file(&path.to_path_buf()) {
+                            Ok(template) => Some(Ok((template.name.clone(), template))),
+                            Err(err) => Some(Err(err)),
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(err) => {
+                    log::debug!("Ignored template file: {}", err);
+                    None
+                }
+            })
+            .collect::<anyhow::Result<BTreeMap<String, RecipeTemplate>>>()?;
+
+        Ok(())
+    }
+
+    /// Resolves template-based recipes in all cookbooks.
+    fn resolve_template_recipes(&mut self, override_variables: &IndexMap<String, String>) -> anyhow::Result<()> {
+        // Create the variable context for template instantiation
+        let context = VariableContext::builder()
+            .environment(self.environment.clone())
+            .variables(self.variables.clone())
+            .overrides(override_variables.clone())
+            .build();
+
+        // Process each cookbook
+        for cookbook in self.cookbooks.values_mut() {
+            // Create cookbook-specific context
+            let mut cookbook_context = context.clone();
+            cookbook_context.merge(&VariableContext::with_project_constants(&self.root_path));
+            if let Ok(cb_constants) = VariableContext::with_cookbook_constants(&cookbook.config_path) {
+                cookbook_context.merge(&cb_constants);
+            }
+
+            // Process each recipe in the cookbook
+            for (recipe_name, recipe) in cookbook.recipes.iter_mut() {
+                // Skip recipes that don't use templates
+                if recipe.template.is_none() {
+                    continue;
+                }
+
+                let template_name = recipe.template.as_ref().unwrap();
+                
+                // Find the template in the registry
+                let template = match self.template_registry.get(template_name) {
+                    Some(template) => template,
+                    None => {
+                        bail!(
+                            "Template Resolution: Template '{}' used by recipe '{}:{}' was not found. Available templates: {}",
+                            template_name,
+                            cookbook.name,
+                            recipe_name,
+                            self.template_registry.keys().cloned().collect::<Vec<_>>().join(", ")
+                        );
+                    }
+                };
+
+                // Instantiate the template into a new recipe
+                let instantiated_recipe = template.instantiate(
+                    recipe_name.clone(),
+                    cookbook.name.clone(),
+                    cookbook.config_path.clone(),
+                    self.root_path.clone(),
+                    &recipe.parameters,
+                    &cookbook_context,
+                )?;
+
+                // Merge the instantiated recipe with any overrides from the original recipe
+                let mut final_recipe = instantiated_recipe;
+
+                // Override with any explicitly set fields from the original recipe
+                if let Some(description) = &recipe.description {
+                    final_recipe.description = Some(description.clone());
+                }
+
+                // Merge environment variables (template + recipe)
+                final_recipe.environment.extend(recipe.environment.iter().cloned());
+
+                // Merge variables (template first, then recipe overrides)
+                final_recipe.variables.extend(recipe.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+                // Override dependencies if specified in recipe
+                if recipe.dependencies.is_some() {
+                    final_recipe.dependencies = recipe.dependencies.clone();
+                }
+
+                // Override cache config if specified in recipe
+                if recipe.cache.is_some() {
+                    final_recipe.cache = recipe.cache.clone();
+                }
+
+                // Replace the original recipe with the instantiated one
+                *recipe = final_recipe;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Populates the recipe dependency graph.
     fn populate_dependency_graph(&mut self) -> anyhow::Result<()> {
         self.recipe_dependency_graph = RecipeDependencyGraph::new();
@@ -345,6 +483,12 @@ impl BakeProject {
         // Load cookbooks for the project.
         project.load_project_cookbooks(&override_variables)?;
 
+        // Load recipe templates for the project.
+        project.load_project_templates()?;
+
+        // Resolve template-based recipes in cookbooks.
+        project.resolve_template_recipes(&override_variables)?;
+
         // Populate the recipe dependency graph.
         project.populate_dependency_graph()?;
 
@@ -373,6 +517,15 @@ impl BakeProject {
             bail!(
                 "Project Setup: Failed to create project logs directory at '{}': {}",
                 self.get_project_log_path().display(),
+                err
+            );
+        };
+        
+        // Create the templates subdirectory within .bake.
+        if let Err(err) = std::fs::create_dir_all(self.get_project_templates_path()) {
+            bail!(
+                "Project Setup: Failed to create project templates directory at '{}': {}",
+                self.get_project_templates_path().display(),
                 err
             );
         };
@@ -539,6 +692,11 @@ impl BakeProject {
     /// Returns the path to the project's log directory (`.bake/logs`).
     fn get_project_log_path(&self) -> PathBuf {
         self.get_project_bake_path().join("logs")
+    }
+
+    /// Returns the path to the project's templates directory (`.bake/templates`).
+    pub fn get_project_templates_path(&self) -> PathBuf {
+        self.get_project_bake_path().join("templates")
     }
 
     /// Returns the path to the project's main Bake directory (`.bake`).
