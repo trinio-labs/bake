@@ -125,21 +125,20 @@ impl RecipeTemplate {
     pub fn validate_parameters(&self, parameters: &BTreeMap<String, Value>) -> anyhow::Result<()> {
         // Check for required parameters
         for (param_name, param_def) in &self.parameters {
-            if param_def.required && !parameters.contains_key(param_name) {
-                if param_def.default.is_none() {
-                    bail!(
-                        "Recipe Template Validation: Required parameter '{}' is missing for template '{}'",
-                        param_name,
-                        self.name
-                    );
-                }
+            if param_def.required && !parameters.contains_key(param_name)
+                && param_def.default.is_none() {
+                bail!(
+                    "Recipe Template Validation: Required parameter '{}' is missing for template '{}'",
+                    param_name,
+                    self.name
+                );
             }
         }
 
         // Validate each provided parameter
         for (param_name, param_value) in parameters {
             if let Some(param_def) = self.parameters.get(param_name) {
-                self.validate_parameter_value(param_name, param_value, param_def)?;
+                Self::validate_parameter_value(param_name, param_value, param_def)?;
             } else {
                 bail!(
                     "Recipe Template Validation: Unknown parameter '{}' for template '{}'",
@@ -154,7 +153,6 @@ impl RecipeTemplate {
 
     /// Validates a single parameter value against its definition
     fn validate_parameter_value(
-        &self,
         param_name: &str,
         value: &Value,
         param_def: &TemplateParameter,
@@ -213,8 +211,8 @@ impl RecipeTemplate {
             (ParameterType::Array, Value::Sequence(seq)) => {
                 if let Some(item_def) = &param_def.items {
                     for (index, item) in seq.iter().enumerate() {
-                        self.validate_parameter_value(
-                            &format!("{}[{}]", param_name, index),
+                        Self::validate_parameter_value(
+                            &format!("{param_name}[{index}]"),
                             item,
                             item_def,
                         )?;
@@ -320,7 +318,7 @@ impl RecipeTemplate {
                     .map(|dep| {
                         // Apply same dependency resolution as regular recipes
                         if !dep.contains(':') {
-                            format!("{}:{}", cookbook_name, dep)
+                            format!("{cookbook_name}:{dep}")
                         } else {
                             dep
                         }

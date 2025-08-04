@@ -254,7 +254,7 @@ impl BakeProject {
                     }
                 }
                 Err(err) => {
-                    log::debug!("Ignored template file: {}", err);
+                    log::debug!("Ignored template file: {err}");
                     None
                 }
             })

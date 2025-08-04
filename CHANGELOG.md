@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+## v0.9.0
+
+### Added
+
+- **Recipe Template System** - Complete DRY configuration system for reusable recipe definitions
+  - Template definitions with typed parameters (string, number, boolean, array, object)
+  - Parameter validation with defaults, required fields, regex patterns, and min/max constraints
+  - Template discovery from `.bake/templates/` directories with automatic loading
+  - Template instantiation with Handlebars parameter substitution using `{{ params.name }}` syntax
+  - Template inheritance support with `extends` field for composition
+  - Recipe field override system allowing templates and recipes to be combined flexibly
+
+- **CLI Template Management** - New command-line tools for template discovery and validation
+  - `--list-templates` argument displays all available templates with parameter details
+  - `--validate-templates` argument performs comprehensive template validation
+  - Colored output with status indicators and progress feedback
+  - Detailed parameter information including types, requirements, defaults, and descriptions
+
+- **Comprehensive JSON Schema System** - IDE validation and auto-completion support
+  - Complete JSON schemas for `bake.yml`, `cookbook.yml`, and template files
+  - IDE integration support (VS Code, JetBrains, Neovim) with ready-to-use configurations
+  - Automated schema validation testing with comprehensive error reporting
+  - GitHub-hosted schemas for universal access and CDN distribution
+  - Schema catalog for public schema store publication with versioned URLs
+
+- **Enhanced Documentation** - Comprehensive guides and examples
+  - Complete recipe templates documentation with usage examples and best practices
+  - JSON schema integration guides for popular IDEs and editors
+  - Template parameter system documentation with validation rules
+  - Real-world usage examples and migration guides
+
+### Security
+
+- **Comprehensive path traversal protection** - Robust security measures to prevent malicious tar archives
+  - Absolute path rejection blocks paths like `/tmp/malicious.txt`
+  - Path traversal protection prevents `../../../etc/passwd` attacks  
+  - Canonical path validation ensures extracted files stay within project bounds
+  - Cross-platform compatibility with macOS/Linux path resolution differences
+  - Safe archive extraction with entry-by-entry validation replacing direct unpack operations
+
+### Fixed
+
+- **Recipe cache glob pattern handling** - Fixed errors with recipe cache when glob paths were relative and outside of cookbook directory
+  - Improved relative path resolution for cache input patterns like `../../../libs/test_reader/**/*.go`
+  - Enhanced canonical path handling for cross-platform compatibility
+  - Better cookbook directory resolution with multi-level pattern support
+  - Added comprehensive tests for complex relative path matching scenarios
+
+- **Gitignore improvements** - Updated `.bake/cache` and `.bake/logs` patterns to use `**/.bake/` for better nested directory handling
+
+### Technical
+
+- Added `src/project/recipe_template.rs` with full template system implementation (500+ lines)
+- Enhanced project loading with template discovery and resolution phases
+- Extended recipe validation to ensure run commands from templates or direct definition
+- Integrated template parameter validation with detailed error reporting
+- Added comprehensive test coverage for template system functionality
+- Created automated JSON schema validation suite for all configuration files
+- Enhanced CLI argument parsing with template management commands
+- Maintained full backward compatibility with existing projects
+
+### Breaking Changes
+
+- None - Template system is completely opt-in and backward compatible
+
 ## v0.8.1
 
 ### Fixed

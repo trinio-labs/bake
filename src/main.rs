@@ -208,7 +208,7 @@ async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
             for (name, template) in &project.template_registry {
                 println!("\n📋 Template: {}", console::style(name).bold().cyan());
                 if let Some(description) = &template.description {
-                    println!("   Description: {}", description);
+                    println!("   Description: {description}");
                 }
                 
                 if !template.parameters.is_empty() {
@@ -222,7 +222,7 @@ async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
                         };
                         println!("     • {}: {:?}{}{}", param_name, param_def.parameter_type, required, default);
                         if let Some(desc) = &param_def.description {
-                            println!("       {}", desc);
+                            println!("       {desc}");
                         }
                     }
                 }
@@ -264,7 +264,7 @@ async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
             let mut validation_errors = 0;
             
             for (name, template) in &project.template_registry {
-                print!("📋 {}: ", name);
+                print!("📋 {name}: ");
                 
                 // Basic validation - template instantiation would catch most issues
                 let mut errors = Vec::new();
@@ -277,13 +277,13 @@ async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
                 // Check parameter definitions
                 for (param_name, param_def) in &template.parameters {
                     if param_def.required && param_def.default.is_some() {
-                        errors.push(format!("Parameter '{}' is marked as required but has a default value", param_name));
+                        errors.push(format!("Parameter '{param_name}' is marked as required but has a default value"));
                     }
                     
                     // Validate regex patterns if present
                     if let Some(pattern) = &param_def.pattern {
                         if regex::Regex::new(pattern).is_err() {
-                            errors.push(format!("Parameter '{}' has invalid regex pattern: {}", param_name, pattern));
+                            errors.push(format!("Parameter '{param_name}' has invalid regex pattern: {pattern}"));
                         }
                     }
                 }
@@ -293,7 +293,7 @@ async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
                 } else {
                     println!("{}", console::style("✗ Invalid").red());
                     for error in errors {
-                        println!("   • {}", error);
+                        println!("   • {error}");
                     }
                     validation_errors += 1;
                 }
