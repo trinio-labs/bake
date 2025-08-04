@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.9.2
+
+### Fixed
+
+- **S3 cache extraction reliability** - Fixed "incomplete frame" errors during cache archive extraction in CI environments
+  - Added proper file flushing with `file.shutdown().await` to ensure complete download before extraction
+  - Prevents race condition where cache extraction started before S3 download was fully written to disk
+  - Matches the proven fix already implemented in GCS cache strategy
+  - Resolves intermittent cache failures in CI pipelines with slower I/O operations
+
 ## v0.9.1
 
 ### Fixed

@@ -60,6 +60,12 @@ impl CacheStrategy for S3CacheStrategy {
                     };
                 }
 
+                // Ensure all data is flushed to disk before returning
+                if let Err(err) = file.shutdown().await {
+                    warn!("Error saving archive file: {err:?}");
+                    return CacheResult::Miss;
+                }
+
                 return CacheResult::Hit(CacheResultData { archive_path });
             }
             Err(err) => {
