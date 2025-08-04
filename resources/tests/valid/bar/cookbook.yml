@@ -1,10 +1,17 @@
 name: bar
 recipes:
   build:
+    cache:
+      inputs:
+        - "{{ cookbook.root }}/cookbook.yml"    # template-based pattern
+        - "{{ project.root }}/dependency.txt"   # template with project root
+      outputs:
+        - "{{ cookbook.root }}/build-output"    # template-based output
     run: |
       echo "Hello Bar Build!"
       sleep 0.2
       echo "Done!"
+      mkdir -p build-output
 
   test:
     run: |
@@ -19,3 +26,14 @@ recipes:
       - build
     run: |
       echo "Hello Bar Unique Recipe!"
+  
+  absolute-paths:
+    description: "Recipe testing absolute path cache patterns"
+    cache:
+      inputs:
+        - "{{ project.root }}/shared/config.json"   # absolute via template
+      outputs:
+        - "{{ project.root }}/bar/abs-output"       # absolute output
+    run: |
+      echo "Testing absolute paths!"
+      mkdir -p abs-output

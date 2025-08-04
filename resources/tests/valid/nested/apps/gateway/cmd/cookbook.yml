@@ -1,0 +1,28 @@
+name: "complex-paths"
+recipes:
+  complex-build:
+    description: "Test complex relative path patterns like the quasar project"
+    cache:
+      inputs:
+        - "main.go"                           # simple relative pattern
+        - "../../../../../libs/test_reader/**/*.go"  # complex multi-level pattern going outside cookbook dir
+        - "../../shared.txt"                  # intermediate level pattern
+      outputs:
+        - "build/binary"
+    run: |
+      echo "Building with complex path dependencies"
+      mkdir -p build
+      echo "binary content" > build/binary
+
+  simple-build:
+    description: "Test simple relative patterns for comparison"  
+    cache:
+      inputs:
+        - "main.go"
+        - "*.txt"
+      outputs:
+        - "simple/output"
+    run: |
+      echo "Simple build"
+      mkdir -p simple
+      echo "output" > simple/output
