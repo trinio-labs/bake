@@ -105,6 +105,22 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 - Detailed error reporting with recipe context
 - Log files preserved for debugging failed recipes
 
+## Publishing a new version of Bake
+
+To publish a new version of Bake, follow these steps in order:
+
+- Run tests and ensure they pass: `cargo test`
+- Run clippy and fix any issues: `cargo clippy --all-targets --fix --all-features`
+- Bump the version number in `Cargo.toml` according to semantic versioning
+  - Major version: Breaking changes
+  - Minor version: New features, no breaking changes
+  - Patch version: Bug fixes, no new features or breaking changes
+- Update all documentation, including this file
+- Update CHANGELOG.md with all changes since the last release
+- Commit all changes with a clear message using conventional commit format
+- Tag the commit with the version number (e.g., `v1.2.3`)
+- Push the changes to the main branch
+
 ## Code Implementation Guidelines - **CRITICAL**
 
 - **Principles**: Adhere closely to KISS, DRY, SOLID, YAGNI and the Zen of Python.

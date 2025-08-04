@@ -153,6 +153,43 @@ pub async fn check_for_updates(config: &UpdateConfig, force_check: bool) -> Resu
 pub fn perform_self_update(prerelease: bool) -> Result<()> {
     let current_version = cargo_crate_version!();
 
+    // Check if this is a package-managed installation
+    if let Ok(current_exe) = env::current_exe() {
+        if is_package_managed_installation(&current_exe) {
+            println!(
+                "{}",
+                style("Cannot update: bake is installed via a package manager.").yellow()
+            );
+            println!(
+                "{}",
+                style("Please use your package manager to update:").dim()
+            );
+            
+            let exe_path = current_exe.to_string_lossy();
+            if exe_path.contains("/opt/homebrew/") || exe_path.contains("/home/linuxbrew/") {
+                println!("  {}", style("brew upgrade bake").cyan());
+            } else if exe_path.contains("/usr/bin/") && std::path::Path::new("/usr/bin/apt").exists() {
+                println!("  {}", style("sudo apt update && sudo apt upgrade bake").cyan());
+            } else if exe_path.contains("/usr/bin/") && std::path::Path::new("/usr/bin/yum").exists() {
+                println!("  {}", style("sudo yum update bake").cyan());
+            } else if exe_path.contains("/snap/") {
+                println!("  {}", style("sudo snap refresh bake").cyan());
+            } else {
+                println!("  {}", style("Use your system's package manager").cyan());
+            }
+            
+            return Ok(());
+        }
+    }
+
+    // Check if we have write permissions
+    if !can_update_binary() {
+        return Err(anyhow!(
+            "Cannot update: insufficient permissions to write to binary.\n\
+            Try running with elevated permissions or update via your package manager."
+        ));
+    }
+
     let updater = Update::configure()
         .repo_owner(GITHUB_REPO_OWNER)
         .repo_name(GITHUB_REPO_NAME)
@@ -224,14 +261,68 @@ fn should_skip_update_check() -> bool {
 
     // Skip if running from a development build
     if let Ok(current_exe) = env::current_exe() {
-        if current_exe.to_string_lossy().contains("target/debug")
-            || current_exe.to_string_lossy().contains("target/release")
-        {
+        let exe_path = current_exe.to_string_lossy();
+        if exe_path.contains("target/debug") || exe_path.contains("target/release") {
+            return true;
+        }
+
+        // Skip if running from package managers that manage the binary
+        if is_package_managed_installation(&current_exe) {
             return true;
         }
     }
 
     false
+}
+
+/// Check if the binary is installed via a package manager
+fn is_package_managed_installation(exe_path: &std::path::Path) -> bool {
+    let path_str = exe_path.to_string_lossy();
+    
+    // Check for common package manager paths
+    if path_str.contains("/usr/bin/") || 
+       path_str.contains("/usr/local/bin/") ||
+       path_str.contains("/opt/homebrew/") ||
+       path_str.contains("/home/linuxbrew/") ||
+       path_str.contains("/.local/share/flatpak/") ||
+       path_str.contains("/snap/") ||
+       path_str.contains("/var/lib/snapd/") {
+        return true;
+    }
+
+    // For symlinks (common with brew), check if the target is in a package directory
+    if let Ok(resolved_path) = std::fs::read_link(exe_path) {
+        let resolved_str = resolved_path.to_string_lossy();
+        if resolved_str.contains("Cellar/") || 
+           resolved_str.contains("Formula/") ||
+           resolved_str.contains("/usr/") ||
+           resolved_str.contains("/opt/") {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if the binary can be updated (has write permissions)
+fn can_update_binary() -> bool {
+    match env::current_exe() {
+        Ok(exe_path) => {
+            // Check if we can write to the binary file
+            match std::fs::OpenOptions::new().write(true).open(&exe_path) {
+                Ok(_) => true,
+                Err(_) => {
+                    // If it's a symlink, check the target
+                    if let Ok(target) = std::fs::read_link(&exe_path) {
+                        std::fs::OpenOptions::new().write(true).open(&target).is_ok()
+                    } else {
+                        false
+                    }
+                }
+            }
+        }
+        Err(_) => false,
+    }
 }
 
 /// Get update status information
@@ -375,5 +466,42 @@ mod tests {
         assert!(is_prerelease("1.0.0-alpha.1"));
         assert!(!is_prerelease("1.0.0"));
         assert!(!is_prerelease("2.1.3"));
+    }
+
+    #[test]
+    fn test_is_package_managed_installation() {
+        use std::path::Path;
+        
+        // Test brew installations
+        assert!(is_package_managed_installation(Path::new("/opt/homebrew/bin/bake")));
+        assert!(is_package_managed_installation(Path::new("/home/linuxbrew/.linuxbrew/bin/bake")));
+        
+        // Test system installations
+        assert!(is_package_managed_installation(Path::new("/usr/bin/bake")));
+        assert!(is_package_managed_installation(Path::new("/usr/local/bin/bake")));
+        
+        // Test snap installations
+        assert!(is_package_managed_installation(Path::new("/snap/bake/current/bin/bake")));
+        assert!(is_package_managed_installation(Path::new("/var/lib/snapd/snap/bake/current/bin/bake")));
+        
+        // Test flatpak installations
+        assert!(is_package_managed_installation(Path::new("/home/user/.local/share/flatpak/app/bake/current/files/bin/bake")));
+        
+        // Test non-package-managed installations
+        assert!(!is_package_managed_installation(Path::new("/home/user/bin/bake")));
+        assert!(!is_package_managed_installation(Path::new("/home/user/.cargo/bin/bake")));
+        assert!(!is_package_managed_installation(Path::new("./target/release/bake")));
+    }
+
+    #[test]
+    fn test_is_package_managed_installation_with_symlinks() {
+        // This test would require creating actual symlinks in a temp directory
+        // For now, we test the basic path-based detection
+        let temp_dir = TempDir::new().unwrap();
+        let fake_binary = temp_dir.path().join("bake");
+        fs::write(&fake_binary, "fake binary").unwrap();
+        
+        // Test that regular files in temp dirs are not considered package-managed
+        assert!(!is_package_managed_installation(&fake_binary));
     }
 }

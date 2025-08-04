@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v0.9.1
+
+### Fixed
+
+- **Enhanced self-update functionality** - Improved package manager detection and permission handling
+  - Detects package-managed installations (Homebrew, APT, YUM, Snap, Flatpak) and prevents self-updates
+  - Provides helpful guidance on how to update via the appropriate package manager
+  - Checks write permissions before attempting updates to provide better error messages
+  - Added comprehensive path detection for various package manager installation locations
+  - Enhanced symlink resolution for package managers that use symbolic links
+
+### Documentation
+
+- **Publishing guidelines** - Added comprehensive version publishing process documentation to CLAUDE.md
+  - Step-by-step release process with semantic versioning guidelines
+  - Documentation update requirements and commit conventions
+  - Git tagging and branch management instructions
+
 ## v0.9.0
 
 ### Added

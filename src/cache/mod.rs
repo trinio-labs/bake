@@ -833,7 +833,7 @@ mod test {
         for &byte in &header {
             checksum += byte as u32;
         }
-        let checksum_str = format!("{:06o}\0", checksum);
+        let checksum_str = format!("{checksum:06o}\0");
         header[148..148+checksum_str.len()].copy_from_slice(checksum_str.as_bytes());
         
         data.extend_from_slice(&header);
@@ -885,7 +885,7 @@ mod test {
         for &byte in &header {
             checksum += byte as u32;
         }
-        let checksum_str = format!("{:06o}\0", checksum);
+        let checksum_str = format!("{checksum:06o}\0");
         header[148..148+checksum_str.len()].copy_from_slice(checksum_str.as_bytes());
         
         data.extend_from_slice(&header);
@@ -1016,7 +1016,7 @@ mod test {
         let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
 
         // Create an archive with nested directory structure
-        let temp_archive = std::env::temp_dir().join(format!("nested_test_{}.{}", recipe_hash, ARCHIVE_EXTENSION));
+        let temp_archive = std::env::temp_dir().join(format!("nested_test_{recipe_hash}.{ARCHIVE_EXTENSION}"));
         {
             let file = std::fs::File::create(&temp_archive).unwrap();
             let enc = zstd::stream::Encoder::new(file, 0).unwrap().auto_finish();

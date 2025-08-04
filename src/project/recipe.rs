@@ -420,8 +420,7 @@ mod tests {
         let result = recipe.get_self_hash();
         assert!(
             result.is_ok(),
-            "Hash calculation should succeed: {:?}",
-            result
+            "Hash calculation should succeed: {result:?}"
         );
 
         // The hash should be reproducible
@@ -460,8 +459,7 @@ mod tests {
         let result = recipe.get_self_hash();
         assert!(
             result.is_ok(),
-            "Complex path hash calculation should succeed: {:?}",
-            result
+            "Complex path hash calculation should succeed: {result:?}"
         );
 
         // The hash should be reproducible
