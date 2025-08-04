@@ -86,6 +86,14 @@ struct Args {
     /// Use regex patterns for cookbook and recipe matching
     #[arg(long)]
     regex: bool,
+
+    /// List all available recipe templates
+    #[arg(long)]
+    list_templates: bool,
+
+    /// Validate all recipe templates
+    #[arg(long)]
+    validate_templates: bool,
 }
 
 fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -171,6 +179,142 @@ async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
         None => {
             println!("No updates available");
             Ok(())
+        }
+    }
+}
+
+async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
+    let bake_path = resolve_bake_path(&args.path)?;
+    
+    println!("Loading project...");
+    let term = Term::stdout();
+    term.move_cursor_up(1)?;
+
+    let override_variables = IndexMap::new();
+    
+    match BakeProject::from(&bake_path, override_variables, args.force_version_override) {
+        Ok(project) => {
+            println!("Loading project... {}", console::style("✓").green());
+            
+            if project.template_registry.is_empty() {
+                println!("No templates found in {}", project.get_project_templates_path().display());
+                println!("Create template files in .bake/templates/ directory to get started.");
+                return Ok(());
+            }
+
+            println!("\nAvailable Templates:");
+            println!("{}", "=".repeat(50));
+            
+            for (name, template) in &project.template_registry {
+                println!("\n📋 Template: {}", console::style(name).bold().cyan());
+                if let Some(description) = &template.description {
+                    println!("   Description: {}", description);
+                }
+                
+                if !template.parameters.is_empty() {
+                    println!("   Parameters:");
+                    for (param_name, param_def) in &template.parameters {
+                        let required = if param_def.required { " (required)" } else { "" };
+                        let default = if let Some(default) = &param_def.default {
+                            format!(" [default: {}]", serde_yaml::to_string(default).unwrap_or_default().trim())
+                        } else {
+                            String::new()
+                        };
+                        println!("     • {}: {:?}{}{}", param_name, param_def.parameter_type, required, default);
+                        if let Some(desc) = &param_def.description {
+                            println!("       {}", desc);
+                        }
+                    }
+                }
+                
+                println!("   File: {}", template.template_path.display());
+            }
+            
+            println!("\nTotal: {} template(s)", project.template_registry.len());
+            Ok(())
+        }
+        Err(err) => {
+            println!("Loading project... {}", console::style("✗").red());
+            Err(err)
+        }
+    }
+}
+
+async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
+    let bake_path = resolve_bake_path(&args.path)?;
+    
+    println!("Loading project...");
+    let term = Term::stdout();
+    term.move_cursor_up(1)?;
+
+    let override_variables = IndexMap::new();
+    
+    match BakeProject::from(&bake_path, override_variables, args.force_version_override) {
+        Ok(project) => {
+            println!("Loading project... {}", console::style("✓").green());
+            
+            if project.template_registry.is_empty() {
+                println!("No templates found in {}", project.get_project_templates_path().display());
+                return Ok(());
+            }
+
+            println!("\nValidating Templates:");
+            println!("{}", "=".repeat(50));
+            
+            let mut validation_errors = 0;
+            
+            for (name, template) in &project.template_registry {
+                print!("📋 {}: ", name);
+                
+                // Basic validation - template instantiation would catch most issues
+                let mut errors = Vec::new();
+                
+                // Check if template has required run command
+                if template.template.run.trim().is_empty() {
+                    errors.push("Template has no run command defined".to_string());
+                }
+                
+                // Check parameter definitions
+                for (param_name, param_def) in &template.parameters {
+                    if param_def.required && param_def.default.is_some() {
+                        errors.push(format!("Parameter '{}' is marked as required but has a default value", param_name));
+                    }
+                    
+                    // Validate regex patterns if present
+                    if let Some(pattern) = &param_def.pattern {
+                        if regex::Regex::new(pattern).is_err() {
+                            errors.push(format!("Parameter '{}' has invalid regex pattern: {}", param_name, pattern));
+                        }
+                    }
+                }
+                
+                if errors.is_empty() {
+                    println!("{}", console::style("✓ Valid").green());
+                } else {
+                    println!("{}", console::style("✗ Invalid").red());
+                    for error in errors {
+                        println!("   • {}", error);
+                    }
+                    validation_errors += 1;
+                }
+            }
+            
+            println!("\nValidation Summary:");
+            if validation_errors == 0 {
+                println!("{} All {} template(s) are valid!", console::style("✓").green(), project.template_registry.len());
+            } else {
+                println!("{} {} template(s) have validation errors", console::style("✗").red(), validation_errors);
+            }
+            
+            if validation_errors > 0 {
+                std::process::exit(1);
+            }
+            
+            Ok(())
+        }
+        Err(err) => {
+            println!("Loading project... {}", console::style("✗").red());
+            Err(err)
         }
     }
 }
@@ -278,6 +422,15 @@ async fn main() -> anyhow::Result<()> {
 
     if args.check_updates {
         return handle_check_updates(args.prerelease).await;
+    }
+
+    // Handle template-specific commands
+    if args.list_templates {
+        return handle_list_templates(&args).await;
+    }
+
+    if args.validate_templates {
+        return handle_validate_templates(&args).await;
     }
 
     // Main baking logic

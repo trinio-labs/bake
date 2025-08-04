@@ -1,0 +1,47 @@
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/trinio-labs/bake/main/schemas/bake-project.schema.json": [
+      "bake.yml",
+      "bake.yaml"
+    ],
+    "https://raw.githubusercontent.com/trinio-labs/bake/main/schemas/cookbook.schema.json": [
+      "**/cookbook.yml",
+      "**/cookbook.yaml"
+    ],
+    "https://raw.githubusercontent.com/trinio-labs/bake/main/schemas/recipe-template.schema.json": [
+      "**/.bake/templates/*.yml",
+      "**/.bake/templates/*.yaml"
+    ]
+  },
+  "json.schemas": [
+    {
+      "fileMatch": [
+        "bake.yml",
+        "bake.yaml"
+      ],
+      "url": "https://raw.githubusercontent.com/trinio-labs/bake/main/schemas/bake-project.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/cookbook.yml",
+        "**/cookbook.yaml"
+      ],
+      "url": "https://raw.githubusercontent.com/trinio-labs/bake/main/schemas/cookbook.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/.bake/templates/*.yml",
+        "**/.bake/templates/*.yaml"
+      ],
+      "url": "https://raw.githubusercontent.com/trinio-labs/bake/main/schemas/recipe-template.schema.json"
+    }
+  ],
+  "files.associations": {
+    "bake.yml": "yaml",
+    "bake.yaml": "yaml",
+    "**/cookbook.yml": "yaml",
+    "**/cookbook.yaml": "yaml",
+    "**/.bake/templates/*.yml": "yaml",
+    "**/.bake/templates/*.yaml": "yaml"
+  }
+}

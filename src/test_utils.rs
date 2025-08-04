@@ -28,6 +28,7 @@ impl TestProjectBuilder {
             // dependency_map: BTreeMap::new(), // Removed: Handled by graph
             // Initialize graph fields as default, they will be populated by the new graph module
             recipe_dependency_graph: Default::default(),
+            template_registry: BTreeMap::new(),
         };
         Self { project }
     }
@@ -51,6 +52,8 @@ impl TestProjectBuilder {
                         run: format!("echo Hello from recipe {recipe}"),
                         run_status: Default::default(),
                         config_path: config_path.clone(),
+                        template: None,
+                        parameters: std::collections::BTreeMap::new(),
                     },
                 )
             })

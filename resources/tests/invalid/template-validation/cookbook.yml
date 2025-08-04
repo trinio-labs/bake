@@ -1,0 +1,11 @@
+name: "invalid-templates"
+description: "Test cookbook with invalid template usage"
+recipes:
+  # Recipe without run command and without template - should fail validation
+  invalid-no-run:
+    description: "Recipe without run command"
+  
+  # This should work - has run command
+  valid-with-run:
+    description: "Valid recipe with run command"
+    run: "echo 'This works'"

@@ -108,6 +108,7 @@ mod tests {
             config: tool_config,
 
             root_path: project_root_path,
+            template_registry: BTreeMap::new(),
         })
     }
 

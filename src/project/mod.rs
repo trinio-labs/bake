@@ -338,11 +338,32 @@ impl BakeProject {
                     final_recipe.cache = recipe.cache.clone();
                 }
 
+                // Override run command if specified in recipe (non-empty)
+                if !recipe.run.is_empty() {
+                    final_recipe.run = recipe.run.clone();
+                }
+
                 // Replace the original recipe with the instantiated one
                 *recipe = final_recipe;
             }
         }
 
+        Ok(())
+    }
+
+    /// Validates that all recipes have a run command defined.
+    fn validate_recipes(&self) -> anyhow::Result<()> {
+        for (cookbook_name, cookbook) in &self.cookbooks {
+            for (recipe_name, recipe) in &cookbook.recipes {
+                if recipe.run.trim().is_empty() {
+                    bail!(
+                        "Recipe Validation: Recipe '{}:{}' has no run command defined. Either provide a 'run' field directly or use a 'template' that defines one.",
+                        cookbook_name,
+                        recipe_name
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -488,6 +509,9 @@ impl BakeProject {
 
         // Resolve template-based recipes in cookbooks.
         project.resolve_template_recipes(&override_variables)?;
+
+        // Validate that all recipes have run commands.
+        project.validate_recipes()?;
 
         // Populate the recipe dependency graph.
         project.populate_dependency_graph()?;

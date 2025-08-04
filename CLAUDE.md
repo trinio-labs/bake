@@ -52,7 +52,15 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
    - Hierarchical variable scoping (project → cookbook → recipe → CLI)
    - Built-in constants ({{project.root}}, {{cookbook.root}}, etc.)
 
-5. **update.rs** - Self-update functionality
+5. **project/recipe_template.rs** - Recipe template system
+
+   - Template definitions with typed parameters (string, number, boolean, array, object)
+   - Parameter validation with defaults, required fields, and constraints
+   - Template discovery from `.bake/templates/` directories
+   - Template instantiation with parameter substitution using Handlebars
+   - Template inheritance support with `extends` field
+
+6. **update.rs** - Self-update functionality
    - GitHub release checking and binary updates
    - Configurable update intervals and auto-update behavior
 
@@ -64,6 +72,7 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 - **Parallel Execution**: Multiple recipes can run concurrently with configurable limits
 - **Smart Caching**: Recipes are cached based on input file hashes, dependencies, and command content
 - **Variable System**: Hierarchical template variables with environment, user, and built-in variables
+- **Recipe Templates**: Reusable recipe definitions with typed parameters to eliminate duplication and standardize patterns
 
 ## Testing
 

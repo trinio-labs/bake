@@ -192,7 +192,7 @@ mod test {
     }
 
     fn validate_cookbook_vec(actual: anyhow::Result<BTreeMap<String, super::Cookbook>>) {
-        assert_eq!(actual.unwrap().len(), 3)
+        assert_eq!(actual.unwrap().len(), 4)
     }
 
     #[test_case(config_path("/valid/"), config_path("/valid/foo/cookbook.yml") => using validate_cookbook_foo; "Valid cookbook file")]

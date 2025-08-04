@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.bake.sh/recipe-template.schema.json",
+  "title": "Bake Recipe Template",
+  "description": "Schema for recipe template files stored in .bake/templates/",
+  "type": "object",
+  "required": ["name", "template"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the template",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of what this template does"
+    },
+    "extends": {
+      "type": "string",
+      "description": "Name of another template this one extends (template inheritance)",
+      "minLength": 1
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Parameters that can be passed to this template",
+      "additionalProperties": {
+        "$ref": "#/$defs/templateParameter"
+      }
+    },
+    "template": {
+      "type": "object",
+      "description": "The actual template definition that will be used to generate recipes",
+      "required": ["run"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Description of the recipe when instantiated (supports template variables)"
+        },
+        "run": {
+          "type": "string",
+          "description": "The shell command(s) to execute (supports template variables)"
+        },
+        "variables": {
+          "type": "object",
+          "description": "Recipe-specific variables (supports template variables)",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "array",
+          "description": "Environment variables to inherit",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "description": "List of recipes that must complete before this recipe can run",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "cache": {
+          "type": "object",
+          "description": "Cache configuration for the recipe",
+          "properties": {
+            "inputs": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string",
+                  "description": "Template variable reference like {{ params.cache_inputs }}"
+                }
+              ],
+              "description": "File patterns that affect this recipe's output"
+            },
+            "outputs": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string",
+                  "description": "Template variable reference like {{ params.cache_outputs }}"
+                }
+              ],
+              "description": "File patterns that this recipe produces"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "templateParameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["string", "number", "boolean", "array", "object"],
+          "description": "The type of this parameter"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether this parameter is required",
+          "default": false
+        },
+        "default": {
+          "description": "Default value for this parameter (any valid YAML value)"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "For string types: regex pattern validation"
+        },
+        "min": {
+          "type": "number",
+          "description": "For number types: minimum value"
+        },
+        "max": {
+          "type": "number",
+          "description": "For number types: maximum value"
+        },
+        "items": {
+          "$ref": "#/$defs/templateParameter",
+          "description": "For array types: type definition for array elements"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pattern": true,
+              "min": false,
+              "max": false,
+              "items": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "number"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "min": true,
+              "max": true,
+              "pattern": false,
+              "items": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "boolean"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pattern": false,
+              "min": false,
+              "max": false,
+              "items": false,
+              "default": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "array"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "items": true,
+              "pattern": false,
+              "min": false,
+              "max": false,
+              "default": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pattern": false,
+              "min": false,
+              "max": false,
+              "items": false,
+              "default": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "name": "build-template",
+      "description": "Generic build template for various languages",
+      "parameters": {
+        "language": {
+          "type": "string",
+          "required": true,
+          "description": "Programming language (node, rust, go, etc.)",
+          "pattern": "^(node|rust|go|python|java)$"
+        },
+        "build_command": {
+          "type": "string",
+          "default": "npm run build",
+          "description": "Command to run for building"
+        },
+        "cache_inputs": {
+          "type": "array",
+          "default": ["src/**/*", "package.json"],
+          "description": "Input files to cache",
+          "items": {
+            "type": "string"
+          }
+        },
+        "port": {
+          "type": "number",
+          "default": 3000,
+          "min": 1024,
+          "max": 65535,
+          "description": "Port number for the application"
+        },
+        "debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug mode"
+        }
+      },
+      "template": {
+        "description": "Build {{ params.language }} application",
+        "cache": {
+          "inputs": "{{ params.cache_inputs }}",
+          "outputs": ["dist/**/*", "build/**/*"]
+        },
+        "run": "echo 'Building {{ params.language }} application...'; {{ params.build_command }}"
+      }
+    },
+    {
+      "name": "test-template",
+      "description": "Generic test template",
+      "parameters": {
+        "test_command": {
+          "type": "string",
+          "default": "npm test",
+          "description": "Command to run tests"
+        },
+        "coverage": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable coverage reporting"
+        }
+      },
+      "template": {
+        "description": "Run tests with {{ params.test_command }}",
+        "dependencies": ["build"],
+        "run": "echo 'Running tests...'; {{#if params.coverage}}echo 'Coverage enabled';{{/if}} {{ params.test_command }}"
+      }
+    }
+  ]
+}

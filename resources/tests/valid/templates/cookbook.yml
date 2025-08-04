@@ -3,18 +3,23 @@ description: "Test cookbook using templates"
 recipes:
   build:
     template: "build-template"
-    run: "echo 'placeholder - will be replaced by template'"
     parameters:
       language: "typescript"
       build_command: "echo 'Build completed successfully!'"
-      cache_inputs: ["src/**/*.ts", "package.json", "tsconfig.json"]
   
   test:
     template: "test-template"
-    run: "echo 'placeholder - will be replaced by template'"
     parameters:
-      test_command: "npm run test:ci"
+      test_command: "echo npm run test:ci"
       coverage: true
+  
+  # Recipe using template but overriding the run command
+  test-override:
+    template: "test-template"
+    run: "echo 'This run command overrides the template'"
+    parameters:
+      test_command: "echo npm run test:unit"
+      coverage: false
   
   # Regular recipe without template
   deploy:

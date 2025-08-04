@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json.schemastore.org/schema-catalog.json",
+  "version": 1,
+  "schemas": [
+    {
+      "name": "Bake Project Configuration",
+      "description": "Schema for bake.yml project configuration files",
+      "fileMatch": [
+        "bake.yml",
+        "bake.yaml"
+      ],
+      "url": "https://schemas.bake.sh/bake-project.schema.json",
+      "versions": {
+        "0.8.1": "https://schemas.bake.sh/v0.8.1/bake-project.schema.json"
+      }
+    },
+    {
+      "name": "Bake Cookbook Configuration",
+      "description": "Schema for cookbook.yml files that define collections of recipes",
+      "fileMatch": [
+        "**/cookbook.yml",
+        "**/cookbook.yaml"
+      ],
+      "url": "https://schemas.bake.sh/cookbook.schema.json",
+      "versions": {
+        "0.8.1": "https://schemas.bake.sh/v0.8.1/cookbook.schema.json"
+      }
+    },
+    {
+      "name": "Bake Recipe Template",
+      "description": "Schema for recipe template files stored in .bake/templates/",
+      "fileMatch": [
+        "**/.bake/templates/*.yml",
+        "**/.bake/templates/*.yaml"
+      ],
+      "url": "https://schemas.bake.sh/recipe-template.schema.json",
+      "versions": {
+        "0.8.1": "https://schemas.bake.sh/v0.8.1/recipe-template.schema.json"
+      }
+    }
+  ]
+}

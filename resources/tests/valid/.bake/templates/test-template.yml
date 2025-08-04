@@ -3,7 +3,7 @@ description: "Generic test template"
 parameters:
   test_command:
     type: string
-    default: "npm test"
+    default: "echo this is a test"
     description: "Command to run tests"
   coverage:
     type: boolean
@@ -14,5 +14,5 @@ template:
   dependencies: ["build"]
   run: |
     echo "Running tests..."
-    {% if params.coverage %}echo "Coverage enabled"{% endif %}
+    {{#if params.coverage}}echo "Coverage enabled"{{/if}}
     {{ params.test_command }}

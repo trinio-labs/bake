@@ -62,6 +62,7 @@ pub struct Recipe {
     pub environment: Vec<String>,
 
     pub dependencies: Option<Vec<String>>,
+    #[serde(default)]
     pub run: String,
 
     /// Template to use for this recipe (alternative to inline definition)
@@ -357,6 +358,8 @@ mod tests {
                 inputs: vec![String::from("build.sh"), String::from("../*.txt")],
                 ..Default::default()
             }),
+            template: None,
+            parameters: std::collections::BTreeMap::new(),
             run_status: RunStatus::default(),
         };
         std::env::set_var("FOO", "bar");
@@ -408,6 +411,8 @@ mod tests {
                 ],
                 ..Default::default()
             }),
+            template: None,
+            parameters: std::collections::BTreeMap::new(),
             run_status: RunStatus::default(),
         };
 
@@ -446,6 +451,8 @@ mod tests {
                 ],
                 ..Default::default()
             }),
+            template: None,
+            parameters: std::collections::BTreeMap::new(),
             run_status: RunStatus::default(),
         };
 

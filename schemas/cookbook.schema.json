@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.bake.sh/cookbook.schema.json",
+  "title": "Bake Cookbook Configuration",
+  "description": "Schema for cookbook.yml files that define collections of recipes",
+  "type": "object",
+  "required": ["name", "recipes"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the cookbook",
+      "minLength": 1
+    },
+    "variables": {
+      "type": "object",
+      "description": "Variables defined at the cookbook level, available to all recipes in this cookbook",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "environment": {
+      "type": "array",
+      "description": "Environment variables to be inherited by all recipes in this cookbook",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recipes": {
+      "type": "object",
+      "description": "Collection of recipes in this cookbook",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/recipe"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "recipe": {
+      "type": "object",
+      "description": "A recipe definition that can be executed",
+      "anyOf": [
+        {
+          "required": ["run"],
+          "not": {
+            "required": ["template"]
+          }
+        },
+        {
+          "required": ["template"],
+          "not": {
+            "required": ["run"]
+          }
+        },
+        {
+          "required": ["template", "run"]
+        }
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this recipe does"
+        },
+        "run": {
+          "type": "string",
+          "description": "The shell command(s) to execute for this recipe"
+        },
+        "template": {
+          "type": "string",
+          "description": "Name of the template to use for this recipe (alternative to inline definition)",
+          "minLength": 1
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Parameters to pass to the template",
+          "additionalProperties": true
+        },
+        "variables": {
+          "type": "object",
+          "description": "Recipe-specific variables",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "array",
+          "description": "Environment variables to inherit for this recipe",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "description": "List of recipes that must complete before this recipe can run",
+          "items": {
+            "type": "string",
+            "description": "Recipe name (same cookbook) or cookbook:recipe (cross-cookbook dependency)"
+          },
+          "uniqueItems": true
+        },
+        "cache": {
+          "type": "object",
+          "description": "Cache configuration for this recipe",
+          "properties": {
+            "inputs": {
+              "type": "array",
+              "description": "File patterns that affect this recipe's output (used for cache invalidation)",
+              "items": {
+                "type": "string",
+                "description": "File path or glob pattern"
+              }
+            },
+            "outputs": {
+              "type": "array",
+              "description": "File patterns that this recipe produces (cached and restored)",
+              "items": {
+                "type": "string",
+                "description": "File path or glob pattern"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "name": "frontend",
+      "variables": {
+        "NODE_ENV": "production",
+        "PORT": "3000"
+      },
+      "environment": ["PATH", "NODE_ENV"],
+      "recipes": {
+        "install": {
+          "description": "Install npm dependencies",
+          "run": "npm ci",
+          "cache": {
+            "inputs": ["package.json", "package-lock.json"],
+            "outputs": ["node_modules"]
+          }
+        },
+        "build": {
+          "description": "Build the application",
+          "run": "npm run build",
+          "dependencies": ["install"],
+          "variables": {
+            "BUILD_ENV": "production"
+          },
+          "cache": {
+            "inputs": ["src/**/*.ts", "tsconfig.json", "package.json"],
+            "outputs": ["dist"]
+          }
+        },
+        "test": {
+          "description": "Run tests",
+          "run": "npm test",
+          "dependencies": ["build"]
+        },
+        "template-example": {
+          "description": "Example using a template",
+          "template": "build-template",
+          "parameters": {
+            "language": "typescript",
+            "build_command": "npm run build:prod",
+            "cache_inputs": ["src/**/*.ts", "package.json", "tsconfig.json"]
+          }
+        }
+      }
+    }
+  ]
+}
