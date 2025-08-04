@@ -106,7 +106,6 @@ fn resolve_bake_path(path_arg: &Option<String>) -> anyhow::Result<std::path::Pat
     Ok(path)
 }
 
-
 async fn handle_update_info() -> anyhow::Result<()> {
     get_update_info()
         .map(|info| println!("{info}"))

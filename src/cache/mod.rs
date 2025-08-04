@@ -66,9 +66,11 @@ impl Cache {
                     }
                     let compressed = zstd::stream::Decoder::new(tar_gz).unwrap();
                     let mut archive = tar::Archive::new(compressed);
-                    if let Err(err) = archive.unpack(self.project.root_path.clone()) {
+                    
+                    // Safely extract with path traversal protection
+                    if let Err(err) = self.safe_extract_archive(&mut archive, fqn_for_logging, &data.archive_path) {
                         warn!(
-                            "Cache GET: Failed to unpack archive file for recipe '{}' from '{}': {:?}",
+                            "Cache GET: Failed to safely extract archive for recipe '{}' from '{}': {:?}",
                             fqn_for_logging,
                             &data.archive_path.display(),
                             err
@@ -81,6 +83,88 @@ impl Cache {
         }
 
         CacheResult::Miss
+    }
+
+    /// Safely extracts a tar archive with path traversal protection
+    fn safe_extract_archive(
+        &self,
+        archive: &mut tar::Archive<zstd::stream::Decoder<'_, std::io::BufReader<File>>>,
+        fqn_for_logging: &str,
+        archive_path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        use std::path::Component;
+        
+        for entry_result in archive.entries()? {
+            let mut entry = entry_result?;
+            let path = entry.path()?;
+            
+            // Security check: reject absolute paths
+            if path.is_absolute() {
+                return Err(anyhow!(
+                    "Cache security violation: archive contains absolute path '{}' in recipe '{}' from '{}'",
+                    path.display(),
+                    fqn_for_logging,
+                    archive_path.display()
+                ));
+            }
+            
+            // Security check: reject path traversal attempts
+            for component in path.components() {
+                if matches!(component, Component::ParentDir) {
+                    return Err(anyhow!(
+                        "Cache security violation: archive contains path traversal '{}' in recipe '{}' from '{}'",
+                        path.display(),
+                        fqn_for_logging,
+                        archive_path.display()
+                    ));
+                }
+            }
+            
+            // Build the full target path and ensure it's within project root
+            let target_path = self.project.root_path.join(&path);
+            
+            // Get canonical paths for comparison, handling the case where target doesn't exist yet
+            let canonical_root = self.project.root_path.canonicalize()
+                .unwrap_or_else(|_| self.project.root_path.clone());
+            
+            let canonical_target = if target_path.exists() {
+                target_path.canonicalize().unwrap_or_else(|_| target_path.clone())
+            } else {
+                // For non-existent paths, canonicalize the parent and join the filename
+                if let Some(parent) = target_path.parent() {
+                    let canonical_parent = parent.canonicalize().unwrap_or_else(|_| {
+                        // Try to create parent directories first
+                        let _ = std::fs::create_dir_all(parent);
+                        parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf())
+                    });
+                    canonical_parent.join(target_path.file_name().unwrap_or_default())
+                } else {
+                    target_path.clone()
+                }
+            };
+            
+            // Final security check: ensure target is within project root
+            // Use a more robust check that handles macOS symlink resolution differences
+            if !canonical_target.starts_with(&canonical_root) {
+                // Try alternative approach: check if the relative path doesn't escape
+                if let Ok(_relative) = canonical_target.strip_prefix(&canonical_root) {
+                    // This is fine - the path is within the root
+                } else {
+                    return Err(anyhow!(
+                        "Cache security violation: extracted path '{}' would escape project root '{}' for recipe '{}' from '{}'",
+                        canonical_target.display(),
+                        canonical_root.display(),
+                        fqn_for_logging,
+                        archive_path.display()
+                    ));
+                }
+            }
+            
+            // Safe to extract this entry
+            entry.unpack_in(&self.project.root_path)?;
+        }
+        
+        Ok(())
     }
 
     // Puts the given recipe's outputs in the cache
@@ -200,7 +284,8 @@ impl Cache {
 mod test {
     use std::{
         collections::HashSet, // Added
-        io::Write,
+        fs::File,
+        io::{Seek, Write},
         path::PathBuf,
         sync::{Arc, Mutex},
     };
@@ -714,5 +799,270 @@ mod test {
             1,
             "TestCacheStrategy should contain exactly one key after put."
         );
+    }
+
+    /// Helper to create a malicious archive with path traversal (using raw tar data)
+    fn create_malicious_archive_with_path_traversal(archive_path: &PathBuf) -> anyhow::Result<()> {
+        use std::io::Cursor;
+        
+        // Create a minimal tar archive with malicious path directly using raw bytes
+        // This bypasses the tar crate's safety checks for testing purposes
+        let mut data = Vec::new();
+        
+        // Create tar header for "../../../etc/passwd"
+        let mut header = vec![0u8; 512];
+        let path_bytes = b"../../../etc/passwd";
+        header[..path_bytes.len()].copy_from_slice(path_bytes);
+        
+        // Set file mode (regular file)
+        header[100..108].copy_from_slice(b"0000644 ");
+        // Set uid/gid
+        header[108..116].copy_from_slice(b"0000000 ");
+        header[116..124].copy_from_slice(b"0000000 ");
+        // Set file size (10 bytes)
+        header[124..136].copy_from_slice(b"00000000012 ");
+        // Set mtime
+        header[136..148].copy_from_slice(b"00000000000 ");
+        // Set checksum space
+        header[148..156].copy_from_slice(b"        ");
+        // Set file type (regular file)
+        header[156] = b'0';
+        
+        // Calculate and set checksum
+        let mut checksum = 0u32;
+        for &byte in &header {
+            checksum += byte as u32;
+        }
+        let checksum_str = format!("{:06o}\0", checksum);
+        header[148..148+checksum_str.len()].copy_from_slice(checksum_str.as_bytes());
+        
+        data.extend_from_slice(&header);
+        
+        // Add file content
+        data.extend_from_slice(b"malicious\n");
+        // Pad to 512-byte boundary
+        while data.len() % 512 != 0 {
+            data.push(0);
+        }
+        
+        // Add end-of-archive marker (two empty 512-byte blocks)
+        data.extend_from_slice(&[0u8; 1024]);
+        
+        // Compress with zstd
+        let compressed = zstd::encode_all(Cursor::new(data), 0)?;
+        std::fs::write(archive_path, compressed)?;
+        Ok(())
+    }
+
+    /// Helper to create a malicious archive with absolute paths (using raw tar data)
+    fn create_malicious_archive_with_absolute_path(archive_path: &PathBuf) -> anyhow::Result<()> {
+        use std::io::Cursor;
+        
+        // Create a minimal tar archive with absolute path directly using raw bytes
+        let mut data = Vec::new();
+        
+        // Create tar header for "/tmp/malicious_file.txt"
+        let mut header = vec![0u8; 512];
+        let path_bytes = b"/tmp/malicious_file.txt";
+        header[..path_bytes.len()].copy_from_slice(path_bytes);
+        
+        // Set file mode (regular file)
+        header[100..108].copy_from_slice(b"0000644 ");
+        // Set uid/gid
+        header[108..116].copy_from_slice(b"0000000 ");
+        header[116..124].copy_from_slice(b"0000000 ");
+        // Set file size (10 bytes)
+        header[124..136].copy_from_slice(b"00000000012 ");
+        // Set mtime
+        header[136..148].copy_from_slice(b"00000000000 ");
+        // Set checksum space
+        header[148..156].copy_from_slice(b"        ");
+        // Set file type (regular file)
+        header[156] = b'0';
+        
+        // Calculate and set checksum
+        let mut checksum = 0u32;
+        for &byte in &header {
+            checksum += byte as u32;
+        }
+        let checksum_str = format!("{:06o}\0", checksum);
+        header[148..148+checksum_str.len()].copy_from_slice(checksum_str.as_bytes());
+        
+        data.extend_from_slice(&header);
+        
+        // Add file content
+        data.extend_from_slice(b"malicious\n");
+        // Pad to 512-byte boundary
+        while data.len() % 512 != 0 {
+            data.push(0);
+        }
+        
+        // Add end-of-archive marker (two empty 512-byte blocks)
+        data.extend_from_slice(&[0u8; 1024]);
+        
+        // Compress with zstd
+        let compressed = zstd::encode_all(Cursor::new(data), 0)?;
+        std::fs::write(archive_path, compressed)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_rejects_path_traversal_attack() {
+        let project_arc = Arc::new(create_test_project());
+        let mut cache = build_cache(project_arc.clone()).await;
+        let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
+
+        // Create a malicious strategy that returns an archive with path traversal
+        let strategy = TestCacheStrategy {
+            name: "path_traversal_attack".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash.clone()]))),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: false, // We'll create the malicious archive manually
+        };
+
+        let archive_path = strategy.get_dummy_archive_path(&recipe_hash);
+        create_malicious_archive_with_path_traversal(&archive_path)
+            .expect("Failed to create malicious archive");
+
+        cache.strategies = vec![Arc::new(Box::new(strategy))];
+
+        let result = cache.get("foo:build", "foo:build").await;
+        assert!(
+            matches!(result, CacheResult::Miss),
+            "Cache should return Miss and reject path traversal attack"
+        );
+
+        // Verify that no malicious file was created outside project root
+        let malicious_path = project_arc.root_path.parent().unwrap().join("etc").join("passwd");
+        assert!(
+            !malicious_path.exists(),
+            "Malicious file should not have been created outside project root"
+        );
+
+        let _ = std::fs::remove_file(&archive_path); // Clean up
+    }
+
+    #[tokio::test]
+    async fn get_rejects_absolute_path_attack() {
+        let project_arc = Arc::new(create_test_project());
+        let mut cache = build_cache(project_arc.clone()).await;
+        let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
+
+        // Create a malicious strategy that returns an archive with absolute paths
+        let strategy = TestCacheStrategy {
+            name: "absolute_path_attack".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash.clone()]))),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: false, // We'll create the malicious archive manually
+        };
+
+        let archive_path = strategy.get_dummy_archive_path(&recipe_hash);
+        create_malicious_archive_with_absolute_path(&archive_path)
+            .expect("Failed to create malicious archive");
+
+        cache.strategies = vec![Arc::new(Box::new(strategy))];
+
+        let result = cache.get("foo:build", "foo:build").await;
+        assert!(
+            matches!(result, CacheResult::Miss),
+            "Cache should return Miss and reject absolute path attack"
+        );
+
+        // Verify that no malicious file was created in system directories
+        let malicious_path = PathBuf::from("/tmp/malicious_file.txt");
+        assert!(
+            !malicious_path.exists(),
+            "Malicious file should not have been created in system directory"
+        );
+
+        let _ = std::fs::remove_file(&archive_path); // Clean up
+    }
+
+    #[tokio::test]
+    async fn get_safely_extracts_valid_archive() {
+        let project_arc = Arc::new(create_test_project());
+        let mut cache = build_cache(project_arc.clone()).await;
+        let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
+
+        // Create a valid strategy that creates a proper archive
+        let strategy = TestCacheStrategy {
+            name: "valid_archive".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash.clone()]))),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: true, // This creates a valid archive
+        };
+
+        cache.strategies = vec![Arc::new(Box::new(strategy))];
+
+        let result = cache.get("foo:build", "foo:build").await;
+        assert!(
+            matches!(result, CacheResult::Hit(_)),
+            "Cache should successfully extract valid archive"
+        );
+
+        // Note: The extracted files should exist within project root with proper validation
+    }
+
+    #[tokio::test]
+    async fn safe_extract_handles_missing_parent_directories() {
+        let project_arc = Arc::new(create_test_project());
+        let mut cache = build_cache(project_arc.clone()).await;
+        let recipe_hash = cache.hashes.get("foo:build").unwrap().clone();
+
+        // Create an archive with nested directory structure
+        let temp_archive = std::env::temp_dir().join(format!("nested_test_{}.{}", recipe_hash, ARCHIVE_EXTENSION));
+        {
+            let file = std::fs::File::create(&temp_archive).unwrap();
+            let enc = zstd::stream::Encoder::new(file, 0).unwrap().auto_finish();
+            let mut tar_builder = tar::Builder::new(enc);
+
+            // Create a temp file to add
+            let temp_file = std::env::temp_dir().join("nested_content.txt");
+            std::fs::write(&temp_file, b"nested content").unwrap();
+
+            // Add file with nested path (this should be safe)
+            tar_builder.append_path_with_name(&temp_file, "deeply/nested/dir/file.txt").unwrap();
+            tar_builder.finish().unwrap();
+            std::fs::remove_file(temp_file).unwrap();
+        } // Ensure all streams are closed and flushed
+
+        let strategy = TestCacheStrategy {
+            name: "nested_archive".to_string(),
+            cached_keys: Arc::new(Mutex::new(HashSet::from([recipe_hash.clone()]))),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            put_calls: Arc::new(Mutex::new(Vec::new())),
+            should_put_fail: false,
+            create_dummy_archive_on_get: false,
+        };
+
+        cache.strategies = vec![Arc::new(Box::new(strategy))];
+
+        // Test the extraction directly
+        let mut tar_gz = File::open(&temp_archive).unwrap();
+        tar_gz.rewind().unwrap();
+        let compressed = zstd::stream::Decoder::new(tar_gz).unwrap();
+        let mut archive = tar::Archive::new(compressed);
+        
+        let extraction_result = cache.safe_extract_archive(&mut archive, "foo:build", &temp_archive);
+        assert!(
+            extraction_result.is_ok(),
+            "Safe extraction should succeed for valid nested paths: {:?}",
+            extraction_result.err()
+        );
+
+        // Verify the nested file was created
+        let expected_file = project_arc.root_path.join("deeply/nested/dir/file.txt");
+        assert!(
+            expected_file.exists(),
+            "Nested file should have been extracted safely"
+        );
+
+        let _ = std::fs::remove_file(&temp_archive); // Clean up
     }
 }

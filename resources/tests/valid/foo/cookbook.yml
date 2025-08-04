@@ -18,10 +18,11 @@ recipes:
       foo: "build-bar"
     cache:
       inputs:
-        - "{{ cookbook.root }}/build.sh"
-        - "{{ project.root }}/shared/**/*"
+        - "build.sh"                     # relative path in same directory
+        - "../*.txt"                     # parent directory pattern  
+        - "test/**/*"                    # subdirectory pattern
       outputs:
-        - "{{ cookbook.root }}/target"
+        - "target"                       # relative output
     run: |
       ./build.sh {{ var.foo }} {{ var.env_var }} {{ project.root }}
     dependencies:
