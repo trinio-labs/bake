@@ -18,6 +18,7 @@ use tokio::{
 
 use crate::{
     cache::{Cache, CacheResult},
+    execution_plan,
     project::{config::ToolConfig, BakeProject, Recipe, RunStatus, Status},
 };
 
@@ -27,11 +28,13 @@ use crate::{
 /// * `project` - An `Arc` wrapped `BakeProject` instance containing project configuration and recipes.
 /// * `cache` - A `Cache` instance for recipe execution caching.
 /// * `execution_plan` - A pre-computed execution plan containing the recipes to execute in dependency order.
+/// * `show_plan` - Whether to show the full execution plan details.
 ///
 pub async fn bake(
     project: Arc<BakeProject>,
     cache: Cache,
     execution_plan: Vec<Vec<Recipe>>,
+    show_plan: bool,
 ) -> anyhow::Result<()> {
     // Create .bake directories
     project.create_project_bake_dirs()?;
@@ -39,6 +42,11 @@ pub async fn bake(
     if execution_plan.is_empty() {
         println!("No recipes to bake in the project.");
         return Ok(());
+    }
+
+    // Display execution plan based on flags
+    if show_plan {
+        execution_plan::display_full_execution_plan(&execution_plan)?;
     }
 
     let arc_cache = Arc::new(cache);
@@ -689,7 +697,7 @@ mod tests {
         let project = Arc::new(create_test_project());
         let cache = build_cache(project.clone()).await;
         let execution_plan = project.get_recipes_for_execution(None, false).unwrap();
-        let res = super::bake(project.clone(), cache, execution_plan).await;
+        let res = super::bake(project.clone(), cache, execution_plan, false).await;
         assert!(res.is_ok());
     }
 
@@ -702,7 +710,7 @@ mod tests {
         let execution_plan = project
             .get_recipes_for_execution(Some("bar:"), false)
             .unwrap();
-        let res = super::bake(project.clone(), cache, execution_plan).await;
+        let res = super::bake(project.clone(), cache, execution_plan, false).await;
         assert!(res.is_ok());
     }
 
@@ -741,7 +749,7 @@ mod tests {
         let execution_plan = project_arc
             .get_recipes_for_execution(Some("bar:"), false)
             .unwrap();
-        let res = super::bake(project_arc.clone(), cache, execution_plan).await;
+        let res = super::bake(project_arc.clone(), cache, execution_plan, false).await;
 
         // Assert that the bake operation failed as expected.
         assert!(res.is_err(), "Bake should fail when a recipe errors.");
