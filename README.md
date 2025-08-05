@@ -14,6 +14,8 @@ recipe's inputs such as files or environment variables.
 - **🏗️ Project Organization**: Organize tasks into cookbooks and recipes
 - **🔄 Self-Updates**: Automatic update checking and installation
 - **📊 Version Management**: Track project compatibility with bake versions
+- **🌳 Execution Planning**: Clean tree-style visualization of recipe execution order
+- **🔍 Configuration Debugging**: Render resolved configuration with variable substitution
 - **⚡ Fast & Reliable**: Built in Rust for performance and reliability
 
 ## Installation
@@ -96,6 +98,96 @@ bake app:build
 bake app:build --var environment=production
 ```
 
+## Variable System
+
+Bake provides a powerful variable system that supports:
+
+- **Environment Variables**: `{{env.NODE_ENV}}`
+- **User Variables**: `{{var.version}}`
+- **Built-in Constants**: `{{project.root}}`, `{{cookbook.root}}`
+- **Variable References**: `{{var.base_url}}/v{{var.version}}`
+
+Variables are scoped hierarchically: project → cookbook → recipe → command line overrides.
+
+## Recipe Templates
+
+Bake supports reusable recipe templates to eliminate duplication and standardize common patterns. Templates are defined in `.bake/templates/` with typed parameters and can be instantiated across multiple cookbooks.
+
+```yaml
+# .bake/templates/build-template.yml
+name: "Build Template"
+description: "Standard build process with configurable parameters"
+
+parameters:
+  language:
+    type: string
+    required: true
+    description: "Programming language (node, rust, go)"
+
+  build_command:
+    type: string
+    default: "npm run build"
+    description: "Command to run for building"
+
+recipe:
+  description: "Build {{params.language}} application"
+  inputs:
+    - "src/**/*"
+    - "package.json"
+  run: |
+    echo "Building {{params.language}} project..."
+    {{params.build_command}}
+```
+
+Use templates in cookbooks by referencing them:
+
+```yaml
+# app/cookbook.yml
+recipes:
+  build:
+    template: build-template
+    params:
+      language: "node"
+      build_command: "npm run build:prod"
+```
+
+Templates support validation, defaults, inheritance, and can be combined with regular recipe definitions.
+
+## Execution Planning & Debugging
+
+Bake provides powerful tools to understand and debug your project configuration:
+
+### Execution Plan Visualization
+
+Use the `--show-plan` flag to see a clean tree-style visualization of how recipes will be executed:
+
+```bash
+# Show execution plan for all recipes
+bake --show-plan
+
+# Show execution plan for specific recipes
+bake app:build --show-plan
+```
+
+This displays a tree structure showing the execution order and dependencies between recipes.
+
+### Configuration Debugging
+
+Use the `--render` flag to see your complete resolved configuration with all variables substituted:
+
+```bash
+# Render complete project configuration
+bake --render
+
+# Render specific cookbook/recipe with dependencies
+bake app:build --render
+
+# Render with variable overrides to see how they affect the output
+bake app:build --render --var environment=production
+```
+
+This outputs clean YAML showing exactly how bake interprets your configuration, making it perfect for debugging template variables and understanding complex configurations.
+
 ## Auto-Updates
 
 Bake includes an auto-update feature that keeps your installation up to date automatically. The tool checks for updates
@@ -121,17 +213,6 @@ bake --force-version-override
 ```
 
 For detailed configuration options, see [Auto-Update Documentation](./docs/auto-update.md).
-
-## Variable System
-
-Bake provides a powerful variable system that supports:
-
-- **Environment Variables**: `{{env.NODE_ENV}}`
-- **User Variables**: `{{var.version}}`
-- **Built-in Constants**: `{{project.root}}`, `{{cookbook.root}}`
-- **Variable References**: `{{var.base_url}}/v{{var.version}}`
-
-Variables are scoped hierarchically: project → cookbook → recipe → command line overrides.
 
 ## Version Management
 
@@ -273,4 +354,5 @@ For more information on how to configure caching, please see [Caching](./docs/co
 ## Documentation
 
 - [Configuration Guide](./docs/configuration.md) - Complete configuration reference
+- [Recipe Templates](./docs/recipe-templates.md) - Reusable recipe definitions and DRY patterns
 - [Auto-Update Documentation](./docs/auto-update.md) - Update system configuration

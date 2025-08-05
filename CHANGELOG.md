@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## v0.10.0
+
+### Added
+
+- **Clean tree-style execution plan display** - Enhanced visual representation of recipe execution with improved formatting
+  - Tree-style output shows clear hierarchy and dependencies between recipes
+  - Better visual organization of execution flow for complex projects
+  - Improved readability when planning and debugging recipe execution
+  
+- **Configuration rendering flag** - New `--render` flag for displaying resolved project configuration
+  - Shows fully processed configuration with all variables resolved
+  - Helpful for debugging template variable substitution and configuration issues
+  - Displays the final configuration that will be used during execution
+
+### Technical
+
+- **Code organization improvements** - Eliminated duplication in main.rs by extracting helper functions
+  - Better separation of concerns and improved maintainability
+  - Cleaner main function with extracted utility functions
+  - Enhanced code readability and reduced complexity
+
 ## v0.9.2
 
 ### Fixed
