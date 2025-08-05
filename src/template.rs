@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env};
 use anyhow::bail;
 use handlebars::Handlebars;
 use indexmap::IndexMap;
-use serde_json::json;
+use serde_json::{json, Value as JsonValue};
 
 /// Represents the context for template variable processing, containing all
 /// available variables, environment variables, and constants.
@@ -13,8 +13,8 @@ pub struct VariableContext {
     pub environment: Vec<String>,
     /// User-defined variables
     pub variables: IndexMap<String, String>,
-    /// System constants (project, cookbook, etc.)
-    pub constants: IndexMap<String, IndexMap<String, String>>,
+    /// System constants that can hold both simple and complex data (project, cookbook, params, etc.)
+    pub constants: IndexMap<String, JsonValue>,
     /// Variables that override user-defined variables
     pub overrides: IndexMap<String, String>,
 }
@@ -74,6 +74,8 @@ impl VariableContext {
             .collect();
 
         let mut handlebars = Handlebars::new();
+        // Disable HTML escaping since we're generating shell commands, not HTML
+        handlebars.register_escape_fn(handlebars::no_escape);
         if let Err(e) = handlebars.register_template_string("template", template) {
             bail!(
                 "Template Parsing: Failed to register template string '{}': {}",
@@ -84,7 +86,7 @@ impl VariableContext {
 
         let mut data =
             BTreeMap::from([("env", json!(env_values)), ("var", json!(&self.variables))]);
-        data.extend(self.constants.iter().map(|(k, v)| (k.as_ref(), json!(v))));
+        data.extend(self.constants.iter().map(|(k, v)| (k.as_ref(), v.clone())));
 
         match handlebars.render("template", &data) {
             Ok(rendered) => Ok(rendered),
@@ -98,8 +100,9 @@ impl VariableContext {
 
     /// Creates project constants from a project root path
     pub fn with_project_constants(project_root: &std::path::Path) -> Self {
-        let project_constants =
-            IndexMap::from([("root".to_owned(), project_root.display().to_string())]);
+        let project_constants = json!({
+            "root": project_root.display().to_string()
+        });
         let constants = IndexMap::from([("project".to_owned(), project_constants)]);
 
         Self {
@@ -112,14 +115,13 @@ impl VariableContext {
 
     /// Creates cookbook constants from a cookbook path
     pub fn with_cookbook_constants(cookbook_path: &std::path::Path) -> anyhow::Result<Self> {
-        let cookbook_constants = IndexMap::from([(
-            "root".to_owned(),
-            cookbook_path
+        let cookbook_constants = json!({
+            "root": cookbook_path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("Cookbook path has no parent directory"))?
                 .display()
-                .to_string(),
-        )]);
+                .to_string()
+        });
         let constants = IndexMap::from([("cookbook".to_owned(), cookbook_constants)]);
 
         Ok(Self {
@@ -229,11 +231,9 @@ mod test {
         let mut context = VariableContext::with_project_constants(Path::new("/project/root"));
         context.environment = environment.clone();
         context.variables = variables.clone();
-        context
-            .constants
-            .get_mut("project")
-            .unwrap()
-            .insert("foo".to_owned(), "bar".to_owned());
+        if let Some(JsonValue::Object(project_obj)) = context.constants.get_mut("project") {
+            project_obj.insert("foo".to_owned(), JsonValue::String("bar".to_owned()));
+        }
 
         let result = context.parse_template("{{var.foo}}").unwrap();
         assert_eq!(result, "bar");
@@ -269,11 +269,9 @@ mod test {
         context.environment = environment;
         context.variables = variables;
         context.overrides = overrides;
-        context
-            .constants
-            .get_mut("project")
-            .unwrap()
-            .insert("foo".to_owned(), "bar".to_owned());
+        if let Some(JsonValue::Object(project_obj)) = context.constants.get_mut("project") {
+            project_obj.insert("foo".to_owned(), JsonValue::String("bar".to_owned()));
+        }
 
         let result = context.process_variables().unwrap();
         assert_eq!(result.get("foo"), Some(&"bar".to_owned()));
@@ -287,21 +285,18 @@ mod test {
         let mut context = VariableContext::with_project_constants(Path::new("/tmp"));
         context.environment.push("TEST_BUILDER".to_owned());
         context.variables.insert("foo".to_owned(), "bar".to_owned());
-        context
-            .constants
-            .get_mut("project")
-            .unwrap()
-            .insert("root".to_owned(), "/tmp".to_owned());
+        if let Some(JsonValue::Object(project_obj)) = context.constants.get_mut("project") {
+            project_obj.insert("root".to_owned(), JsonValue::String("/tmp".to_owned()));
+        }
         context
             .overrides
             .insert("override".to_owned(), "value".to_owned());
 
         assert_eq!(context.environment, vec!["TEST_BUILDER"]);
         assert_eq!(context.variables.get("foo"), Some(&"bar".to_owned()));
-        assert_eq!(
-            context.constants.get("project").unwrap().get("root"),
-            Some(&"/tmp".to_owned())
-        );
+        if let Some(JsonValue::Object(project_obj)) = context.constants.get("project") {
+            assert_eq!(project_obj.get("root"), Some(&json!("/tmp")));
+        }
         assert_eq!(context.overrides.get("override"), Some(&"value".to_owned()));
     }
 

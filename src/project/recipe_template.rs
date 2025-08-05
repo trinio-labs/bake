@@ -271,24 +271,58 @@ impl RecipeTemplate {
         // Create a new variable context with template parameters
         let mut template_context = context.clone();
         
-        // Add template parameters to the context as 'params'
-        let params_map: IndexMap<String, String> = resolved_params
+        // Convert resolved parameters to JSON values for structured constants
+        let params_json = resolved_params
             .iter()
             .map(|(k, v)| {
-                let value_str = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Sequence(_) => serde_yaml::to_string(v).unwrap_or_default().trim().to_string(),
-                    Value::Mapping(_) => serde_yaml::to_string(v).unwrap_or_default().trim().to_string(),
-                    Value::Null => "null".to_string(),
-                    Value::Tagged(tagged) => serde_yaml::to_string(&tagged.value).unwrap_or_default().trim().to_string(),
+                let json_value = match v {
+                    Value::String(s) => serde_json::Value::String(s.clone()),
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            serde_json::Value::Number(serde_json::Number::from(i))
+                        } else if let Some(f) = n.as_f64() {
+                            serde_json::Value::Number(serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)))
+                        } else {
+                            serde_json::Value::Number(serde_json::Number::from(0))
+                        }
+                    },
+                    Value::Bool(b) => serde_json::Value::Bool(*b),
+                    Value::Sequence(seq) => {
+                        let json_seq: Vec<serde_json::Value> = seq.iter().map(|item| {
+                            // Convert each item in the sequence
+                            match item {
+                                Value::String(s) => serde_json::Value::String(s.clone()),
+                                Value::Number(n) => {
+                                    if let Some(i) = n.as_i64() {
+                                        serde_json::Value::Number(serde_json::Number::from(i))
+                                    } else if let Some(f) = n.as_f64() {
+                                        serde_json::Value::Number(serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)))
+                                    } else {
+                                        serde_json::Value::Number(serde_json::Number::from(0))
+                                    }
+                                },
+                                Value::Bool(b) => serde_json::Value::Bool(*b),
+                                Value::Null => serde_json::Value::Null,
+                                _ => serde_json::Value::String(serde_yaml::to_string(item).unwrap_or_default().trim().to_string()),
+                            }
+                        }).collect();
+                        serde_json::Value::Array(json_seq)
+                    },
+                    Value::Mapping(_) => {
+                        // Convert YAML mapping to JSON object
+                        serde_yaml::from_value(v.clone()).unwrap_or(serde_json::Value::Object(Default::default()))
+                    },
+                    Value::Null => serde_json::Value::Null,
+                    Value::Tagged(tagged) => {
+                        // Handle tagged values by converting the inner value
+                        serde_yaml::from_value(tagged.value.clone()).unwrap_or(serde_json::Value::Null)
+                    },
                 };
-                (k.clone(), value_str)
+                (k.clone(), json_value)
             })
             .collect();
 
-        template_context.constants.insert("params".to_string(), params_map);
+        template_context.constants.insert("params".to_string(), serde_json::Value::Object(params_json));
 
         // Process the template definition with parameter substitution
         let description = if let Some(desc) = &self.template.description {

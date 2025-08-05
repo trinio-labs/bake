@@ -94,6 +94,10 @@ struct Args {
     /// Validate all recipe templates
     #[arg(long)]
     validate_templates: bool,
+
+    /// Print rendered cookbooks with all variables and templates resolved
+    #[arg(long)]
+    render: bool,
 }
 
 fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -319,6 +323,178 @@ async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
     }
 }
 
+async fn handle_render(args: &Args) -> anyhow::Result<()> {
+    let bake_path = resolve_bake_path(&args.path)?;
+    
+    println!("Loading project...");
+    let term = Term::stdout();
+    term.move_cursor_up(1)?;
+
+    let override_variables =
+        args.var
+            .iter()
+            .try_fold(IndexMap::new(), |mut acc, s| -> anyhow::Result<_> {
+                let (k, v) = parse_key_val(s)?;
+                acc.insert(k, v);
+                Ok(acc)
+            })?;
+    
+    match BakeProject::from(&bake_path, override_variables, args.force_version_override) {
+        Ok(project) => {
+            println!("Loading project... {}", console::style("✓").green());
+            
+            // Get the execution plan to determine which recipes to show
+            let recipe_filter = args.recipe.as_deref();
+            let execution_plan = project.get_recipes_for_execution(recipe_filter, args.regex)?;
+            
+            // Create a set of all recipe FQNs that should be included
+            let included_recipes: std::collections::HashSet<String> = execution_plan
+                .iter()
+                .flatten()
+                .map(|recipe| recipe.full_name())
+                .collect();
+            
+            // Output header with pretty styling
+            println!("\n{}", console::style("🍰 Rendered Bake Configuration").bold().cyan());
+            println!("{}", console::style("✨ All variables and templates resolved").dim());
+            if let Some(filter) = recipe_filter {
+                println!("{} {}", console::style("🎯 Filter:").bold().yellow(), console::style(filter).bright().white());
+            }
+            println!("{}", "━".repeat(50));
+            
+            // Create serializable structures for cookbooks and recipes
+            #[derive(serde::Serialize)]
+            struct RenderedCookbook {
+                name: String,
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                environment: Vec<String>,
+                #[serde(skip_serializing_if = "IndexMap::is_empty")]
+                variables: IndexMap<String, String>,
+                recipes: std::collections::BTreeMap<String, RenderedRecipe>,
+            }
+            
+            #[derive(serde::Serialize)]
+            struct RenderedRecipe {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                description: Option<String>,
+                #[serde(skip_serializing_if = "IndexMap::is_empty")]
+                variables: IndexMap<String, String>,
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                environment: Vec<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                dependencies: Option<Vec<String>>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                cache: Option<crate::project::RecipeCacheConfig>,
+                run: String,
+            }
+            
+            // Convert project to renderable structure, filtering by included recipes
+            let cookbooks: std::collections::BTreeMap<String, RenderedCookbook> = project.cookbooks
+                .iter()
+                .filter_map(|(name, cookbook)| {
+                    // Only include recipes that are in the execution plan
+                    let filtered_recipes: std::collections::BTreeMap<String, RenderedRecipe> = cookbook.recipes
+                        .iter()
+                        .filter(|(_recipe_name, recipe)| {
+                            // If no filter specified, include all recipes
+                            if included_recipes.is_empty() {
+                                true
+                            } else {
+                                included_recipes.contains(&recipe.full_name())
+                            }
+                        })
+                        .map(|(recipe_name, recipe)| {
+                            (recipe_name.clone(), RenderedRecipe {
+                                description: recipe.description.clone(),
+                                variables: recipe.variables.clone(),
+                                environment: recipe.environment.clone(),
+                                dependencies: recipe.dependencies.clone(),
+                                cache: recipe.cache.clone(),
+                                run: recipe.run.clone(),
+                            })
+                        })
+                        .collect();
+                    
+                    // Only include cookbooks that have at least one recipe to show
+                    if filtered_recipes.is_empty() {
+                        None
+                    } else {
+                        Some((name.clone(), RenderedCookbook {
+                            name: cookbook.name.clone(),
+                            environment: cookbook.environment.clone(),
+                            variables: cookbook.variables.clone(),
+                            recipes: filtered_recipes,
+                        }))
+                    }
+                })
+                .collect();
+            
+            // Display project information separately
+            #[derive(serde::Serialize)]
+            struct ProjectInfo {
+                name: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                description: Option<String>,
+                #[serde(skip_serializing_if = "IndexMap::is_empty")]
+                variables: IndexMap<String, String>,
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                environment: Vec<String>,
+            }
+            
+            let project_info = ProjectInfo {
+                name: project.name.clone(),
+                description: project.description.clone(),
+                variables: project.variables.clone(),
+                environment: project.environment.clone(),
+            };
+            
+            // Print project information with pretty header
+            println!("\n{}", console::style("📋 Project Information").bold().blue());
+            println!("{}{}", 
+                console::style("└─").blue(),
+                console::style("─".repeat(25)).blue()
+            );
+            match serde_yaml::to_string(&project_info) {
+                Ok(yaml) => {
+                    println!("{}", yaml.trim());
+                }
+                Err(err) => {
+                    eprintln!("Error serializing project info to YAML: {}", err);
+                    return Err(err.into());
+                }
+            }
+            
+            // Display each cookbook separately with pretty headers
+            for (cookbook_name, cookbook) in &cookbooks {
+                println!("\n\n{} {}", 
+                    console::style("📚").green(),
+                    console::style(&format!("Cookbook: {}", cookbook_name)).bold().green()
+                );
+                println!("{}{}", 
+                    console::style("└─").green(),
+                    console::style("─".repeat(12 + cookbook_name.len())).green()
+                );
+                
+                match serde_yaml::to_string(cookbook) {
+                    Ok(yaml) => {
+                        println!("{}", yaml.trim());
+                    }
+                    Err(err) => {
+                        eprintln!("Error serializing cookbook '{}' to YAML: {}", cookbook_name, err);
+                        return Err(err.into());
+                    }
+                }
+            }
+            
+            Ok(())
+        }
+        Err(err) => {
+            println!("Loading project... {}", console::style("✗").red());
+            Err(err)
+        }
+    }
+}
+
 async fn run_bake(args: Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
 
@@ -431,6 +607,10 @@ async fn main() -> anyhow::Result<()> {
 
     if args.validate_templates {
         return handle_validate_templates(&args).await;
+    }
+
+    if args.render {
+        return handle_render(&args).await;
     }
 
     // Main baking logic
