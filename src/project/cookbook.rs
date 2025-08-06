@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{project::Recipe, template::VariableContext};
+use crate::{project::Recipe, template::{VariableContext, VariableExtractor}};
 use anyhow::bail;
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
@@ -39,25 +39,32 @@ impl Cookbook {
         project_root: &Path,
         context: &VariableContext,
     ) -> anyhow::Result<Self> {
-        let config: Cookbook;
-
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
         };
 
-        // First parse as generic YAML to allow template processing
-        let mut yaml_value: Value = match serde_yaml::from_str(&config_str) {
-            Ok(value) => value,
-            Err(err) => bail!("Cookbook: Failed to parse cookbook configuration file at '{}': {}. Check YAML syntax.", path.display(), err),
-        };
-
-        // Create a new context for this cookbook, inheriting from the project context
+        // Pre-extract cookbook variables for template rendering
+        let cookbook_vars = VariableExtractor::extract_variables_section(&config_str)?;
+        
+        // Build context for template rendering with cookbook variables
         let mut cookbook_context = context.clone();
-
-        // Add project and cookbook constants
         cookbook_context.merge(&VariableContext::with_project_constants(project_root));
         cookbook_context.merge(&VariableContext::with_cookbook_constants(path)?);
+        cookbook_context.variables.extend(cookbook_vars);
+
+        // Try normal YAML parsing first
+        let yaml_value: Value = match serde_yaml::from_str(&config_str) {
+            Ok(value) => value,
+            Err(_) => {
+                // If normal parsing fails, try template-first approach
+                let rendered_yaml = cookbook_context.render_raw_template(&config_str)?;
+                serde_yaml::from_str(&rendered_yaml)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse rendered cookbook YAML: {}", e))?
+            }
+        };
+
+        let mut yaml_value = yaml_value;
 
         // Process template variables in the YAML structure (but skip the variables and run fields)
         VariableContext::process_template_in_value(&mut yaml_value, &cookbook_context, true)?;
@@ -127,12 +134,10 @@ impl Cookbook {
 
                     Ok(())
                 })?;
-                config = parsed;
+                Ok(parsed)
             }
             Err(err) => bail!("Cookbook: Failed to deserialize cookbook configuration after template processing at '{}': {}. Check YAML syntax and template variable usage.", path.display(), err),
         }
-
-        Ok(config)
     }
 
     /// Gets all cookbooks recursively in a directory
@@ -192,7 +197,7 @@ mod test {
     }
 
     fn validate_cookbook_vec(actual: anyhow::Result<BTreeMap<String, super::Cookbook>>) {
-        assert_eq!(actual.unwrap().len(), 4)
+        assert_eq!(actual.unwrap().len(), 5)
     }
 
     #[test_case(config_path("/valid/"), config_path("/valid/foo/cookbook.yml") => using validate_cookbook_foo; "Valid cookbook file")]
@@ -275,6 +280,72 @@ recipes:
                     );
                     assert!(matches!(build_recipe.get("debug"), Some(Value::Bool(true))));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_handlebars_cookbook_parsing() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let cookbook_path = temp_dir.path().join("handlebars_test.yml");
+
+        let cookbook_content = r#"
+name: "handlebars-test-simple"
+description: "Simple handlebars test"
+variables:
+  service_name: "api"
+  enable_cache: "true"
+
+recipes:
+  # Test simple conditionals
+  {{#if var.enable_cache}}
+  build-with-cache:
+    description: "Build with caching enabled"
+    run: |
+      echo "Building with cache enabled..."
+      echo "Service: {{var.service_name}}"
+  {{else}}
+  build-without-cache:
+    description: "Build without caching"  
+    run: |
+      echo "Building without cache..."
+  {{/if}}
+
+  deploy-{{var.service_name}}:
+    description: "Deploy {{var.service_name}} service"
+    run: |
+      echo "Deploying {{var.service_name}}..."
+"#;
+
+        fs::write(&cookbook_path, cookbook_content).unwrap();
+
+        let context = VariableContext::builder()
+            .environment(vec![])
+            .variables(IndexMap::new())
+            .overrides(IndexMap::new())
+            .build();
+
+        let result = super::Cookbook::from(&cookbook_path, temp_dir.path(), &context);
+
+        match result {
+            Ok(cookbook) => {
+                println!("Successfully parsed cookbook: {}", cookbook.name);
+                println!("Recipes: {:?}", cookbook.recipes.keys().collect::<Vec<_>>());
+
+                // Check that handlebars were processed
+                assert_eq!(cookbook.name, "handlebars-test-simple");
+                assert!(cookbook.recipes.contains_key("build-with-cache"));
+                assert!(cookbook.recipes.contains_key("deploy-api"));
+
+                // Verify the run commands were processed
+                let deploy_recipe = &cookbook.recipes["deploy-api"];
+                assert!(deploy_recipe.run.contains("Deploying api..."));
+            }
+            Err(e) => {
+                panic!("Failed to parse handlebars cookbook: {e}");
             }
         }
     }

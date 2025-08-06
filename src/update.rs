@@ -325,18 +325,6 @@ fn can_update_binary() -> bool {
     }
 }
 
-/// Get update status information
-pub fn get_update_info() -> Result<String> {
-    let current_version = cargo_crate_version!();
-    let current_exe = env::current_exe()?;
-
-    Ok(format!(
-        "Version: {}\nBinary: {}",
-        current_version,
-        current_exe.display()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,13 +352,6 @@ mod tests {
         env::set_var("CARGO", "true");
         assert!(should_skip_update_check());
         env::remove_var("CARGO");
-    }
-
-    #[test]
-    fn test_get_update_info() {
-        let info = get_update_info().unwrap();
-        assert!(info.contains("Version:"));
-        assert!(info.contains("Binary:"));
     }
 
     #[test]

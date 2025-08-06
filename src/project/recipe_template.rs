@@ -108,16 +108,33 @@ impl RecipeTemplate {
             ),
         };
 
+        // Try normal YAML parsing first
         match serde_yaml::from_str::<Self>(&config_str) {
             Ok(mut template) => {
                 template.template_path = path.clone();
                 Ok(template)
             }
-            Err(err) => bail!(
-                "Recipe Template Parse: Failed to parse template file at '{}': {}. Check YAML syntax and template structure.",
-                path.display(),
-                err
-            ),
+            Err(_) => {
+                // If normal parsing fails, it might contain handlebars control structures
+                // Try to extract metadata (name, description, parameters) from the non-template sections
+                let (name, description, parameters) = Self::extract_template_metadata(&config_str)?;
+                
+                Ok(Self {
+                    name,
+                    description,
+                    extends: None,
+                    parameters,
+                    template: TemplateDefinition {
+                        description: None,
+                        cache: None,
+                        environment: vec![],
+                        variables: IndexMap::new(),
+                        dependencies: None,
+                        run: "# Template will be processed during instantiation".to_string(),
+                    },
+                    template_path: path.clone(),
+                })
+            }
         }
     }
 
@@ -255,6 +272,98 @@ impl RecipeTemplate {
         Ok(resolved)
     }
 
+    /// Extracts template metadata (name, description, parameters) from YAML content with handlebars
+    fn extract_template_metadata(yaml_content: &str) -> anyhow::Result<(String, Option<String>, BTreeMap<String, TemplateParameter>)> {
+        let lines: Vec<&str> = yaml_content.lines().collect();
+        let mut metadata_lines = Vec::new();
+        
+        // Extract everything before the template section
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.starts_with("template:") {
+                break;
+            }
+            metadata_lines.push(line);
+        }
+        
+        let metadata_yaml = metadata_lines.join("\n");
+        
+        // Try to parse the metadata section
+        if let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(&metadata_yaml) {
+            let name = map.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown-template")
+                .to_string();
+                
+            let description = map.get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+                
+            let mut parameters = BTreeMap::new();
+            if let Some(serde_yaml::Value::Mapping(params_map)) = map.get("parameters") {
+                for (key, value) in params_map {
+                    if let Some(param_name) = key.as_str() {
+                        if let Ok(param_def) = serde_yaml::from_value::<TemplateParameter>(value.clone()) {
+                            parameters.insert(param_name.to_string(), param_def);
+                        }
+                    }
+                }
+            }
+            
+            return Ok((name, description, parameters));
+        }
+        
+        // Fallback: extract name from filename if metadata parsing fails
+        Ok(("unknown-template".to_string(), None, BTreeMap::new()))
+    }
+
+    /// Extracts and parses the template section with handlebars rendering
+    fn extract_and_parse_template_section(yaml_content: &str, context: &VariableContext) -> anyhow::Result<TemplateDefinition> {
+        let lines: Vec<&str> = yaml_content.lines().collect();
+        let mut template_lines = Vec::new();
+        let mut in_template_section = false;
+        let mut template_indent = 0;
+        
+        for line in lines {
+            let trimmed = line.trim();
+            
+            // Check if we're entering the template section
+            if trimmed.starts_with("template:") {
+                in_template_section = true;
+                template_indent = line.len() - line.trim_start().len();
+                template_lines.push("template:".to_string()); // Add section header
+                continue;
+            }
+            
+            if in_template_section {
+                let line_indent = line.len() - line.trim_start().len();
+                
+                // If we hit a line with same or less indentation than template, we've left the section
+                if line_indent <= template_indent && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    break;
+                }
+                
+                // Add the line to template section
+                template_lines.push(line.to_string());
+            }
+        }
+        
+        let template_yaml = template_lines.join("\n");
+        
+        // Render handlebars in the template section
+        let rendered_template = context.render_raw_template(&template_yaml)?;
+        
+        // Parse the rendered template section
+        if let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(&rendered_template) {
+            if let Some(template_value) = map.get("template") {
+                return serde_yaml::from_value::<TemplateDefinition>(template_value.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse template definition: {}", e));
+            }
+        }
+        
+        bail!("Failed to extract and parse template section");
+    }
+
     /// Instantiates this template into a Recipe with the given parameters
     pub fn instantiate(
         &self,
@@ -324,17 +433,30 @@ impl RecipeTemplate {
 
         template_context.constants.insert("params".to_string(), serde_json::Value::Object(params_json));
 
+        // Check if this template needs template-first parsing (has placeholder run command)
+        let template_def = if self.template.run == "# Template will be processed during instantiation" {
+            // Re-read the template file and do template-first parsing
+            let template_content = std::fs::read_to_string(&self.template_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read template file '{}': {}", self.template_path.display(), e))?;
+            
+            // Extract and parse the template section with handlebars rendering
+            Self::extract_and_parse_template_section(&template_content, &template_context)?
+        } else {
+            // Use the already parsed template definition
+            self.template.clone()
+        };
+
         // Process the template definition with parameter substitution
-        let description = if let Some(desc) = &self.template.description {
+        let description = if let Some(desc) = &template_def.description {
             Some(template_context.parse_template(desc)?)
         } else {
             None
         };
 
-        let run_command = template_context.parse_template(&self.template.run)?;
+        let run_command = template_context.parse_template(&template_def.run)?;
 
         // Process variables
-        let processed_variables = self.template.variables
+        let processed_variables = template_def.variables
             .iter()
             .try_fold(IndexMap::new(), |mut acc, (k, v)| {
                 let processed_value = template_context.parse_template(v)?;
@@ -343,7 +465,7 @@ impl RecipeTemplate {
             })?;
 
         // Process dependencies
-        let processed_dependencies = if let Some(deps) = &self.template.dependencies {
+        let processed_dependencies = if let Some(deps) = &template_def.dependencies {
             Some(
                 deps.iter()
                     .map(|dep| template_context.parse_template(dep))
@@ -369,10 +491,10 @@ impl RecipeTemplate {
             cookbook: cookbook_name,
             config_path,
             project_root,
-            cache: self.template.cache.clone(),
+            cache: template_def.cache.clone(),
             description,
             variables: processed_variables,
-            environment: self.template.environment.clone(),
+            environment: template_def.environment.clone(),
             dependencies: processed_dependencies,
             run: run_command,
             template: None, // Clear template field since this is an instantiated recipe

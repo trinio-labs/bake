@@ -5,6 +5,50 @@ use handlebars::Handlebars;
 use indexmap::IndexMap;
 use serde_json::{json, Value as JsonValue};
 
+/// Helper struct for extracting variables from YAML content that might contain handlebars
+pub struct VariableExtractor;
+
+impl VariableExtractor {
+    /// Extracts the variables section from YAML content, handling potential handlebars syntax
+    pub fn extract_variables_section(yaml_content: &str) -> anyhow::Result<IndexMap<String, String>> {
+        let lines: Vec<&str> = yaml_content.lines().collect();
+        let mut in_variables_section = false;
+        let mut variables_indent = 0;
+        let mut variables = IndexMap::new();
+        
+        for line in lines {
+            let trimmed = line.trim();
+            
+            // Check if we're entering the variables section
+            if trimmed.starts_with("variables:") {
+                in_variables_section = true;
+                variables_indent = line.len() - line.trim_start().len();
+                continue;
+            }
+            
+            if in_variables_section {
+                let line_indent = line.len() - line.trim_start().len();
+                
+                // If we hit a line with same or less indentation than variables, we've left the section
+                if line_indent <= variables_indent && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    break;
+                }
+                
+                // Parse variable lines
+                if line_indent > variables_indent && trimmed.contains(':') && !trimmed.starts_with('#') {
+                    if let Some((key, value)) = trimmed.split_once(':') {
+                        let key = key.trim().to_string();
+                        let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+                        variables.insert(key, value);
+                    }
+                }
+            }
+        }
+        
+        Ok(variables)
+    }
+}
+
 /// Represents the context for template variable processing, containing all
 /// available variables, environment variables, and constants.
 #[derive(Debug, Clone)]
@@ -20,6 +64,39 @@ pub struct VariableContext {
 }
 
 impl VariableContext {
+    /// Renders handlebars in raw string content before YAML parsing
+    pub fn render_raw_template(&self, template: &str) -> anyhow::Result<String> {
+        let mut handlebars = Handlebars::new();
+        handlebars.register_escape_fn(handlebars::no_escape);
+        
+        if let Err(e) = handlebars.register_template_string("raw_template", template) {
+            bail!(
+                "Raw Template Parsing: Failed to register template string: {}. Template content: '{}'",
+                e, template
+            );
+        }
+
+        // Build data context
+        let env_values: BTreeMap<String, String> = self
+            .environment
+            .iter()
+            .map(|name| (name.to_string(), env::var(name).unwrap_or_default()))
+            .collect();
+
+        let mut data = BTreeMap::from([
+            ("env", json!(env_values)), 
+            ("var", json!(&self.variables))
+        ]);
+        data.extend(self.constants.iter().map(|(k, v)| (k.as_ref(), v.clone())));
+
+        match handlebars.render("raw_template", &data) {
+            Ok(rendered) => Ok(rendered),
+            Err(err) => bail!(
+                "Raw Template Rendering: Failed to render template: {}. Template content: '{}'", 
+                err, template
+            ),
+        }
+    }
     /// Creates a new variable context with empty collections
     pub fn empty() -> Self {
         Self {

@@ -449,41 +449,6 @@ impl BakeProject {
         }
     }
 
-    /// Updates the minimum bake version to the current version.
-    /// This should be called when the project configuration is modified.
-    pub fn update_min_version(&mut self) {
-        self.config.min_version = Some(env!("CARGO_PKG_VERSION").to_string());
-    }
-
-    /// Saves the project configuration back to the original file.
-    /// This is useful for updating the bake version or other configuration changes.
-    pub fn save_configuration(&self) -> anyhow::Result<()> {
-        let config_path = self.root_path.join("bake.yml");
-
-        // Create a temporary struct for serialization (excluding skip fields)
-        #[derive(serde::Serialize)]
-        struct BakeProjectConfig<'a> {
-            name: &'a str,
-            description: &'a Option<String>,
-            variables: &'a IndexMap<String, String>,
-            environment: &'a Vec<String>,
-            config: &'a ToolConfig,
-        }
-
-        let config = BakeProjectConfig {
-            name: &self.name,
-            description: &self.description,
-            variables: &self.variables,
-            environment: &self.environment,
-            config: &self.config,
-        };
-
-        let yaml = serde_yaml::to_string(&config)?;
-        std::fs::write(&config_path, yaml)?;
-
-        Ok(())
-    }
-
     pub fn from(
         path: &Path,
         override_variables: IndexMap<String, String>,
@@ -943,37 +908,6 @@ variables:
 
         let project = result.unwrap();
         assert_eq!(project.config.min_version, Some("0.4.0".to_string()));
-    }
-
-    #[test]
-    fn test_update_min_version() {
-        use std::fs;
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let config_path = temp_dir.path().join("bake.yml");
-
-        // Create a test configuration without minimum version
-        let config_content = r#"
-name: test_project
-variables:
-  test_var: "test_value"
-"#;
-
-        fs::write(&config_path, config_content).unwrap();
-
-        // Load project and update version
-        let mut project =
-            super::BakeProject::from(temp_dir.path(), IndexMap::new(), false).unwrap();
-        project.update_min_version();
-
-        // Save configuration
-        project.save_configuration().unwrap();
-
-        // Verify the version was updated
-        let updated_content = fs::read_to_string(&config_path).unwrap();
-        assert!(updated_content.contains("minVersion:"));
-        assert!(updated_content.contains(env!("CARGO_PKG_VERSION")));
     }
 
     fn get_test_project() -> super::BakeProject {

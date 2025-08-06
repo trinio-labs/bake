@@ -9,8 +9,19 @@ parameters:
     type: string
     default: "echo npm run build"
     description: "Command to run for building"
+  libDependencies:
+    type: array
+    items:
+      type: string
+    default: []
+    description: "List of library dependencies to cache"
 template:
   description: "Build {{ params.language }} application"
+  cache:
+    inputs:
+      {{#each params.libDependencies}}
+      - {{this}}
+      {{/each}}
   run: |
     echo "Building {{ params.language }} application..."
     {{ params.build_command }}

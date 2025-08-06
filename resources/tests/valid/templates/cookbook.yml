@@ -6,6 +6,10 @@ recipes:
     parameters:
       language: "typescript"
       build_command: "echo 'Build completed successfully!'"
+      libDependencies: 
+        - "package.json"
+        - "src/**/*.ts"
+        - "tsconfig.json"
   
   test:
     template: "test-template"

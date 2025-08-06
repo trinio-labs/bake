@@ -1,0 +1,76 @@
+name: "handlebars-test"
+description: "Test cookbook demonstrating handlebars control structures"
+variables:
+  service_1: "api"
+  service_2: "worker"
+  service_3: "scheduler"
+  enable_cache: "true"
+
+recipes:
+  # Test simple conditionals
+  {{#if var.enable_cache}}
+  build-with-cache:
+    description: "Build with caching enabled"
+    cache:
+      inputs:
+        - "src/**/*.go"
+      outputs:
+        - "bin/app"
+    run: |
+      echo "Building with cache enabled..."
+      go build -o bin/app .
+  {{else}}
+  build-without-cache:
+    description: "Build without caching"
+    run: |
+      echo "Building without cache..."
+      go build -o bin/app .
+  {{/if}}
+
+  # Test variable substitution in multiple places
+  deploy-{{var.service_1}}:
+    description: "Deploy {{var.service_1}} service"
+    variables:
+      service_name: "{{var.service_1}}"
+    run: |
+      echo "Deploying {{var.service_name}}..."
+      ./deploy.sh {{var.service_name}}
+    dependencies: ["build-{{#if var.enable_cache}}with-cache{{else}}without-cache{{/if}}"]
+
+  deploy-{{var.service_2}}:
+    description: "Deploy {{var.service_2}} service"
+    variables:
+      service_name: "{{var.service_2}}"
+    run: |
+      echo "Deploying {{var.service_name}}..."
+      ./deploy.sh {{var.service_name}}
+    dependencies: ["build-{{#if var.enable_cache}}with-cache{{else}}without-cache{{/if}}"]
+
+  deploy-{{var.service_3}}:
+    description: "Deploy {{var.service_3}} service"
+    variables:
+      service_name: "{{var.service_3}}"
+    run: |
+      echo "Deploying {{var.service_name}}..."
+      ./deploy.sh {{var.service_name}}
+    dependencies: ["build-{{#if var.enable_cache}}with-cache{{else}}without-cache{{/if}}"]
+
+  integration-test:
+    description: "Run integration tests"
+    {{#if var.enable_cache}}
+    cache:
+      inputs:
+        - "integration/**/*.go"
+      outputs:
+        - "test-results/"
+    {{/if}}
+    run: |
+      echo "Running integration tests..."
+      echo "Testing {{var.service_1}} integration..."
+      echo "Testing {{var.service_2}} integration..."  
+      echo "Testing {{var.service_3}} integration..."
+      echo "Integration tests complete!"
+    dependencies:
+      - "deploy-{{var.service_1}}"
+      - "deploy-{{var.service_2}}"
+      - "deploy-{{var.service_3}}"
