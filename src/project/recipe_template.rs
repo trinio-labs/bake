@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::bail;
-use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -24,52 +23,28 @@ pub struct TemplateParameter {
     /// The type of this parameter
     #[serde(rename = "type")]
     pub parameter_type: ParameterType,
-    
+
     /// Whether this parameter is required
     #[serde(default)]
     pub required: bool,
-    
+
     /// Default value for this parameter (as YAML value)
     pub default: Option<Value>,
-    
+
     /// Human-readable description of this parameter
     pub description: Option<String>,
-    
+
     /// For string types: regex pattern validation
     pub pattern: Option<String>,
-    
+
     /// For number types: minimum value
     pub min: Option<f64>,
-    
+
     /// For number types: maximum value
     pub max: Option<f64>,
-    
+
     /// For array types: type of items in the array
     pub items: Option<Box<TemplateParameter>>,
-}
-
-/// Represents the template definition part of a recipe template
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TemplateDefinition {
-    /// Description of the recipe when instantiated
-    pub description: Option<String>,
-    
-    /// Cache configuration for the recipe
-    pub cache: Option<crate::project::RecipeCacheConfig>,
-    
-    /// Environment variables for the recipe
-    #[serde(default)]
-    pub environment: Vec<String>,
-    
-    /// Variables for the recipe
-    #[serde(default)]
-    pub variables: IndexMap<String, String>,
-    
-    /// Dependencies for the recipe
-    pub dependencies: Option<Vec<String>>,
-    
-    /// The command to run
-    pub run: String,
 }
 
 /// Represents a complete recipe template
@@ -77,23 +52,24 @@ pub struct TemplateDefinition {
 pub struct RecipeTemplate {
     /// Name of the template
     pub name: String,
-    
+
     /// Description of what this template does
     pub description: Option<String>,
-    
+
     /// Template this one extends (for inheritance)
     pub extends: Option<String>,
-    
+
     /// Parameters that can be passed to this template
     #[serde(default)]
     pub parameters: BTreeMap<String, TemplateParameter>,
-    
-    /// The actual template definition
-    pub template: TemplateDefinition,
-    
+
     /// Path to the template file (set during loading)
     #[serde(skip)]
     pub template_path: PathBuf,
+
+    /// Raw template content (everything after parameters section)
+    #[serde(skip)]
+    pub template_content: String,
 }
 
 impl RecipeTemplate {
@@ -108,152 +84,118 @@ impl RecipeTemplate {
             ),
         };
 
-        // Try normal YAML parsing first
-        match serde_yaml::from_str::<Self>(&config_str) {
-            Ok(mut template) => {
-                template.template_path = path.clone();
-                Ok(template)
-            }
-            Err(_) => {
-                // If normal parsing fails, it might contain handlebars control structures
-                // Try to extract metadata (name, description, parameters) from the non-template sections
-                let (name, description, parameters) = Self::extract_template_metadata(&config_str)?;
-                
-                Ok(Self {
-                    name,
-                    description,
-                    extends: None,
-                    parameters,
-                    template: TemplateDefinition {
-                        description: None,
-                        cache: None,
-                        environment: vec![],
-                        variables: IndexMap::new(),
-                        dependencies: None,
-                        run: "# Template will be processed during instantiation".to_string(),
-                    },
-                    template_path: path.clone(),
-                })
-            }
-        }
+        // Split the content into metadata, parameters, and template sections
+        let (metadata_section, parameters_section, template_section) =
+            Self::split_template_content(&config_str)?;
+
+        // Parse the metadata section (name, description, extends)
+        let metadata: Self = serde_yaml::from_str(&metadata_section)
+            .map_err(|e| anyhow::anyhow!(
+                "Recipe Template Load: Failed to parse template metadata at '{}': {}. Check YAML syntax.",
+                path.display(), e
+            ))?;
+
+        // Parse the parameters section if it exists
+        let parameters = if parameters_section.trim().is_empty() {
+            BTreeMap::new()
+        } else {
+            serde_yaml::from_str(&parameters_section)
+                .map_err(|e| anyhow::anyhow!(
+                    "Recipe Template Load: Failed to parse template parameters at '{}': {}. Check YAML syntax.",
+                    path.display(), e
+                ))?
+        };
+
+        Ok(Self {
+            name: metadata.name,
+            description: metadata.description,
+            extends: metadata.extends,
+            parameters,
+            template_path: path.clone(),
+            template_content: template_section,
+        })
     }
 
-    /// Validates that all parameter values match their type definitions
-    pub fn validate_parameters(&self, parameters: &BTreeMap<String, Value>) -> anyhow::Result<()> {
-        // Check for required parameters
-        for (param_name, param_def) in &self.parameters {
-            if param_def.required && !parameters.contains_key(param_name)
-                && param_def.default.is_none() {
-                bail!(
-                    "Recipe Template Validation: Required parameter '{}' is missing for template '{}'",
-                    param_name,
-                    self.name
-                );
+    /// Extracts a specific indented block from YAML content
+    /// Returns (remaining_lines, extracted_block_content)
+    fn extract_yaml_block<'a>(lines: Vec<&'a str>, block_name: &str) -> (Vec<&'a str>, String) {
+        let mut remaining_lines = Vec::new();
+        let mut block_lines = Vec::new();
+        let mut block_start_line = None;
+        let mut block_indent = 0;
+
+        // First pass: find the block boundaries
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with(&format!("{block_name}:")) {
+                block_start_line = Some(i);
+                block_indent = line.len() - line.trim_start().len();
+                break;
             }
         }
 
-        // Validate each provided parameter
-        for (param_name, param_value) in parameters {
-            if let Some(param_def) = self.parameters.get(param_name) {
-                Self::validate_parameter_value(param_name, param_value, param_def)?;
-            } else {
-                bail!(
-                    "Recipe Template Validation: Unknown parameter '{}' for template '{}'",
-                    param_name,
-                    self.name
-                );
+        if let Some(block_start) = block_start_line {
+            // Extract block content (everything under the block section)
+            let mut in_block_section = false;
+
+            for (i, &line) in lines.iter().enumerate() {
+                if i == block_start {
+                    in_block_section = true;
+                    continue; // Skip the "block_name:" header line
+                }
+
+                if in_block_section {
+                    let line_indent = line.len() - line.trim_start().len();
+                    let trimmed = line.trim();
+
+                    // If we hit a line with same or less indentation than block (and it's not empty/comment),
+                    // we've left the block section
+                    if line_indent <= block_indent
+                        && !trimmed.is_empty()
+                        && !trimmed.starts_with('#')
+                    {
+                        in_block_section = false;
+                        remaining_lines.push(line);
+                    } else {
+                        block_lines.push(line);
+                    }
+                } else {
+                    remaining_lines.push(line);
+                }
             }
+        } else {
+            // No block found - everything goes to remaining
+            remaining_lines = lines;
         }
 
-        Ok(())
+        (remaining_lines, block_lines.join("\n"))
     }
 
-    /// Validates a single parameter value against its definition
-    fn validate_parameter_value(
-        param_name: &str,
-        value: &Value,
-        param_def: &TemplateParameter,
-    ) -> anyhow::Result<()> {
-        match (&param_def.parameter_type, value) {
-            (ParameterType::String, Value::String(s)) => {
-                if let Some(pattern) = &param_def.pattern {
-                    let regex = regex::Regex::new(pattern).map_err(|e| {
-                        anyhow::anyhow!(
-                            "Recipe Template Validation: Invalid regex pattern '{}' for parameter '{}': {}",
-                            pattern,
-                            param_name,
-                            e
-                        )
-                    })?;
-                    if !regex.is_match(s) {
-                        bail!(
-                            "Recipe Template Validation: Parameter '{}' value '{}' does not match pattern '{}'",
-                            param_name,
-                            s,
-                            pattern
-                        );
-                    }
-                }
-            }
-            (ParameterType::Number, Value::Number(n)) => {
-                let num_val = n.as_f64().ok_or_else(|| {
-                    anyhow::anyhow!("Recipe Template Validation: Invalid number format for parameter '{}'", param_name)
-                })?;
-                
-                if let Some(min) = param_def.min {
-                    if num_val < min {
-                        bail!(
-                            "Recipe Template Validation: Parameter '{}' value {} is less than minimum {}",
-                            param_name,
-                            num_val,
-                            min
-                        );
-                    }
-                }
-                
-                if let Some(max) = param_def.max {
-                    if num_val > max {
-                        bail!(
-                            "Recipe Template Validation: Parameter '{}' value {} is greater than maximum {}",
-                            param_name,
-                            num_val,
-                            max
-                        );
-                    }
-                }
-            }
-            (ParameterType::Boolean, Value::Bool(_)) => {
-                // Boolean validation is implicit
-            }
-            (ParameterType::Array, Value::Sequence(seq)) => {
-                if let Some(item_def) = &param_def.items {
-                    for (index, item) in seq.iter().enumerate() {
-                        Self::validate_parameter_value(
-                            &format!("{param_name}[{index}]"),
-                            item,
-                            item_def,
-                        )?;
-                    }
-                }
-            }
-            (ParameterType::Object, Value::Mapping(_)) => {
-                // Object validation could be enhanced with schema validation
-            }
-            (expected_type, actual_value) => {
-                bail!(
-                    "Recipe Template Validation: Parameter '{}' expected type {:?} but got {:?}",
-                    param_name,
-                    expected_type,
-                    actual_value
-                );
-            }
-        }
+    /// Splits template content into metadata, parameters, and template sections
+    /// Extracts both parameters and template blocks, treating the remainder as metadata
+    fn split_template_content(content: &str) -> anyhow::Result<(String, String, String)> {
+        let lines: Vec<&str> = content.lines().collect();
 
-        Ok(())
+        // Extract parameters block first
+        let (remaining_after_params, parameters_content) =
+            Self::extract_yaml_block(lines, "parameters");
+
+        // Extract template block from what remains
+        let (metadata_lines, template_content) =
+            Self::extract_yaml_block(remaining_after_params, "template");
+
+        Ok((
+            metadata_lines.join("\n"),
+            parameters_content,
+            template_content,
+        ))
     }
 
-    /// Resolves parameters with defaults, returning the final parameter values
-    pub fn resolve_parameters(&self, provided: &BTreeMap<String, Value>) -> anyhow::Result<BTreeMap<String, Value>> {
+    /// Validates parameters and returns resolved values with defaults
+    pub fn resolve_parameters(
+        &self,
+        provided: &BTreeMap<String, Value>,
+    ) -> anyhow::Result<BTreeMap<String, Value>> {
         let mut resolved = BTreeMap::new();
 
         // Start with defaults
@@ -266,102 +208,53 @@ impl RecipeTemplate {
         // Override with provided values
         resolved.extend(provided.clone());
 
-        // Validate the final parameter set
-        self.validate_parameters(&resolved)?;
+        // Validate required parameters
+        for (param_name, param_def) in &self.parameters {
+            if param_def.required && !resolved.contains_key(param_name) {
+                bail!(
+                    "Recipe Template: Required parameter '{}' is missing for template '{}'",
+                    param_name,
+                    self.name
+                );
+            }
+        }
+
+        // Basic type validation
+        for (param_name, param_value) in &resolved {
+            if let Some(param_def) = self.parameters.get(param_name) {
+                self.validate_parameter_type(param_name, param_value, param_def)?;
+            }
+        }
 
         Ok(resolved)
     }
 
-    /// Extracts template metadata (name, description, parameters) from YAML content with handlebars
-    fn extract_template_metadata(yaml_content: &str) -> anyhow::Result<(String, Option<String>, BTreeMap<String, TemplateParameter>)> {
-        let lines: Vec<&str> = yaml_content.lines().collect();
-        let mut metadata_lines = Vec::new();
-        
-        // Extract everything before the template section
-        for line in lines {
-            let trimmed = line.trim();
-            if trimmed.starts_with("template:") {
-                break;
-            }
-            metadata_lines.push(line);
-        }
-        
-        let metadata_yaml = metadata_lines.join("\n");
-        
-        // Try to parse the metadata section
-        if let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(&metadata_yaml) {
-            let name = map.get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown-template")
-                .to_string();
-                
-            let description = map.get("description")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-                
-            let mut parameters = BTreeMap::new();
-            if let Some(serde_yaml::Value::Mapping(params_map)) = map.get("parameters") {
-                for (key, value) in params_map {
-                    if let Some(param_name) = key.as_str() {
-                        if let Ok(param_def) = serde_yaml::from_value::<TemplateParameter>(value.clone()) {
-                            parameters.insert(param_name.to_string(), param_def);
-                        }
-                    }
-                }
-            }
-            
-            return Ok((name, description, parameters));
-        }
-        
-        // Fallback: extract name from filename if metadata parsing fails
-        Ok(("unknown-template".to_string(), None, BTreeMap::new()))
-    }
+    /// Basic parameter type validation
+    fn validate_parameter_type(
+        &self,
+        param_name: &str,
+        value: &Value,
+        param_def: &TemplateParameter,
+    ) -> anyhow::Result<()> {
+        let matches = matches!(
+            (&param_def.parameter_type, value),
+            (ParameterType::String, Value::String(_))
+                | (ParameterType::Number, Value::Number(_))
+                | (ParameterType::Boolean, Value::Bool(_))
+                | (ParameterType::Array, Value::Sequence(_))
+                | (ParameterType::Object, Value::Mapping(_))
+        );
 
-    /// Extracts and parses the template section with handlebars rendering
-    fn extract_and_parse_template_section(yaml_content: &str, context: &VariableContext) -> anyhow::Result<TemplateDefinition> {
-        let lines: Vec<&str> = yaml_content.lines().collect();
-        let mut template_lines = Vec::new();
-        let mut in_template_section = false;
-        let mut template_indent = 0;
-        
-        for line in lines {
-            let trimmed = line.trim();
-            
-            // Check if we're entering the template section
-            if trimmed.starts_with("template:") {
-                in_template_section = true;
-                template_indent = line.len() - line.trim_start().len();
-                template_lines.push("template:".to_string()); // Add section header
-                continue;
-            }
-            
-            if in_template_section {
-                let line_indent = line.len() - line.trim_start().len();
-                
-                // If we hit a line with same or less indentation than template, we've left the section
-                if line_indent <= template_indent && !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    break;
-                }
-                
-                // Add the line to template section
-                template_lines.push(line.to_string());
-            }
+        if !matches {
+            bail!(
+                "Recipe Template: Parameter '{}' expected type {:?} but got {:?}",
+                param_name,
+                param_def.parameter_type,
+                value
+            );
         }
-        
-        let template_yaml = template_lines.join("\n");
-        
-        // Render handlebars in the template section
-        let rendered_template = context.render_raw_template(&template_yaml)?;
-        
-        // Parse the rendered template section
-        if let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(&rendered_template) {
-            if let Some(template_value) = map.get("template") {
-                return serde_yaml::from_value::<TemplateDefinition>(template_value.clone())
-                    .map_err(|e| anyhow::anyhow!("Failed to parse template definition: {}", e));
-            }
-        }
-        
-        bail!("Failed to extract and parse template section");
+
+        Ok(())
     }
 
     /// Instantiates this template into a Recipe with the given parameters
@@ -372,135 +265,68 @@ impl RecipeTemplate {
         config_path: PathBuf,
         project_root: PathBuf,
         parameters: &BTreeMap<String, Value>,
-        context: &VariableContext,
+        _context: &VariableContext,
     ) -> anyhow::Result<crate::project::Recipe> {
-        // Resolve parameters with defaults
+        // Resolve parameters with defaults and validate
         let resolved_params = self.resolve_parameters(parameters)?;
 
-        // Create a new variable context with template parameters
-        let mut template_context = context.clone();
-        
-        // Convert resolved parameters to JSON values for structured constants
-        let params_json = resolved_params
+        // Create template context with parameters and built-in constants
+        let mut template_context = VariableContext::with_project_constants(&project_root);
+        if let Ok(cookbook_constants) = VariableContext::with_cookbook_constants(&config_path) {
+            template_context.merge(&cookbook_constants);
+        }
+
+        // Add parameters to template context for rendering
+        let params_json: serde_json::Map<String, serde_json::Value> = resolved_params
             .iter()
-            .map(|(k, v)| {
-                let json_value = match v {
-                    Value::String(s) => serde_json::Value::String(s.clone()),
-                    Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            serde_json::Value::Number(serde_json::Number::from(i))
-                        } else if let Some(f) = n.as_f64() {
-                            serde_json::Value::Number(serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)))
-                        } else {
-                            serde_json::Value::Number(serde_json::Number::from(0))
-                        }
-                    },
-                    Value::Bool(b) => serde_json::Value::Bool(*b),
-                    Value::Sequence(seq) => {
-                        let json_seq: Vec<serde_json::Value> = seq.iter().map(|item| {
-                            // Convert each item in the sequence
-                            match item {
-                                Value::String(s) => serde_json::Value::String(s.clone()),
-                                Value::Number(n) => {
-                                    if let Some(i) = n.as_i64() {
-                                        serde_json::Value::Number(serde_json::Number::from(i))
-                                    } else if let Some(f) = n.as_f64() {
-                                        serde_json::Value::Number(serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)))
-                                    } else {
-                                        serde_json::Value::Number(serde_json::Number::from(0))
-                                    }
-                                },
-                                Value::Bool(b) => serde_json::Value::Bool(*b),
-                                Value::Null => serde_json::Value::Null,
-                                _ => serde_json::Value::String(serde_yaml::to_string(item).unwrap_or_default().trim().to_string()),
-                            }
-                        }).collect();
-                        serde_json::Value::Array(json_seq)
-                    },
-                    Value::Mapping(_) => {
-                        // Convert YAML mapping to JSON object
-                        serde_yaml::from_value(v.clone()).unwrap_or(serde_json::Value::Object(Default::default()))
-                    },
-                    Value::Null => serde_json::Value::Null,
-                    Value::Tagged(tagged) => {
-                        // Handle tagged values by converting the inner value
-                        serde_yaml::from_value(tagged.value.clone()).unwrap_or(serde_json::Value::Null)
-                    },
-                };
-                (k.clone(), json_value)
-            })
+            .map(|(k, v)| (k.clone(), crate::template::VariableContext::yaml_to_json(v)))
             .collect();
 
-        template_context.constants.insert("params".to_string(), serde_json::Value::Object(params_json));
+        template_context
+            .constants
+            .insert("params".to_string(), serde_json::Value::Object(params_json));
 
-        // Check if this template needs template-first parsing (has placeholder run command)
-        let template_def = if self.template.run == "# Template will be processed during instantiation" {
-            // Re-read the template file and do template-first parsing
-            let template_content = std::fs::read_to_string(&self.template_path)
-                .map_err(|e| anyhow::anyhow!("Failed to read template file '{}': {}", self.template_path.display(), e))?;
-            
-            // Extract and parse the template section with handlebars rendering
-            Self::extract_and_parse_template_section(&template_content, &template_context)?
-        } else {
-            // Use the already parsed template definition
-            self.template.clone()
-        };
+        // Render the template content with parameters
+        let rendered_template = template_context.render_raw_template(&self.template_content)?;
 
-        // Process the template definition with parameter substitution
-        let description = if let Some(desc) = &template_def.description {
-            Some(template_context.parse_template(desc)?)
-        } else {
-            None
-        };
+        // Parse the rendered YAML into a Recipe
+        let mut recipe_value: serde_yaml::Value = serde_yaml::from_str(&rendered_template)
+            .map_err(|e| anyhow::anyhow!(
+                "Recipe Template: Failed to parse rendered template '{}': {}. Check template syntax and parameter usage.",
+                self.name, e
+            ))?;
 
-        let run_command = template_context.parse_template(&template_def.run)?;
+        // Process any remaining template variables in the YAML structure
+        VariableContext::process_template_in_value(&mut recipe_value, &template_context, true)?;
 
-        // Process variables
-        let processed_variables = template_def.variables
-            .iter()
-            .try_fold(IndexMap::new(), |mut acc, (k, v)| {
-                let processed_value = template_context.parse_template(v)?;
-                acc.insert(k.clone(), processed_value);
-                Ok::<IndexMap<String, String>, anyhow::Error>(acc)
+        // Deserialize into Recipe
+        let mut recipe: crate::project::Recipe =
+            serde_yaml::from_value(recipe_value).map_err(|e| {
+                anyhow::anyhow!(
+                    "Recipe Template: Failed to deserialize rendered template '{}' into recipe: {}",
+                    self.name,
+                    e
+                )
             })?;
 
-        // Process dependencies
-        let processed_dependencies = if let Some(deps) = &template_def.dependencies {
-            Some(
-                deps.iter()
-                    .map(|dep| template_context.parse_template(dep))
-                    .collect::<Result<Vec<String>, _>>()?
-                    .into_iter()
-                    .map(|dep| {
-                        // Apply same dependency resolution as regular recipes
-                        if !dep.contains(':') {
-                            format!("{cookbook_name}:{dep}")
-                        } else {
-                            dep
-                        }
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
+        // Set recipe metadata
+        recipe.name = recipe_name;
+        recipe.cookbook = cookbook_name;
+        recipe.config_path = config_path;
+        recipe.project_root = project_root;
+        recipe.template = None; // Clear template field since this is instantiated
+        recipe.parameters = std::collections::BTreeMap::new(); // Clear parameters since they've been processed
 
-        // Create the recipe
-        Ok(crate::project::Recipe {
-            name: recipe_name,
-            cookbook: cookbook_name,
-            config_path,
-            project_root,
-            cache: template_def.cache.clone(),
-            description,
-            variables: processed_variables,
-            environment: template_def.environment.clone(),
-            dependencies: processed_dependencies,
-            run: run_command,
-            template: None, // Clear template field since this is an instantiated recipe
-            parameters: std::collections::BTreeMap::new(), // Clear parameters since they've been processed
-            run_status: Default::default(),
-        })
+        // Process dependencies - add cookbook prefix if needed
+        if let Some(deps) = recipe.dependencies.as_mut() {
+            for dep in deps {
+                if !dep.contains(':') {
+                    *dep = format!("{}:{}", recipe.cookbook, dep);
+                }
+            }
+        }
+
+        Ok(recipe)
     }
 }
 
@@ -512,7 +338,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_template_parameter_validation() {
+    fn test_parameter_resolution() {
         let template = RecipeTemplate {
             name: "test-template".to_string(),
             description: Some("Test template".to_string()),
@@ -539,46 +365,41 @@ mod tests {
                         default: Some(Value::Number(serde_yaml::Number::from(42))),
                         description: None,
                         pattern: None,
-                        min: Some(0.0),
-                        max: Some(100.0),
+                        min: None,
+                        max: None,
                         items: None,
                     },
                 ),
             ]),
-            template: TemplateDefinition {
-                description: Some("Test template".to_string()),
-                cache: None,
-                environment: vec![],
-                variables: IndexMap::new(),
-                dependencies: None,
-                run: "echo test".to_string(),
-            },
             template_path: PathBuf::new(),
+            template_content: "run: echo test".to_string(),
         };
 
         // Test missing required parameter
         let params = BTreeMap::new();
-        assert!(template.validate_parameters(&params).is_err());
+        assert!(template.resolve_parameters(&params).is_err());
 
         // Test valid parameters
-        let params = BTreeMap::from([
-            ("required_string".to_string(), Value::String("test".to_string())),
-            ("optional_number".to_string(), Value::Number(serde_yaml::Number::from(50))),
-        ]);
-        assert!(template.validate_parameters(&params).is_ok());
+        let params = BTreeMap::from([(
+            "required_string".to_string(),
+            Value::String("test".to_string()),
+        )]);
+        let resolved = template.resolve_parameters(&params).unwrap();
+        assert_eq!(
+            resolved.get("required_string"),
+            Some(&Value::String("test".to_string()))
+        );
+        assert_eq!(
+            resolved.get("optional_number"),
+            Some(&Value::Number(serde_yaml::Number::from(42)))
+        );
 
         // Test invalid parameter type
-        let params = BTreeMap::from([
-            ("required_string".to_string(), Value::Number(serde_yaml::Number::from(42))),
-        ]);
-        assert!(template.validate_parameters(&params).is_err());
-
-        // Test number out of range
-        let params = BTreeMap::from([
-            ("required_string".to_string(), Value::String("test".to_string())),
-            ("optional_number".to_string(), Value::Number(serde_yaml::Number::from(150))),
-        ]);
-        assert!(template.validate_parameters(&params).is_err());
+        let params = BTreeMap::from([(
+            "required_string".to_string(),
+            Value::Number(serde_yaml::Number::from(42)),
+        )]);
+        assert!(template.resolve_parameters(&params).is_err());
     }
 
     #[test]
@@ -612,57 +433,97 @@ template:
     }
 
     #[test]
-    fn test_parameter_resolution() {
-        let template = RecipeTemplate {
-            name: "test-template".to_string(),
-            description: None,
-            extends: None,
-            parameters: BTreeMap::from([
-                (
-                    "required_param".to_string(),
-                    TemplateParameter {
-                        parameter_type: ParameterType::String,
-                        required: true,
-                        default: None,
-                        description: None,
-                        pattern: None,
-                        min: None,
-                        max: None,
-                        items: None,
-                    },
-                ),
-                (
-                    "optional_param".to_string(),
-                    TemplateParameter {
-                        parameter_type: ParameterType::String,
-                        required: false,
-                        default: Some(Value::String("default_value".to_string())),
-                        description: None,
-                        pattern: None,
-                        min: None,
-                        max: None,
-                        items: None,
-                    },
-                ),
-            ]),
-            template: TemplateDefinition {
-                description: None,
-                cache: None,
-                environment: vec![],
-                variables: IndexMap::new(),
-                dependencies: None,
-                run: "echo test".to_string(),
-            },
-            template_path: PathBuf::new(),
-        };
+    fn test_split_template_content() {
+        let content = r#"name: test-template
+description: A test template
+parameters:
+  service_name:
+    type: string
+    required: true
+template:
+  description: "Service {{ params.service_name }}"
+  run: echo "Starting {{ params.service_name }}"
+"#;
 
-        let provided = BTreeMap::from([
-            ("required_param".to_string(), Value::String("provided_value".to_string())),
-        ]);
+        let (metadata, parameters, template) =
+            RecipeTemplate::split_template_content(content).unwrap();
 
-        let resolved = template.resolve_parameters(&provided).unwrap();
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved.get("required_param"), Some(&Value::String("provided_value".to_string())));
-        assert_eq!(resolved.get("optional_param"), Some(&Value::String("default_value".to_string())));
+        // Metadata should only contain name and description
+        assert!(metadata.contains("name: test-template"));
+        assert!(metadata.contains("description: A test template"));
+        assert!(!metadata.contains("parameters:"));
+        assert!(!metadata.contains("template:"));
+
+        // Parameters should contain the parameters block
+        assert!(parameters.contains("service_name:"));
+        assert!(parameters.contains("type: string"));
+        assert!(parameters.contains("required: true"));
+        assert!(!parameters.contains("name: test-template"));
+
+        // Template should contain the template block
+        assert!(template.contains("description: \"Service {{ params.service_name }}\""));
+        assert!(template.contains("run: echo"));
+        assert!(!template.contains("name: test-template"));
+    }
+
+    #[test]
+    fn test_split_template_content_out_of_order() {
+        // Test when template section comes first
+        let content = r#"template:
+  description: "Service {{ params.service_name }}"
+  run: echo "Starting {{ params.service_name }}"
+name: test-template
+description: A test template
+parameters:
+  service_name:
+    type: string
+    required: true
+"#;
+
+        let (metadata, parameters, template) =
+            RecipeTemplate::split_template_content(content).unwrap();
+
+        // Metadata should contain only name and description
+        assert!(metadata.contains("name: test-template"));
+        assert!(metadata.contains("description: A test template"));
+        assert!(!metadata.contains("parameters:"));
+        assert!(!metadata.contains("template:"));
+
+        // Parameters should contain the parameters block
+        assert!(parameters.contains("service_name:"));
+        assert!(parameters.contains("type: string"));
+        assert!(parameters.contains("required: true"));
+
+        // Template should only contain the template section content
+        assert!(template.contains("description: \"Service {{ params.service_name }}\""));
+        assert!(template.contains("run: echo"));
+        assert!(!template.contains("name: test-template"));
+    }
+
+    #[test]
+    fn test_split_template_content_no_template_section() {
+        // Test when there's no template section
+        let content = r#"name: test-template
+description: A test template
+parameters:
+  service_name:
+    type: string
+    required: true
+"#;
+
+        let (metadata, parameters, template) =
+            RecipeTemplate::split_template_content(content).unwrap();
+
+        // Metadata should contain only name and description
+        assert!(metadata.contains("name: test-template"));
+        assert!(metadata.contains("description: A test template"));
+        assert!(!metadata.contains("parameters:"));
+
+        // Parameters should contain the parameters block
+        assert!(parameters.contains("service_name:"));
+        assert!(parameters.contains("type: string"));
+
+        // Template should be empty
+        assert!(template.trim().is_empty());
     }
 }

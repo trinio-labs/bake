@@ -1,9 +1,4 @@
 name: "foo"
-variables:
-  foo: "{{ var.bake_project_var }}"
-  baz: "{{ var.foo }}"
-  env_var: "{{ env.TEST_BAKE_VAR }}"
-  cookbook_name: "foo"
 recipes:
   post-test:
     description: "Post-test recipe for {{ var.cookbook_name }}"
@@ -14,17 +9,15 @@ recipes:
 
   build:
     description: "Build recipe using {{ var.foo }}"
-    variables:
-      foo: "build-bar"
     cache:
       inputs:
-        - "build.sh"                     # relative path in same directory
-        - "../*.txt"                     # parent directory pattern  
-        - "test/**/*"                    # subdirectory pattern
+        - "build.sh" # relative path in same directory
+        - "../*.txt" # parent directory pattern
+        - "test/**/*" # subdirectory pattern
       outputs:
-        - "target"                       # relative output
+        - "target" # relative output
     run: |
-      ./build.sh {{ var.foo }} {{ var.env_var }} {{ project.root }}
+      ./build.sh {{ var.foo }} {{ env.TEST_BAKE_VAR }} {{ project.root }}
     dependencies:
       - build-dep
 

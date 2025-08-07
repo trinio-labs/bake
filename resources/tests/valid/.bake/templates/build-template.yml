@@ -5,7 +5,7 @@ parameters:
     type: string
     required: true
     description: "Programming language (node, rust, go, etc.)"
-  build_command:
+  buildCommand:
     type: string
     default: "echo npm run build"
     description: "Command to run for building"

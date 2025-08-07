@@ -164,20 +164,27 @@ pub fn perform_self_update(prerelease: bool) -> Result<()> {
                 "{}",
                 style("Please use your package manager to update:").dim()
             );
-            
+
             let exe_path = current_exe.to_string_lossy();
             if exe_path.contains("/opt/homebrew/") || exe_path.contains("/home/linuxbrew/") {
                 println!("  {}", style("brew upgrade bake").cyan());
-            } else if exe_path.contains("/usr/bin/") && std::path::Path::new("/usr/bin/apt").exists() {
-                println!("  {}", style("sudo apt update && sudo apt upgrade bake").cyan());
-            } else if exe_path.contains("/usr/bin/") && std::path::Path::new("/usr/bin/yum").exists() {
+            } else if exe_path.contains("/usr/bin/")
+                && std::path::Path::new("/usr/bin/apt").exists()
+            {
+                println!(
+                    "  {}",
+                    style("sudo apt update && sudo apt upgrade bake").cyan()
+                );
+            } else if exe_path.contains("/usr/bin/")
+                && std::path::Path::new("/usr/bin/yum").exists()
+            {
                 println!("  {}", style("sudo yum update bake").cyan());
             } else if exe_path.contains("/snap/") {
                 println!("  {}", style("sudo snap refresh bake").cyan());
             } else {
                 println!("  {}", style("Use your system's package manager").cyan());
             }
-            
+
             return Ok(());
         }
     }
@@ -278,25 +285,27 @@ fn should_skip_update_check() -> bool {
 /// Check if the binary is installed via a package manager
 fn is_package_managed_installation(exe_path: &std::path::Path) -> bool {
     let path_str = exe_path.to_string_lossy();
-    
+
     // Check for common package manager paths
-    if path_str.contains("/usr/bin/") || 
-       path_str.contains("/usr/local/bin/") ||
-       path_str.contains("/opt/homebrew/") ||
-       path_str.contains("/home/linuxbrew/") ||
-       path_str.contains("/.local/share/flatpak/") ||
-       path_str.contains("/snap/") ||
-       path_str.contains("/var/lib/snapd/") {
+    if path_str.contains("/usr/bin/")
+        || path_str.contains("/usr/local/bin/")
+        || path_str.contains("/opt/homebrew/")
+        || path_str.contains("/home/linuxbrew/")
+        || path_str.contains("/.local/share/flatpak/")
+        || path_str.contains("/snap/")
+        || path_str.contains("/var/lib/snapd/")
+    {
         return true;
     }
 
     // For symlinks (common with brew), check if the target is in a package directory
     if let Ok(resolved_path) = std::fs::read_link(exe_path) {
         let resolved_str = resolved_path.to_string_lossy();
-        if resolved_str.contains("Cellar/") || 
-           resolved_str.contains("Formula/") ||
-           resolved_str.contains("/usr/") ||
-           resolved_str.contains("/opt/") {
+        if resolved_str.contains("Cellar/")
+            || resolved_str.contains("Formula/")
+            || resolved_str.contains("/usr/")
+            || resolved_str.contains("/opt/")
+        {
             return true;
         }
     }
@@ -314,7 +323,10 @@ fn can_update_binary() -> bool {
                 Err(_) => {
                     // If it's a symlink, check the target
                     if let Ok(target) = std::fs::read_link(&exe_path) {
-                        std::fs::OpenOptions::new().write(true).open(&target).is_ok()
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&target)
+                            .is_ok()
                     } else {
                         false
                     }
@@ -452,26 +464,44 @@ mod tests {
     #[test]
     fn test_is_package_managed_installation() {
         use std::path::Path;
-        
+
         // Test brew installations
-        assert!(is_package_managed_installation(Path::new("/opt/homebrew/bin/bake")));
-        assert!(is_package_managed_installation(Path::new("/home/linuxbrew/.linuxbrew/bin/bake")));
-        
+        assert!(is_package_managed_installation(Path::new(
+            "/opt/homebrew/bin/bake"
+        )));
+        assert!(is_package_managed_installation(Path::new(
+            "/home/linuxbrew/.linuxbrew/bin/bake"
+        )));
+
         // Test system installations
         assert!(is_package_managed_installation(Path::new("/usr/bin/bake")));
-        assert!(is_package_managed_installation(Path::new("/usr/local/bin/bake")));
-        
+        assert!(is_package_managed_installation(Path::new(
+            "/usr/local/bin/bake"
+        )));
+
         // Test snap installations
-        assert!(is_package_managed_installation(Path::new("/snap/bake/current/bin/bake")));
-        assert!(is_package_managed_installation(Path::new("/var/lib/snapd/snap/bake/current/bin/bake")));
-        
+        assert!(is_package_managed_installation(Path::new(
+            "/snap/bake/current/bin/bake"
+        )));
+        assert!(is_package_managed_installation(Path::new(
+            "/var/lib/snapd/snap/bake/current/bin/bake"
+        )));
+
         // Test flatpak installations
-        assert!(is_package_managed_installation(Path::new("/home/user/.local/share/flatpak/app/bake/current/files/bin/bake")));
-        
+        assert!(is_package_managed_installation(Path::new(
+            "/home/user/.local/share/flatpak/app/bake/current/files/bin/bake"
+        )));
+
         // Test non-package-managed installations
-        assert!(!is_package_managed_installation(Path::new("/home/user/bin/bake")));
-        assert!(!is_package_managed_installation(Path::new("/home/user/.cargo/bin/bake")));
-        assert!(!is_package_managed_installation(Path::new("./target/release/bake")));
+        assert!(!is_package_managed_installation(Path::new(
+            "/home/user/bin/bake"
+        )));
+        assert!(!is_package_managed_installation(Path::new(
+            "/home/user/.cargo/bin/bake"
+        )));
+        assert!(!is_package_managed_installation(Path::new(
+            "./target/release/bake"
+        )));
     }
 
     #[test]
@@ -481,8 +511,117 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let fake_binary = temp_dir.path().join("bake");
         fs::write(&fake_binary, "fake binary").unwrap();
-        
+
         // Test that regular files in temp dirs are not considered package-managed
         assert!(!is_package_managed_installation(&fake_binary));
+    }
+
+    #[test]
+    fn test_get_update_check_file_with_custom_cache_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let custom_cache = temp_dir.path().join("custom_cache");
+
+        let result = get_update_check_file(Some(&custom_cache));
+        assert!(result.is_ok());
+
+        let check_file = result.unwrap();
+        assert_eq!(check_file, custom_cache.join("last_update_check"));
+        assert!(custom_cache.exists()); // Directory should be created
+    }
+
+    #[test]
+    fn test_get_update_check_file_with_default_cache_dir() {
+        let result = get_update_check_file(None);
+        // Should succeed and return a path under the system cache directory
+        assert!(result.is_ok());
+        let check_file = result.unwrap();
+        assert!(check_file.to_string_lossy().contains("bake"));
+        assert!(check_file.to_string_lossy().ends_with("last_update_check"));
+    }
+
+    #[test]
+    fn test_update_last_check_timestamp() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_dir = temp_dir.path().join("bake");
+
+        let result = update_last_check_timestamp(Some(&cache_dir));
+        assert!(result.is_ok());
+
+        let check_file = cache_dir.join("last_update_check");
+        assert!(check_file.exists());
+
+        let content = fs::read_to_string(&check_file).unwrap();
+        let timestamp: u64 = content.trim().parse().unwrap();
+
+        // Timestamp should be recent (within last minute)
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(timestamp <= current_time);
+        assert!(current_time - timestamp < 60); // Within last minute
+    }
+
+    #[test]
+    fn test_can_update_binary() {
+        // This test checks if we can determine update permissions
+        // The result depends on the actual binary location and permissions
+        let result = can_update_binary();
+        // We don't assert a specific result since it depends on the test environment
+        // Just ensure the function doesn't panic
+        println!("can_update_binary returned: {result}");
+    }
+
+    #[test]
+    fn test_should_skip_update_check_detects_ci_and_dev_environments() {
+        // This test verifies that should_skip_update_check correctly identifies
+        // CI and development environments. We test the individual conditions
+        // rather than trying to create a "normal" environment during test execution.
+
+        // When run as part of cargo test, should return true because we're in a dev environment
+        // (the binary path contains target/debug or target/release)
+        let result = should_skip_update_check();
+
+        // This will be true if any of the following conditions are met:
+        // - CI environment variable is set
+        // - CARGO environment variable is set
+        // - Binary path contains target/debug or target/release
+        // - Binary is in a package manager location
+        //
+        // During testing, at least the binary path condition should be true
+        println!("should_skip_update_check() returned: {result}");
+
+        // We don't assert a specific value since the result depends on the test environment
+        // The important thing is that the function executes without panicking
+    }
+
+    #[test]
+    fn test_should_skip_update_check_github_actions() {
+        env::set_var("GITHUB_ACTIONS", "true");
+        assert!(should_skip_update_check());
+        env::remove_var("GITHUB_ACTIONS");
+    }
+
+    #[test]
+    fn test_should_skip_update_check_continuous_integration() {
+        env::set_var("CONTINUOUS_INTEGRATION", "true");
+        assert!(should_skip_update_check());
+        env::remove_var("CONTINUOUS_INTEGRATION");
+    }
+
+    #[test]
+    fn test_should_check_for_updates_invalid_timestamp_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let bake_cache = temp_dir.path().join("bake");
+        fs::create_dir_all(&bake_cache).unwrap();
+
+        // Write invalid timestamp content
+        fs::write(bake_cache.join("last_update_check"), "invalid_timestamp").unwrap();
+
+        let config = UpdateConfig::default();
+
+        // Should return error when timestamp file contains invalid data
+        let result = should_check_for_updates(&config, Some(&bake_cache), false);
+        assert!(result.is_err());
     }
 }

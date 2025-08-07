@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{project::Recipe, template::{VariableContext, VariableExtractor}};
+use crate::{
+    project::Recipe,
+    template::{VariableContext, VariableFileLoader},
+};
 use anyhow::bail;
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
@@ -18,8 +21,8 @@ pub struct Cookbook {
     #[serde(default)]
     pub environment: Vec<String>,
 
-    #[serde(default)]
-    pub variables: IndexMap<String, String>,
+    #[serde(skip)]
+    pub variables: IndexMap<String, serde_yaml::Value>,
 
     pub recipes: BTreeMap<String, Recipe>,
 
@@ -32,11 +35,13 @@ impl Cookbook {
     /// # Arguments
     /// * `path` - Path to a cookbook file
     /// * `project_root` - Path to the project root
+    /// * `environment` - Environment name for variable loading (e.g., "dev", "prod", "default")
     /// * `context` - Variable context containing environment, variables, and overrides
     ///
     pub fn from(
         path: &PathBuf,
         project_root: &Path,
+        environment: Option<&str>,
         context: &VariableContext,
     ) -> anyhow::Result<Self> {
         let config_str = match std::fs::read_to_string(path) {
@@ -44,14 +49,20 @@ impl Cookbook {
             Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
         };
 
-        // Pre-extract cookbook variables for template rendering
-        let cookbook_vars = VariableExtractor::extract_variables_section(&config_str)?;
-        
+        // Load cookbook-level variables from variable file (vars.yml/variables.yml)
+        let cookbook_directory = path.parent().ok_or_else(|| {
+            anyhow::anyhow!("Cookbook file '{}' has no parent directory", path.display())
+        })?;
+
         // Build context for template rendering with cookbook variables
         let mut cookbook_context = context.clone();
         cookbook_context.merge(&VariableContext::with_project_constants(project_root));
         cookbook_context.merge(&VariableContext::with_cookbook_constants(path)?);
-        cookbook_context.variables.extend(cookbook_vars);
+
+        // Load environment-aware variables from variable file
+        let cookbook_vars =
+            VariableFileLoader::load_variables_from_directory(cookbook_directory, environment)?;
+        cookbook_context.variables.extend(cookbook_vars.clone());
 
         // Try normal YAML parsing first
         let yaml_value: Value = match serde_yaml::from_str(&config_str) {
@@ -80,7 +91,8 @@ impl Cookbook {
                 parsed.environment = cookbook_environment;
 
                 let mut cookbook_variables = context.variables.clone();
-                cookbook_variables.extend(parsed.variables.clone());
+                // Add the loaded cookbook variables from vars.yml file
+                cookbook_variables.extend(cookbook_vars);
 
                 // Process cookbook variables with project variables only
                 let mut cookbook_var_context = cookbook_context.clone();
@@ -99,9 +111,8 @@ impl Cookbook {
                     recipe_environment.extend(recipe.environment.iter().cloned());
                     recipe.environment = recipe_environment.clone();
 
-                    // Start with resolved cookbook variables, then add recipe variables
-                    let mut recipe_variables = resolved_cookbook_vars.clone();
-                    recipe_variables.extend(recipe.variables.clone());
+                    // Start with resolved cookbook variables
+                    let recipe_variables = resolved_cookbook_vars.clone();
 
                     // Process recipe variables with access to cookbook variables
                     let mut recipe_context = cookbook_context.clone();
@@ -147,10 +158,12 @@ impl Cookbook {
     ///
     /// # Arguments
     /// * `path` - Path to a directory
+    /// * `environment` - Environment name for variable loading (e.g., "dev", "prod", "default")
     /// * `context` - Variable context containing environment, variables, and overrides
     ///
     pub fn map_from(
         path: &PathBuf,
+        environment: Option<&str>,
         context: &VariableContext,
     ) -> anyhow::Result<BTreeMap<String, Self>> {
         let all_files = WalkBuilder::new(path)
@@ -164,7 +177,7 @@ impl Cookbook {
                         None => return None, // Skip files with invalid UTF-8 names
                     };
                     if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::from(&file.into_path(), path, context) {
+                        match Self::from(&file.into_path(), path, environment, context) {
                             Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
                             Err(err) => Some(Err(err)),
                         }
@@ -197,7 +210,7 @@ mod test {
     }
 
     fn validate_cookbook_vec(actual: anyhow::Result<BTreeMap<String, super::Cookbook>>) {
-        assert_eq!(actual.unwrap().len(), 5)
+        assert_eq!(actual.unwrap().len(), 4)
     }
 
     #[test_case(config_path("/valid/"), config_path("/valid/foo/cookbook.yml") => using validate_cookbook_foo; "Valid cookbook file")]
@@ -207,6 +220,7 @@ mod test {
         super::Cookbook::from(
             &PathBuf::from(path_str),
             &PathBuf::from(project_root),
+            Some("default"),
             &VariableContext::builder()
                 .environment(vec![])
                 .variables(IndexMap::new())
@@ -220,6 +234,7 @@ mod test {
     fn read_all_cookbooks(path_str: String) -> anyhow::Result<BTreeMap<String, super::Cookbook>> {
         super::Cookbook::map_from(
             &PathBuf::from(path_str),
+            Some("default"),
             &VariableContext::builder()
                 .environment(vec![])
                 .variables(IndexMap::new())
@@ -256,9 +271,12 @@ recipes:
 
         // Create a context with the variables
         let variables = IndexMap::from([
-            ("force_build".to_owned(), "false".to_owned()),
-            ("max_parallel".to_owned(), "4".to_owned()),
-            ("debug_enabled".to_owned(), "true".to_owned()),
+            ("force_build".to_owned(), serde_yaml::Value::Bool(false)),
+            (
+                "max_parallel".to_owned(),
+                serde_yaml::Value::Number(serde_yaml::Number::from(4)),
+            ),
+            ("debug_enabled".to_owned(), serde_yaml::Value::Bool(true)),
         ]);
 
         let context = VariableContext::builder().variables(variables).build();
@@ -291,13 +309,19 @@ recipes:
 
         let temp_dir = tempdir().unwrap();
         let cookbook_path = temp_dir.path().join("handlebars_test.yml");
+        let vars_path = temp_dir.path().join("vars.yml");
+
+        // Create the vars.yml file with the necessary variables
+        let vars_content = r#"
+default:
+  service_name: "api"
+  enable_cache: true
+"#;
+        fs::write(&vars_path, vars_content).unwrap();
 
         let cookbook_content = r#"
 name: "handlebars-test-simple"
 description: "Simple handlebars test"
-variables:
-  service_name: "api"
-  enable_cache: "true"
 
 recipes:
   # Test simple conditionals
@@ -328,7 +352,8 @@ recipes:
             .overrides(IndexMap::new())
             .build();
 
-        let result = super::Cookbook::from(&cookbook_path, temp_dir.path(), &context);
+        let result =
+            super::Cookbook::from(&cookbook_path, temp_dir.path(), Some("default"), &context);
 
         match result {
             Ok(cookbook) => {

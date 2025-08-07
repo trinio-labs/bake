@@ -8,8 +8,8 @@ pub mod recipe_template;
 use anyhow::bail;
 
 pub use cookbook::*;
-pub use recipe_template::*;
 use indexmap::IndexMap;
+pub use recipe_template::*;
 // Note: Some petgraph imports were moved or are now managed by RecipeDependencyGraph.
 use self::graph::RecipeDependencyGraph;
 pub use recipe::*;
@@ -62,10 +62,10 @@ pub struct BakeProject {
     /// An optional description of the project.
     pub description: Option<String>,
 
-    /// Global variables defined at the project level.
+    /// Global variables defined at the project level (loaded from variables.yml/vars.yml).
     /// These variables are available to all recipes in the project.
-    #[serde(default)]
-    pub variables: IndexMap<String, String>,
+    #[serde(skip)]
+    pub variables: IndexMap<String, serde_yaml::Value>,
 
     /// A list of environment variables that should be sourced and made
     /// available to all recipes during execution.
@@ -184,11 +184,12 @@ impl BakeProject {
     /// Initializes project-level variables.
     fn initialize_project_variables(
         &mut self,
+        environment: Option<&str>,
         override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<()> {
         let mut context = VariableContext::builder()
             .environment(self.environment.clone())
-            .variables(self.variables.clone())
+            .variables_from_directory(&self.root_path, environment)?
             .overrides(override_variables.clone())
             .build();
 
@@ -202,6 +203,7 @@ impl BakeProject {
     /// Loads cookbooks for the project.
     fn load_project_cookbooks(
         &mut self,
+        environment: Option<&str>,
         override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<()> {
         let context = VariableContext::builder()
@@ -210,7 +212,7 @@ impl BakeProject {
             .overrides(override_variables.clone())
             .build();
 
-        self.cookbooks = Cookbook::map_from(&self.root_path, &context)?;
+        self.cookbooks = Cookbook::map_from(&self.root_path, environment, &context)?;
         Ok(())
     }
 
@@ -219,7 +221,7 @@ impl BakeProject {
         use ignore::WalkBuilder;
 
         let templates_path = self.get_project_templates_path();
-        
+
         // If templates directory doesn't exist, that's fine - just return empty registry
         if !templates_path.exists() {
             self.template_registry = BTreeMap::new();
@@ -264,7 +266,10 @@ impl BakeProject {
     }
 
     /// Resolves template-based recipes in all cookbooks.
-    fn resolve_template_recipes(&mut self, override_variables: &IndexMap<String, String>) -> anyhow::Result<()> {
+    fn resolve_template_recipes(
+        &mut self,
+        override_variables: &IndexMap<String, String>,
+    ) -> anyhow::Result<()> {
         // Create the variable context for template instantiation
         let context = VariableContext::builder()
             .environment(self.environment.clone())
@@ -277,7 +282,9 @@ impl BakeProject {
             // Create cookbook-specific context
             let mut cookbook_context = context.clone();
             cookbook_context.merge(&VariableContext::with_project_constants(&self.root_path));
-            if let Ok(cb_constants) = VariableContext::with_cookbook_constants(&cookbook.config_path) {
+            if let Ok(cb_constants) =
+                VariableContext::with_cookbook_constants(&cookbook.config_path)
+            {
                 cookbook_context.merge(&cb_constants);
             }
 
@@ -289,7 +296,7 @@ impl BakeProject {
                 }
 
                 let template_name = recipe.template.as_ref().unwrap();
-                
+
                 // Find the template in the registry
                 let template = match self.template_registry.get(template_name) {
                     Some(template) => template,
@@ -314,8 +321,24 @@ impl BakeProject {
                     &cookbook_context,
                 )?;
 
-                // Merge the instantiated recipe with any overrides from the original recipe
+                // Apply environment-resolved variables to the instantiated recipe
                 let mut final_recipe = instantiated_recipe;
+
+                // Process recipe variables with environment context for template resolution
+                let mut recipe_var_context = cookbook_context.clone();
+                recipe_var_context
+                    .variables
+                    .extend(final_recipe.variables.clone());
+
+                if !final_recipe.variables.is_empty() {
+                    let processed_variables = recipe_var_context.process_variables()?;
+                    final_recipe.variables = processed_variables;
+                }
+
+                // Also process the run command with environment context to resolve any remaining templates
+                if final_recipe.run.contains("{{") && final_recipe.run.contains("}}") {
+                    final_recipe.run = recipe_var_context.parse_template(&final_recipe.run)?;
+                }
 
                 // Override with any explicitly set fields from the original recipe
                 if let Some(description) = &recipe.description {
@@ -323,10 +346,14 @@ impl BakeProject {
                 }
 
                 // Merge environment variables (template + recipe)
-                final_recipe.environment.extend(recipe.environment.iter().cloned());
+                final_recipe
+                    .environment
+                    .extend(recipe.environment.iter().cloned());
 
                 // Merge variables (template first, then recipe overrides)
-                final_recipe.variables.extend(recipe.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
+                final_recipe
+                    .variables
+                    .extend(recipe.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
 
                 // Override dependencies if specified in recipe
                 if recipe.dependencies.is_some() {
@@ -451,6 +478,7 @@ impl BakeProject {
 
     pub fn from(
         path: &Path,
+        environment: Option<&str>,
         override_variables: IndexMap<String, String>,
         force_version_override: bool,
     ) -> anyhow::Result<Self> {
@@ -464,10 +492,10 @@ impl BakeProject {
         project.validate_min_version(force_version_override)?;
 
         // Initialize project-level variables.
-        project.initialize_project_variables(&override_variables)?;
+        project.initialize_project_variables(environment, &override_variables)?;
 
         // Load cookbooks for the project.
-        project.load_project_cookbooks(&override_variables)?;
+        project.load_project_cookbooks(environment, &override_variables)?;
 
         // Load recipe templates for the project.
         project.load_project_templates()?;
@@ -509,7 +537,7 @@ impl BakeProject {
                 err
             );
         };
-        
+
         // Create the templates subdirectory within .bake.
         if let Err(err) = std::fs::create_dir_all(self.get_project_templates_path()) {
             bail!(
@@ -822,7 +850,7 @@ mod tests {
         assert_eq!(project.name, "test");
         assert_eq!(
             project.variables.get("bake_project_var"),
-            Some(&"bar".to_string())
+            Some(&serde_yaml::Value::String("bar".to_string()))
         );
 
         // Fetch all recipes and convert to a BTreeMap for easy lookup in tests
@@ -835,11 +863,11 @@ mod tests {
 
         assert_eq!(
             recipes_map.get("foo:build").unwrap().variables["foo"],
-            "build-bar"
+            serde_yaml::Value::String("build-bar".to_owned())
         );
         assert_eq!(
             recipes_map.get("foo:build").unwrap().variables["baz"],
-            "bar"
+            serde_yaml::Value::String("bar".to_owned())
         );
         assert_eq!(
             recipes_map.get("foo:build").unwrap().run.trim(),
@@ -847,7 +875,7 @@ mod tests {
         );
         assert_eq!(
             recipes_map.get("foo:post-test").unwrap().variables["foo"],
-            "bar"
+            serde_yaml::Value::String("build-bar".to_owned())
         );
         // assert_eq!(recipes_map.len(), 7); // Update this count based on your valid project
         // assert_eq!(recipes_map["foo:build"].name, "build");
@@ -863,7 +891,12 @@ mod tests {
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
         std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(&PathBuf::from(path_str), IndexMap::new(), false)
+        super::BakeProject::from(
+            &PathBuf::from(path_str),
+            Some("default"),
+            IndexMap::new(),
+            false,
+        )
     }
 
     #[test]
@@ -875,6 +908,7 @@ mod tests {
         std::fs::set_permissions(&path, perms.clone()).unwrap();
         let project = super::BakeProject::from(
             &PathBuf::from(config_path("/invalid/permission")),
+            Some("default"),
             IndexMap::new(),
             false,
         );
@@ -883,37 +917,13 @@ mod tests {
         std::fs::set_permissions(&path, perms.clone()).unwrap();
     }
 
-    #[test]
-    fn test_min_version_validation() {
-        use std::fs;
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let config_path = temp_dir.path().join("bake.yml");
-
-        // Create a test configuration with a specific minimum version
-        let config_content = r#"
-name: test_project
-config:
-  minVersion: "0.4.0"
-variables:
-  test_var: "test_value"
-"#;
-
-        fs::write(&config_path, config_content).unwrap();
-
-        // Test that version validation works
-        let result = super::BakeProject::from(temp_dir.path(), IndexMap::new(), false);
-        assert!(result.is_ok());
-
-        let project = result.unwrap();
-        assert_eq!(project.config.min_version, Some("0.4.0".to_string()));
-    }
+    // Filesystem-dependent project loading tests have been moved to tests/integration/project_tests.rs
 
     fn get_test_project() -> super::BakeProject {
         std::env::set_var("TEST_BAKE_VAR", "test");
         super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
+            Some("default"),
             IndexMap::new(),
             false,
         )

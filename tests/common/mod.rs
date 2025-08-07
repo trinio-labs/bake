@@ -2,15 +2,17 @@ use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
 
-use crate::project::config::ToolConfig;
-use crate::project::RecipeCacheConfig;
-use crate::project::{BakeProject, Cookbook, Recipe};
+use bake::project::config::ToolConfig;
+use bake::project::RecipeCacheConfig;
+use bake::project::{BakeProject, Cookbook, Recipe};
 use rand::distr::{Alphanumeric, SampleString};
 
+#[allow(dead_code)]
 pub struct TestProjectBuilder {
     pub project: BakeProject,
 }
 
+#[allow(dead_code)]
 impl TestProjectBuilder {
     pub fn new() -> Self {
         let temp_dir = std::env::temp_dir().join(Alphanumeric.sample_string(&mut rand::rng(), 16));
@@ -18,15 +20,12 @@ impl TestProjectBuilder {
         let project = BakeProject {
             name: "test".to_owned(),
             cookbooks: BTreeMap::new(),
-            // recipes: BTreeMap::new(), // Removed: Handled by graph
             description: Some("".to_owned()),
             variables: IndexMap::new(),
             environment: vec![],
             config: ToolConfig::default(),
 
             root_path: temp_dir,
-            // dependency_map: BTreeMap::new(), // Removed: Handled by graph
-            // Initialize graph fields as default, they will be populated by the new graph module
             recipe_dependency_graph: Default::default(),
             template_registry: BTreeMap::new(),
         };
@@ -59,10 +58,6 @@ impl TestProjectBuilder {
             })
             .collect();
 
-        // self.project.recipes.extend(...); // Removed: Not using the flat recipes map
-
-        // self.project.dependency_map.extend(...); // Removed: Not using dependency_map
-
         let cookbook = Cookbook {
             name: name.to_owned(),
             environment: vec![],
@@ -79,8 +74,6 @@ impl TestProjectBuilder {
     }
 
     pub fn with_dependency(mut self, recipe_fqn: &str, dependency_fqn: &str) -> Self {
-        // self.project.dependency_map... // Removed
-
         // Modify the Recipe struct within the appropriate Cookbook
         if let Some((cookbook_name, recipe_name)) = recipe_fqn.split_once(':') {
             if let Some(cookbook) = self.project.cookbooks.get_mut(cookbook_name) {

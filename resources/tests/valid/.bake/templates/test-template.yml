@@ -1,7 +1,7 @@
 name: "test-template"
 description: "Generic test template"
 parameters:
-  test_command:
+  testCommand:
     type: string
     default: "echo this is a test"
     description: "Command to run tests"

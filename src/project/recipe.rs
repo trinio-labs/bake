@@ -55,8 +55,8 @@ pub struct Recipe {
 
     pub description: Option<String>,
 
-    #[serde(default)]
-    pub variables: IndexMap<String, String>,
+    #[serde(skip)]
+    pub variables: IndexMap<String, serde_yaml::Value>,
 
     #[serde(default)]
     pub environment: Vec<String>,
@@ -122,7 +122,21 @@ impl Recipe {
             .collect::<BTreeMap<String, String>>();
 
         // We need to sort the hashes so that the hash is always the same independently of the order which they are declared
-        let variables = BTreeMap::from_iter(self.variables.clone());
+        // Convert YAML variables to strings for hashing
+        let variables: BTreeMap<String, String> = self
+            .variables
+            .iter()
+            .map(|(k, v)| {
+                let string_value = match v {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    _ => serde_yaml::to_string(v)
+                        .unwrap_or_else(|_| "null".to_string())
+                        .trim()
+                        .to_string(),
+                };
+                (k.clone(), string_value)
+            })
+            .collect();
 
         // Create hash data structure and hash it
         let hash_data = RecipeHashData {
@@ -375,7 +389,10 @@ mod tests {
         recipe.cache.as_mut().unwrap().inputs.pop();
         let hash4 = recipe.get_self_hash().unwrap();
 
-        recipe.variables = IndexMap::from([("FOO".to_owned(), "bar".to_owned())]);
+        recipe.variables = IndexMap::from([(
+            "FOO".to_owned(),
+            serde_yaml::Value::String("bar".to_owned()),
+        )]);
         let hash5 = recipe.get_self_hash().unwrap();
 
         std::env::set_var("FOO", "not_bar");

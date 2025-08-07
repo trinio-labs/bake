@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v0.11.0
+
+### Added
+
+- **Handlebars control structures support** - Enhanced template engine with conditional logic and loops
+  - Support for `{{#if}}`, `{{#unless}}`, and `{{#each}}` blocks in recipe templates
+  - More powerful template processing for dynamic recipe generation
+  - Improved template flexibility for complex cookbook scenarios
+
+- **Recipe template system** - Reusable recipe definitions with typed parameters
+  - Template definitions with parameter validation (string, number, boolean, array, object)
+  - Template discovery from `.bake/templates/` directories with inheritance support
+  - Template instantiation with parameter substitution using Handlebars
+  - Eliminates recipe duplication and standardizes patterns across projects
+
+### Technical
+
+- **Library+Binary architecture refactoring** - Major structural improvements for better testability
+  - Refactored from binary-only to library+binary crate pattern
+  - Created `src/lib.rs` with public API, moved main logic from `src/main.rs`
+  - `main.rs` now serves as thin wrapper calling `bake::run().await`
+  - Added `[lib]` configuration to `Cargo.toml` for mixed binary/library support
+  - Enables proper integration testing and external library usage
+
+- **Comprehensive test coverage expansion** - Dramatically improved test quality and coverage
+  - **Overall test coverage**: Improved from 70.34% to 79.01% (+8.67 percentage points)
+  - **Unit tests**: Added comprehensive tests for `lib.rs` (52.16% coverage) and `hashing.rs` (97.88% coverage) 
+  - **Integration tests**: Restructured from `tests/integration/` to `tests/` root following Rust conventions
+  - **Test files**: Added `baker_tests.rs`, `cache_tests.rs`, `project_tests.rs`, `s3_cache_tests.rs`, `template_tests.rs`
+  - **Test fixes**: Resolved all compilation errors, API mismatches, and variable loading issues
+
+- **Configuration system modernization** - Enhanced project configuration architecture
+  - Improved configuration parsing and validation
+  - Better error handling with contextual information
+  - Enhanced variable resolution hierarchy
+
+- **Code quality improvements** - Applied modern Rust best practices
+  - Resolved all clippy warnings using modern format string syntax (`{var}` instead of `"{}", var`)
+  - Applied consistent code formatting with `cargo fmt`
+  - Simplified conditional logic and improved readability
+  - Enhanced error handling patterns throughout codebase
+
 ## v0.10.0
 
 ### Added

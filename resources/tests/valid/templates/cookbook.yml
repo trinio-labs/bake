@@ -5,7 +5,7 @@ recipes:
     template: "build-template"
     parameters:
       language: "typescript"
-      build_command: "echo 'Build completed successfully!'"
+      buildCommand: "echo 'Build completed successfully!'"
       libDependencies: 
         - "package.json"
         - "src/**/*.ts"
@@ -14,7 +14,7 @@ recipes:
   test:
     template: "test-template"
     parameters:
-      test_command: "echo npm run test:ci"
+      testCommand: "echo npm run test:ci"
       coverage: true
   
   # Recipe using template but overriding the run command
@@ -22,7 +22,7 @@ recipes:
     template: "test-template"
     run: "echo 'This run command overrides the template'"
     parameters:
-      test_command: "echo npm run test:unit"
+      testCommand: "echo npm run test:unit"
       coverage: false
   
   # Regular recipe without template

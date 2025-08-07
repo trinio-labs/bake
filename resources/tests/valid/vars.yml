@@ -1,0 +1,10 @@
+default:
+  bake_project_var: bar
+
+envs:
+  test:
+    bake_project_var: bar
+  dev:
+    bake_project_var: dev_bar
+  prod:
+    bake_project_var: prod_bar

@@ -23,14 +23,26 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 
 ### Core Components
 
-1. **baker.rs** - Main execution engine
+1. **lib.rs** - Library entry point and public API
+   
+   - Provides public functions for CLI argument parsing and handling
+   - Exposes main application logic for integration testing
+   - Contains Args struct and command handlers (list-templates, validate, render)
+   - Main run() function that orchestrates the entire application
+
+2. **main.rs** - Binary entry point
+   
+   - Thin wrapper that calls bake::run().await
+   - Minimal CLI executable that delegates to library
+
+3. **baker.rs** - Main execution engine
 
    - Manages parallel recipe execution using tokio and semaphores
    - Handles dependency resolution and execution order
    - Implements fast-fail and cancellation logic
    - Manages progress reporting and output handling
 
-2. **project/** - Project configuration and execution planning
+4. **project/** - Project configuration and execution planning
 
    - `mod.rs` - Main project module with project loading and execution planning
    - `config.rs` - Tool configuration (parallelism, caching, updates)
@@ -39,14 +51,14 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
    - `graph.rs` - Recipe dependency graph using petgraph
    - `hashing.rs` - Input/output fingerprinting for cache keys
 
-3. **cache/** - Multi-tier caching system
+5. **cache/** - Multi-tier caching system
 
    - `local.rs` - Local filesystem cache
    - `s3.rs` - AWS S3 remote cache
    - `gcs.rs` - Google Cloud Storage cache
    - `builder.rs` - Cache strategy composition and configuration
 
-4. **template.rs** - Variable substitution system
+6. **template.rs** - Variable substitution system
 
    - Handlebars-based template engine
    - Hierarchical variable scoping (project → cookbook → recipe → CLI)
@@ -60,7 +72,7 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
    - Template instantiation with parameter substitution using Handlebars
    - Template inheritance support with `extends` field
 
-6. **update.rs** - Self-update functionality
+7. **update.rs** - Self-update functionality
    - GitHub release checking and binary updates
    - Configurable update intervals and auto-update behavior
 
@@ -78,11 +90,17 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
 
 ### Test Structure
 
-- Unit tests use `TestProjectBuilder` helper for creating test projects
-- Integration tests verify recipe execution, caching, and error handling
-- Mock cache strategies for testing cache behavior
+- **Unit Tests**: Comprehensive unit tests in `src/` modules with `#[cfg(test)]` blocks
+- **Integration Tests**: Located in `tests/` directory root (Rust convention)
+  - `baker_tests.rs` - Recipe execution and baking logic tests
+  - `cache_tests.rs` - Cache strategy and builder tests  
+  - `project_tests.rs` - Project loading and configuration tests
+  - `s3_cache_tests.rs` - S3 cache implementation tests
+  - `template_tests.rs` - Variable loading and template system tests
+- **Test Helpers**: `TestProjectBuilder` in `tests/common/mod.rs` for creating test projects  
+- **Library+Binary Pattern**: Tests import from library crate (`bake::`) for better testability
 - Use the macro test_case whenever possible to make code dryer
-- Always run the tool with a valid project configuration to ensure correct behavior.
+- Always run the tool with a valid project configuration to ensure correct behavior
 
 ### Running Tests
 

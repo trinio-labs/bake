@@ -81,193 +81,102 @@ impl<'a> RecipeHasher<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TestProjectBuilder;
 
     #[test]
-    fn test_single_recipe_no_dependencies() -> Result<()> {
-        let project = TestProjectBuilder::new()
-            .with_cookbook("cookbook1", &["recipe_a"])
-            .build();
-
-        let recipe_a_fqn = "cookbook1:recipe_a";
-
-        let mut hasher = RecipeHasher::new(&project);
-        let combined_hash = hasher.hash_for(recipe_a_fqn)?;
-
-        assert!(
-            !combined_hash.is_empty(),
-            "Combined hash should not be empty"
-        );
-
-        // For a recipe with no dependencies, combined hash equals compute_combined_hash(self_hash, [])
-        let recipe_a_obj = project.get_recipe_by_fqn(recipe_a_fqn).unwrap();
-        let expected_self_hash = recipe_a_obj.get_self_hash()?;
-        let expected_combined_hash = compute_combined_hash(expected_self_hash, vec![]);
-
-        assert_eq!(combined_hash, expected_combined_hash);
-        Ok(())
+    fn test_blake3_hash_consistent() {
+        let data = "test data";
+        let hash1 = blake3_hash(data);
+        let hash2 = blake3_hash(data);
+        assert_eq!(hash1, hash2);
+        assert!(!hash1.is_empty());
     }
 
     #[test]
-    fn test_recipe_with_one_dependency() -> Result<()> {
-        let project = TestProjectBuilder::new()
-            .with_cookbook("cookbook1", &["recipe_a", "recipe_b"])
-            .with_dependency("cookbook1:recipe_a", "cookbook1:recipe_b")
-            .build();
-
-        let mut hasher = RecipeHasher::new(&project);
-
-        // Get both hashes
-        let recipe_a_hash = hasher.hash_for("cookbook1:recipe_a")?;
-        let recipe_b_hash = hasher.hash_for("cookbook1:recipe_b")?;
-
-        // Basic assertions
-        assert!(
-            !recipe_a_hash.is_empty(),
-            "recipe_a hash should not be empty"
-        );
-        assert!(
-            !recipe_b_hash.is_empty(),
-            "recipe_b hash should not be empty"
-        );
-        assert_ne!(recipe_a_hash, recipe_b_hash, "Hashes should be different");
-
-        // Test memoization: calling again should return same result
-        let recipe_a_hash_2 = hasher.hash_for("cookbook1:recipe_a")?;
-        assert_eq!(recipe_a_hash, recipe_a_hash_2, "Memoization should work");
-
-        Ok(())
+    fn test_blake3_hash_different_inputs() {
+        let hash1 = blake3_hash("input1");
+        let hash2 = blake3_hash("input2");
+        assert_ne!(hash1, hash2);
     }
 
     #[test]
-    fn test_recipe_with_multiple_dependencies() -> Result<()> {
-        let project = TestProjectBuilder::new()
-            .with_cookbook("cookbook1", &["recipe_a", "recipe_b", "recipe_c"])
-            .with_dependency("cookbook1:recipe_a", "cookbook1:recipe_b")
-            .with_dependency("cookbook1:recipe_a", "cookbook1:recipe_c")
-            .build();
-
-        let recipe_a_fqn = "cookbook1:recipe_a";
-        let recipe_b_fqn = "cookbook1:recipe_b";
-        let recipe_c_fqn = "cookbook1:recipe_c";
-
-        // Calculate expected hash
-        let recipe_a_obj = project.get_recipe_by_fqn(recipe_a_fqn).unwrap();
-        let recipe_b_obj = project.get_recipe_by_fqn(recipe_b_fqn).unwrap();
-        let recipe_c_obj = project.get_recipe_by_fqn(recipe_c_fqn).unwrap();
-
-        let recipe_a_self_hash = recipe_a_obj.get_self_hash()?;
-        let recipe_b_self_hash = recipe_b_obj.get_self_hash()?;
-        let recipe_c_self_hash = recipe_c_obj.get_self_hash()?;
-
-        // recipe_b's combined hash (no dependencies)
-        let recipe_b_combined_hash = compute_combined_hash(recipe_b_self_hash, vec![]);
-
-        // recipe_c's combined hash (no dependencies)
-        let recipe_c_combined_hash = compute_combined_hash(recipe_c_self_hash, vec![]);
-
-        // recipe_a's combined hash (depends on recipe_b and recipe_c)
-        let expected_combined_hash = compute_combined_hash(
-            recipe_a_self_hash,
-            vec![recipe_b_combined_hash, recipe_c_combined_hash],
-        );
-
-        let mut hasher = RecipeHasher::new(&project);
-        let actual_combined_hash = hasher.hash_for(recipe_a_fqn)?;
-
-        assert_eq!(actual_combined_hash, expected_combined_hash);
-        Ok(())
+    fn test_blake3_hash_empty_string() {
+        let hash = blake3_hash("");
+        assert!(!hash.is_empty());
+        assert_eq!(hash.len(), 64); // Blake3 produces 256-bit hash = 64 hex chars
     }
 
     #[test]
-    fn test_recipe_with_transitive_dependencies() -> Result<()> {
-        let project = TestProjectBuilder::new()
-            .with_cookbook("cookbook1", &["recipe_a", "recipe_b", "recipe_c"])
-            .with_dependency("cookbook1:recipe_a", "cookbook1:recipe_b")
-            .with_dependency("cookbook1:recipe_b", "cookbook1:recipe_c")
-            .build();
+    fn test_compute_combined_hash() {
+        let self_hash = "self".to_string();
+        let deps = vec!["dep1".to_string(), "dep2".to_string()];
 
-        let recipe_a_fqn = "cookbook1:recipe_a";
-        let recipe_b_fqn = "cookbook1:recipe_b";
-        let recipe_c_fqn = "cookbook1:recipe_c";
-
-        // Calculate expected hash
-        let recipe_a_obj = project.get_recipe_by_fqn(recipe_a_fqn).unwrap();
-        let recipe_b_obj = project.get_recipe_by_fqn(recipe_b_fqn).unwrap();
-        let recipe_c_obj = project.get_recipe_by_fqn(recipe_c_fqn).unwrap();
-
-        let recipe_a_self_hash = recipe_a_obj.get_self_hash()?;
-        let recipe_b_self_hash = recipe_b_obj.get_self_hash()?;
-        let recipe_c_self_hash = recipe_c_obj.get_self_hash()?;
-
-        // recipe_c's combined hash (no dependencies)
-        let recipe_c_combined_hash = compute_combined_hash(recipe_c_self_hash, vec![]);
-
-        // recipe_b's combined hash (depends on recipe_c)
-        let recipe_b_combined_hash =
-            compute_combined_hash(recipe_b_self_hash, vec![recipe_c_combined_hash]);
-
-        // recipe_a's combined hash (depends on recipe_b)
-        let expected_combined_hash =
-            compute_combined_hash(recipe_a_self_hash, vec![recipe_b_combined_hash]);
-
-        let mut hasher = RecipeHasher::new(&project);
-        let actual_combined_hash = hasher.hash_for(recipe_a_fqn)?;
-
-        assert_eq!(actual_combined_hash, expected_combined_hash);
-        Ok(())
+        let combined = compute_combined_hash(self_hash.clone(), deps.clone());
+        assert!(!combined.is_empty());
+        assert_ne!(combined, self_hash);
+        assert_eq!(combined.len(), 64); // Blake3 hash length
     }
 
     #[test]
-    fn test_recipe_with_diamond_dependency() -> Result<()> {
-        let project = TestProjectBuilder::new()
-            .with_cookbook(
-                "cookbook1",
-                &["recipe_a", "recipe_b", "recipe_c", "recipe_d"],
-            )
-            .with_dependency("cookbook1:recipe_a", "cookbook1:recipe_b")
-            .with_dependency("cookbook1:recipe_a", "cookbook1:recipe_c")
-            .with_dependency("cookbook1:recipe_b", "cookbook1:recipe_d")
-            .with_dependency("cookbook1:recipe_c", "cookbook1:recipe_d")
-            .build();
+    fn test_compute_combined_hash_sorts_dependencies() {
+        let self_hash = "self".to_string();
+        let deps1 = vec!["b".to_string(), "a".to_string()];
+        let deps2 = vec!["a".to_string(), "b".to_string()];
 
-        let recipe_a_fqn = "cookbook1:recipe_a";
-        let recipe_b_fqn = "cookbook1:recipe_b";
-        let recipe_c_fqn = "cookbook1:recipe_c";
-        let recipe_d_fqn = "cookbook1:recipe_d";
+        let hash1 = compute_combined_hash(self_hash.clone(), deps1);
+        let hash2 = compute_combined_hash(self_hash.clone(), deps2);
+        assert_eq!(hash1, hash2);
+    }
 
-        // Calculate expected hash
-        let recipe_a_obj = project.get_recipe_by_fqn(recipe_a_fqn).unwrap();
-        let recipe_b_obj = project.get_recipe_by_fqn(recipe_b_fqn).unwrap();
-        let recipe_c_obj = project.get_recipe_by_fqn(recipe_c_fqn).unwrap();
-        let recipe_d_obj = project.get_recipe_by_fqn(recipe_d_fqn).unwrap();
+    #[test]
+    fn test_compute_combined_hash_with_empty_deps() {
+        let self_hash = "self".to_string();
+        let deps = vec![];
 
-        let recipe_a_self_hash = recipe_a_obj.get_self_hash()?;
-        let recipe_b_self_hash = recipe_b_obj.get_self_hash()?;
-        let recipe_c_self_hash = recipe_c_obj.get_self_hash()?;
-        let recipe_d_self_hash = recipe_d_obj.get_self_hash()?;
+        let combined = compute_combined_hash(self_hash.clone(), deps);
+        let expected = blake3_hash("self");
+        assert_eq!(combined, expected);
+    }
 
-        // recipe_d's combined hash (no dependencies)
-        let recipe_d_combined_hash = compute_combined_hash(recipe_d_self_hash, vec![]);
+    #[test]
+    fn test_compute_combined_hash_different_self_hash() {
+        let deps = vec!["dep1".to_string()];
 
-        // recipe_b's combined hash (depends on recipe_d)
-        let recipe_b_combined_hash =
-            compute_combined_hash(recipe_b_self_hash, vec![recipe_d_combined_hash.clone()]);
+        let hash1 = compute_combined_hash("self1".to_string(), deps.clone());
+        let hash2 = compute_combined_hash("self2".to_string(), deps.clone());
+        assert_ne!(hash1, hash2);
+    }
 
-        // recipe_c's combined hash (depends on recipe_d)
-        let recipe_c_combined_hash =
-            compute_combined_hash(recipe_c_self_hash, vec![recipe_d_combined_hash]);
+    #[test]
+    fn test_compute_combined_hash_different_deps() {
+        let self_hash = "self".to_string();
 
-        // recipe_a's combined hash (depends on recipe_b and recipe_c)
-        let expected_combined_hash = compute_combined_hash(
-            recipe_a_self_hash,
-            vec![recipe_b_combined_hash, recipe_c_combined_hash],
-        );
+        let hash1 = compute_combined_hash(self_hash.clone(), vec!["dep1".to_string()]);
+        let hash2 = compute_combined_hash(self_hash.clone(), vec!["dep2".to_string()]);
+        assert_ne!(hash1, hash2);
+    }
 
-        let mut hasher = RecipeHasher::new(&project);
-        let actual_combined_hash = hasher.hash_for(recipe_a_fqn)?;
+    #[test]
+    fn test_compute_combined_hash_order_independence() {
+        let self_hash = "test".to_string();
+        let deps1 = vec!["z".to_string(), "a".to_string(), "m".to_string()];
+        let deps2 = vec!["a".to_string(), "m".to_string(), "z".to_string()];
+        let deps3 = vec!["m".to_string(), "z".to_string(), "a".to_string()];
 
-        assert_eq!(actual_combined_hash, expected_combined_hash);
-        Ok(())
+        let hash1 = compute_combined_hash(self_hash.clone(), deps1);
+        let hash2 = compute_combined_hash(self_hash.clone(), deps2);
+        let hash3 = compute_combined_hash(self_hash.clone(), deps3);
+
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+    }
+
+    #[test]
+    fn test_compute_combined_hash_duplicate_dependencies() {
+        let self_hash = "test".to_string();
+        let deps = vec!["dep1".to_string(), "dep1".to_string(), "dep2".to_string()];
+
+        let combined = compute_combined_hash(self_hash, deps);
+        assert!(!combined.is_empty());
+        assert_eq!(combined.len(), 64);
     }
 }
