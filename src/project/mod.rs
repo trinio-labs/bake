@@ -23,7 +23,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::template::VariableContext;
+use crate::template::{extract_variables_blocks, process_variable_blocks, VariableContext};
 
 use self::config::ToolConfig;
 
@@ -62,10 +62,18 @@ pub struct BakeProject {
     /// An optional description of the project.
     pub description: Option<String>,
 
-    /// Global variables defined at the project level (loaded from variables.yml/vars.yml).
+    /// Global variables defined at the project level.
     /// These variables are available to all recipes in the project.
-    #[serde(skip)]
+    #[serde(default)]
     pub variables: IndexMap<String, serde_yaml::Value>,
+
+    /// Environment-specific variable overrides (e.g., dev, prod, staging)
+    #[serde(default)]
+    pub overrides: BTreeMap<String, IndexMap<String, serde_yaml::Value>>,
+
+    /// Processed variables for runtime use (combines variables + overrides)
+    #[serde(skip)]
+    pub processed_variables: IndexMap<String, serde_yaml::Value>,
 
     /// A list of environment variables that should be sourced and made
     /// available to all recipes during execution.
@@ -181,22 +189,29 @@ impl BakeProject {
         }
     }
 
-    /// Initializes project-level variables.
+    /// Initializes project-level variables from inline config.
     fn initialize_project_variables(
         &mut self,
+        config_str: &str,
         environment: Option<&str>,
         override_variables: &IndexMap<String, String>,
     ) -> anyhow::Result<()> {
-        let mut context = VariableContext::builder()
-            .environment(self.environment.clone())
-            .variables_from_directory(&self.root_path, environment)?
-            .overrides(override_variables.clone())
-            .build();
+        // Extract variables and overrides blocks from raw YAML
+        let (vars_block, overrides_block) = extract_variables_blocks(config_str);
 
-        // Add project constants
-        context.merge(&VariableContext::with_project_constants(&self.root_path));
+        // Build context with built-in constants only
+        let mut context = VariableContext::with_project_constants(&self.root_path);
+        context.environment = self.environment.clone();
+        context.overrides = override_variables.clone();
 
-        self.variables = context.process_variables()?;
+        // Process variable blocks with template rendering
+        self.processed_variables = process_variable_blocks(
+            vars_block.as_deref(),
+            overrides_block.as_deref(),
+            &context,
+            environment,
+        )?;
+
         Ok(())
     }
 
@@ -208,7 +223,7 @@ impl BakeProject {
     ) -> anyhow::Result<()> {
         let context = VariableContext::builder()
             .environment(self.environment.clone())
-            .variables(self.variables.clone())
+            .variables(self.processed_variables.clone())
             .overrides(override_variables.clone())
             .build();
 
@@ -273,7 +288,7 @@ impl BakeProject {
         // Create the variable context for template instantiation
         let context = VariableContext::builder()
             .environment(self.environment.clone())
-            .variables(self.variables.clone())
+            .variables(self.processed_variables.clone())
             .overrides(override_variables.clone())
             .build();
 
@@ -492,7 +507,7 @@ impl BakeProject {
         project.validate_min_version(force_version_override)?;
 
         // Initialize project-level variables.
-        project.initialize_project_variables(environment, &override_variables)?;
+        project.initialize_project_variables(&config_str, environment, &override_variables)?;
 
         // Load cookbooks for the project.
         project.load_project_cookbooks(environment, &override_variables)?;
@@ -849,7 +864,7 @@ mod tests {
         let project = project_result.unwrap();
         assert_eq!(project.name, "test");
         assert_eq!(
-            project.variables.get("bake_project_var"),
+            project.processed_variables.get("bake_project_var"),
             Some(&serde_yaml::Value::String("bar".to_string()))
         );
 
@@ -862,11 +877,11 @@ mod tests {
             .collect();
 
         assert_eq!(
-            recipes_map.get("foo:build").unwrap().variables["foo"],
+            recipes_map.get("foo:build").unwrap().processed_variables["foo"],
             serde_yaml::Value::String("build-bar".to_owned())
         );
         assert_eq!(
-            recipes_map.get("foo:build").unwrap().variables["baz"],
+            recipes_map.get("foo:build").unwrap().processed_variables["baz"],
             serde_yaml::Value::String("bar".to_owned())
         );
         assert_eq!(
@@ -874,7 +889,10 @@ mod tests {
             format!("./build.sh build-bar test {}", project.root_path.display())
         );
         assert_eq!(
-            recipes_map.get("foo:post-test").unwrap().variables["foo"],
+            recipes_map
+                .get("foo:post-test")
+                .unwrap()
+                .processed_variables["foo"],
             serde_yaml::Value::String("build-bar".to_owned())
         );
         // assert_eq!(recipes_map.len(), 7); // Update this count based on your valid project

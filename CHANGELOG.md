@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## v0.12.0
+
+### Added
+
+- **Inline variable system** - Major simplification of variable management
+  - Variables now defined directly in `bake.yml` and `cookbook.yml` files instead of separate `vars.yml` files
+  - Supports `variables` and `overrides` sections for environment-specific configuration
+  - Eliminates need for separate variable files while maintaining full functionality
+  - Provides cleaner, more maintainable project structure
+
+- **Enhanced render command** - Complete project visualization capability
+  - `--render` flag now renders entire project configuration with all variables resolved
+  - Shows project info, cookbook details, and recipe definitions with applied templates
+  - Provides comprehensive view of project structure for debugging and documentation
+  - Replaces template-specific rendering with full project rendering
+
+### Fixed
+
+- **Cache strategy initialization bug** - Fixed "No cache strategy implementation found for local" error
+  - Added missing `.default_strategies()` calls in `CacheBuilder` initialization
+  - Cache system now properly registers local, S3, and GCS strategies before attempting to build cache
+  - Resolves runtime error that prevented bake from executing recipes with cache configuration
+
+### Breaking Changes
+
+- **Variable file format change** - Projects using separate `vars.yml` files need migration
+  - Move `vars.yml` contents to `variables` and `overrides` sections in corresponding YAML files
+  - `default` section becomes `variables`, `envs` section becomes `overrides`
+  - Template rendering command syntax changed from `--render <template>` to `--render` flag
+
 ## v0.11.0
 
 ### Added

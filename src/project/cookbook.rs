@@ -5,14 +5,13 @@ use std::{
 
 use crate::{
     project::Recipe,
-    template::{VariableContext, VariableFileLoader},
+    template::{extract_variables_blocks, process_variable_blocks, VariableContext},
 };
 use anyhow::bail;
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use log::debug;
 use serde::Deserialize;
-use serde_yaml::Value;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Cookbook {
@@ -21,8 +20,17 @@ pub struct Cookbook {
     #[serde(default)]
     pub environment: Vec<String>,
 
-    #[serde(skip)]
+    /// Cookbook-level variables
+    #[serde(default)]
     pub variables: IndexMap<String, serde_yaml::Value>,
+
+    /// Environment-specific variable overrides for this cookbook
+    #[serde(default)]
+    pub overrides: BTreeMap<String, IndexMap<String, serde_yaml::Value>>,
+
+    /// Processed variables for runtime use (combines variables + overrides)
+    #[serde(skip)]
+    pub processed_variables: IndexMap<String, serde_yaml::Value>,
 
     pub recipes: BTreeMap<String, Recipe>,
 
@@ -49,106 +57,101 @@ impl Cookbook {
             Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
         };
 
-        // Load cookbook-level variables from variable file (vars.yml/variables.yml)
-        let cookbook_directory = path.parent().ok_or_else(|| {
-            anyhow::anyhow!("Cookbook file '{}' has no parent directory", path.display())
-        })?;
-
-        // Build context for template rendering with cookbook variables
-        let mut cookbook_context = context.clone();
+        // Build hierarchical context for cookbook processing
+        let mut cookbook_context = context.clone(); // Contains project variables
         cookbook_context.merge(&VariableContext::with_project_constants(project_root));
         cookbook_context.merge(&VariableContext::with_cookbook_constants(path)?);
 
-        // Load environment-aware variables from variable file
-        let cookbook_vars =
-            VariableFileLoader::load_variables_from_directory(cookbook_directory, environment)?;
-        cookbook_context.variables.extend(cookbook_vars.clone());
+        // Extract cookbook variable blocks from raw YAML
+        let (cb_vars_block, cb_overrides_block) = extract_variables_blocks(&config_str);
 
-        // Try normal YAML parsing first
-        let yaml_value: Value = match serde_yaml::from_str(&config_str) {
-            Ok(value) => value,
-            Err(_) => {
-                // If normal parsing fails, try template-first approach
-                let rendered_yaml = cookbook_context.render_raw_template(&config_str)?;
-                serde_yaml::from_str(&rendered_yaml)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse rendered cookbook YAML: {}", e))?
-            }
-        };
+        // Process cookbook variables with hierarchical context (project + built-ins)
+        let cookbook_processed_variables = process_variable_blocks(
+            cb_vars_block.as_deref(),
+            cb_overrides_block.as_deref(),
+            &cookbook_context,
+            environment,
+        )?;
 
-        let mut yaml_value = yaml_value;
+        // Build complete context with cookbook variables for rendering entire config
+        let mut complete_context = cookbook_context.clone();
+        complete_context
+            .variables
+            .extend(cookbook_processed_variables.clone());
 
-        // Process template variables in the YAML structure (but skip the variables and run fields)
-        VariableContext::process_template_in_value(&mut yaml_value, &cookbook_context, true)?;
+        // Render entire cookbook YAML with complete context
+        let rendered_yaml = complete_context.render_raw_template(&config_str)?;
 
-        // Now deserialize into the Cookbook struct
-        match serde_yaml::from_value::<Self>(yaml_value) {
-            Ok(mut parsed) => {
-                parsed.config_path = path.to_path_buf();
+        // Parse rendered YAML into cookbook struct
+        let mut parsed: Self = serde_yaml::from_str(&rendered_yaml)
+            .map_err(|e| anyhow::anyhow!("Cookbook: Failed to parse rendered cookbook YAML at '{}': {}. Check YAML syntax and template variable usage.", path.display(), e))?;
 
-                // Inherit environment and variables from project
-                let mut cookbook_environment = context.environment.clone();
-                cookbook_environment.extend(parsed.environment.iter().cloned());
-                parsed.environment = cookbook_environment;
+        // Set cookbook metadata
+        parsed.config_path = path.to_path_buf();
+        parsed.processed_variables = cookbook_processed_variables.clone();
 
-                let mut cookbook_variables = context.variables.clone();
-                // Add the loaded cookbook variables from vars.yml file
-                cookbook_variables.extend(cookbook_vars);
+        // Inherit environment from project
+        let mut cookbook_environment = context.environment.clone();
+        cookbook_environment.extend(parsed.environment.iter().cloned());
+        parsed.environment = cookbook_environment;
 
-                // Process cookbook variables with project variables only
-                let mut cookbook_var_context = cookbook_context.clone();
-                cookbook_var_context.variables = cookbook_variables;
-                parsed.variables = cookbook_var_context.process_variables()?;
-                let resolved_cookbook_vars = parsed.variables.clone();
+        // Process each recipe
+        for (name, recipe) in parsed.recipes.iter_mut() {
+            recipe.name = name.clone();
+            recipe.cookbook = parsed.name.clone();
+            recipe.config_path = path.to_path_buf();
+            recipe.project_root = project_root.to_path_buf();
 
-                parsed.recipes.iter_mut().try_for_each(|(name, recipe)| {
-                    recipe.name = name.clone();
-                    recipe.cookbook = parsed.name.clone();
-                    recipe.config_path = path.to_path_buf();
-                    recipe.project_root = project_root.to_path_buf();
+            // Inherit environment from cookbook
+            let mut recipe_environment = parsed.environment.clone();
+            recipe_environment.extend(recipe.environment.iter().cloned());
+            recipe.environment = recipe_environment.clone();
 
-                    // Inherit environment and variables from cookbook
-                    let mut recipe_environment = parsed.environment.clone();
-                    recipe_environment.extend(recipe.environment.iter().cloned());
-                    recipe.environment = recipe_environment.clone();
+            // Build recipe context with project + cookbook variables
+            let mut recipe_context = complete_context.clone();
+            recipe_context.environment = recipe_environment.clone();
 
-                    // Start with resolved cookbook variables
-                    let recipe_variables = resolved_cookbook_vars.clone();
+            // Process recipe-level variables if they exist
+            let recipe_processed_variables =
+                if recipe.variables.is_empty() && recipe.overrides.is_empty() {
+                    // No recipe variables, inherit from cookbook
+                    cookbook_processed_variables.clone()
+                } else {
+                    // Start with cookbook variables and add recipe variables (recipe takes precedence)
+                    let mut combined = cookbook_processed_variables.clone();
+                    combined.extend(recipe.variables.clone());
 
-                    // Process recipe variables with access to cookbook variables
-                    let mut recipe_context = cookbook_context.clone();
-                    recipe_context.environment = recipe_environment;
-                    recipe_context.variables = recipe_variables;
-                    match recipe_context.process_variables() {
-                        Ok(variables) => {
-                            recipe.variables = variables;
-                        }
-                        Err(_) => {
-                            bail!("Cookbook '{}': Failed to parse variables for recipe '{}'. Check syntax and variable definitions.", parsed.name, recipe.name)
+                    // Apply environment overrides if specified
+                    if let Some(env) = environment {
+                        if let Some(env_overrides) = recipe.overrides.get(env) {
+                            combined.extend(env_overrides.clone());
                         }
                     }
 
-                    // Process the run field with the recipe's processed variables
-                    let mut run_context = cookbook_context.clone();
-                    run_context.variables = recipe.variables.clone();
-                    recipe.run = run_context.parse_template(&recipe.run)?;
+                    combined
+                };
 
-                    if let Some(dependencies) = recipe.dependencies.as_ref() {
-                        let new_deps = dependencies.iter().map(|dep| {
-                            if !dep.contains(':') {
-                                recipe.cookbook.clone() + ":" + dep
-                            } else {
-                                dep.clone()
-                            }
-                        });
-                        recipe.dependencies = Some(new_deps.collect());
+            recipe.processed_variables = recipe_processed_variables.clone();
+
+            // Process recipe run command with complete variable context
+            let mut run_context = recipe_context.clone();
+            run_context.variables = recipe_processed_variables;
+            recipe.run = run_context.parse_template(&recipe.run)?;
+
+            // Process dependencies (add cookbook prefix if needed)
+            if let Some(dependencies) = recipe.dependencies.as_ref() {
+                let new_deps = dependencies.iter().map(|dep| {
+                    if !dep.contains(':') {
+                        recipe.cookbook.clone() + ":" + dep
+                    } else {
+                        dep.clone()
                     }
-
-                    Ok(())
-                })?;
-                Ok(parsed)
+                });
+                recipe.dependencies = Some(new_deps.collect());
             }
-            Err(err) => bail!("Cookbook: Failed to deserialize cookbook configuration after template processing at '{}': {}. Check YAML syntax and template variable usage.", path.display(), err),
         }
+
+        Ok(parsed)
     }
 
     /// Gets all cookbooks recursively in a directory
@@ -309,19 +312,14 @@ recipes:
 
         let temp_dir = tempdir().unwrap();
         let cookbook_path = temp_dir.path().join("handlebars_test.yml");
-        let vars_path = temp_dir.path().join("vars.yml");
-
-        // Create the vars.yml file with the necessary variables
-        let vars_content = r#"
-default:
-  service_name: "api"
-  enable_cache: true
-"#;
-        fs::write(&vars_path, vars_content).unwrap();
 
         let cookbook_content = r#"
 name: "handlebars-test-simple"
 description: "Simple handlebars test"
+
+variables:
+  service_name: "api"
+  enable_cache: true
 
 recipes:
   # Test simple conditionals

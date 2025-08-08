@@ -104,9 +104,10 @@ mod tests {
             recipe_dependency_graph: RecipeDependencyGraph::default(), // Assumes Default trait is implemented
             description: Some("A test project".to_string()),
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             environment: Vec::new(),
             config: tool_config,
-
             root_path: project_root_path,
             template_registry: BTreeMap::new(),
         })

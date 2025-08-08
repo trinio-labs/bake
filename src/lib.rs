@@ -108,17 +108,9 @@ pub struct Args {
     #[arg(long)]
     pub validate_templates: bool,
 
-    /// Render template with given parameters
+    /// Print rendered cookbooks with all variables and templates resolved
     #[arg(long)]
-    pub render: Option<String>,
-
-    /// Template parameters for rendering (key=value pairs)
-    #[arg(long = "param", value_parser = parse_key_val)]
-    pub template_params: Vec<(String, String)>,
-
-    /// Output file for rendered template (default: stdout)
-    #[arg(short, long)]
-    pub output: Option<String>,
+    pub render: bool,
 }
 
 pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -137,6 +129,8 @@ pub async fn load_project_with_feedback(
     bake_path: &std::path::Path,
     variables: IndexMap<String, String>,
     verbose: bool,
+    jobs: Option<usize>,
+    fail_fast: bool,
 ) -> anyhow::Result<Arc<BakeProject>> {
     let term = Term::stderr();
     let loading_message = format!("Loading project from {}...", bake_path.display());
@@ -145,7 +139,7 @@ pub async fn load_project_with_feedback(
         term.write_line(&loading_message)?;
     }
 
-    let project = match BakeProject::from(bake_path, Some("default"), variables, verbose) {
+    let mut project = match BakeProject::from(bake_path, Some("default"), variables, verbose) {
         Ok(p) => p,
         Err(e) => {
             if !verbose {
@@ -156,6 +150,13 @@ pub async fn load_project_with_feedback(
             bail!("Failed to load project: {}", e);
         }
     };
+
+    // Apply configuration overrides
+    if let Some(jobs) = jobs {
+        project.config.max_parallel = jobs;
+    }
+    project.config.fast_fail = fail_fast;
+    project.config.verbose = verbose;
 
     if !verbose {
         term.clear_line()?;
@@ -220,7 +221,8 @@ pub async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
 pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(&bake_path, variables, args.verbose > 0).await?;
+    let project =
+        load_project_with_feedback(&bake_path, variables, args.verbose > 0, None, false).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -276,7 +278,8 @@ pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
 pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(&bake_path, variables, args.verbose > 0).await?;
+    let project =
+        load_project_with_feedback(&bake_path, variables, args.verbose > 0, None, false).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -329,79 +332,179 @@ pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
 }
 
 pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
-    let template_name = args.render.as_ref().unwrap();
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(&bake_path, variables, args.verbose > 0).await?;
+    let project =
+        load_project_with_feedback(&bake_path, variables, args.verbose > 0, None, false).await?;
 
-    let template = project
-        .template_registry
-        .get(template_name)
-        .with_context(|| format!("Template '{template_name}' not found"))?;
+    // Get the execution plan to determine which recipes to show
+    let recipe_filter = args.recipe.as_deref();
+    let execution_plan = project.get_recipes_for_execution(recipe_filter, args.regex)?;
 
-    // Convert template parameters from Vec<(String, String)> to BTreeMap
-    let mut template_params = std::collections::BTreeMap::new();
-    for (key, value) in &args.template_params {
-        // Try to parse value as different types
-        let parsed_value = if value == "true" || value == "false" {
-            serde_yaml::Value::Bool(value == "true")
-        } else if let Ok(num) = value.parse::<i64>() {
-            serde_yaml::Value::Number(serde_yaml::Number::from(num))
-        } else if let Ok(_num) = value.parse::<f64>() {
-            // For simplicity, treat floats as strings in template parameters
-            serde_yaml::Value::String(value.clone())
-        } else {
-            serde_yaml::Value::String(value.clone())
-        };
-        template_params.insert(key.clone(), parsed_value);
+    // Create a set of all recipe FQNs that should be included
+    let included_recipes: std::collections::HashSet<String> = execution_plan
+        .iter()
+        .flatten()
+        .map(|recipe| format!("{}:{}", recipe.cookbook, recipe.name))
+        .collect();
+
+    // Output header with pretty styling
+    println!(
+        "\n{}",
+        console::style("🍰 Rendered Bake Configuration")
+            .bold()
+            .cyan()
+    );
+    println!(
+        "{}",
+        console::style("✨ All variables and templates resolved").dim()
+    );
+    if let Some(filter) = recipe_filter {
+        println!(
+            "{} {}",
+            console::style("🎯 Filter:").bold().yellow(),
+            console::style(filter).bright().white()
+        );
+    }
+    println!("{}", "━".repeat(50));
+
+    // Create serializable structures for cookbooks and recipes
+    #[derive(serde::Serialize)]
+    struct RenderedCookbook {
+        name: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        environment: Vec<String>,
+        #[serde(skip_serializing_if = "IndexMap::is_empty")]
+        variables: IndexMap<String, serde_yaml::Value>,
+        recipes: std::collections::BTreeMap<String, RenderedRecipe>,
     }
 
-    // Validate required parameters
-    for (param_name, param_def) in &template.parameters {
-        if param_def.required
-            && !template_params.contains_key(param_name)
-            && param_def.default.is_none()
-        {
-            bail!(
-                "Required parameter '{}' not provided. Use --param {}=<value>",
-                param_name,
-                param_name
-            );
-        }
+    #[derive(serde::Serialize)]
+    struct RenderedRecipe {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "IndexMap::is_empty")]
+        variables: IndexMap<String, serde_yaml::Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        environment: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dependencies: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache: Option<crate::project::RecipeCacheConfig>,
+        run: String,
     }
 
-    // Add default values for missing parameters
-    for (param_name, param_def) in &template.parameters {
-        if !template_params.contains_key(param_name) {
-            if let Some(ref default_val) = param_def.default {
-                template_params.insert(param_name.clone(), default_val.clone());
+    // Convert project to renderable structure, filtering by included recipes
+    let cookbooks: std::collections::BTreeMap<String, RenderedCookbook> = project
+        .cookbooks
+        .iter()
+        .filter_map(|(name, cookbook)| {
+            // Only include recipes that are in the execution plan
+            let filtered_recipes: std::collections::BTreeMap<String, RenderedRecipe> = cookbook
+                .recipes
+                .iter()
+                .filter(|(_recipe_name, recipe)| {
+                    // If no filter specified, include all recipes
+                    if included_recipes.is_empty() {
+                        true
+                    } else {
+                        included_recipes.contains(&format!("{}:{}", recipe.cookbook, recipe.name))
+                    }
+                })
+                .map(|(recipe_name, recipe)| {
+                    (
+                        recipe_name.clone(),
+                        RenderedRecipe {
+                            description: recipe.description.clone(),
+                            variables: recipe.variables.clone(),
+                            environment: recipe.environment.clone(),
+                            dependencies: recipe.dependencies.clone(),
+                            cache: recipe.cache.clone(),
+                            run: recipe.run.clone(),
+                        },
+                    )
+                })
+                .collect();
+
+            // Only include cookbooks that have at least one recipe to show
+            if filtered_recipes.is_empty() {
+                None
+            } else {
+                Some((
+                    name.clone(),
+                    RenderedCookbook {
+                        name: cookbook.name.clone(),
+                        environment: cookbook.environment.clone(),
+                        variables: cookbook.variables.clone(),
+                        recipes: filtered_recipes,
+                    },
+                ))
             }
+        })
+        .collect();
+
+    // Display project information separately
+    #[derive(serde::Serialize)]
+    struct ProjectInfo {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "IndexMap::is_empty")]
+        variables: IndexMap<String, serde_yaml::Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        environment: Vec<String>,
+    }
+
+    let project_info = ProjectInfo {
+        name: project.name.clone(),
+        description: project.description.clone(),
+        variables: project.variables.clone(),
+        environment: project.environment.clone(),
+    };
+
+    // Print project information with pretty header
+    println!(
+        "\n{}",
+        console::style("📋 Project Information").bold().blue()
+    );
+    println!(
+        "{}{}",
+        console::style("└─").blue(),
+        console::style("─".repeat(25)).blue()
+    );
+    match serde_yaml::to_string(&project_info) {
+        Ok(yaml) => {
+            println!("{}", yaml.trim());
+        }
+        Err(err) => {
+            eprintln!("Error serializing project info to YAML: {err}");
+            return Err(err.into());
         }
     }
 
-    // Create Handlebars registry and render template
-    let mut handlebars = handlebars::Handlebars::new();
-    handlebars.set_strict_mode(true);
+    // Display each cookbook separately with pretty headers
+    for (cookbook_name, cookbook) in &cookbooks {
+        println!(
+            "\n\n{} {}",
+            console::style("📚").green(),
+            console::style(&format!("Cookbook: {cookbook_name}"))
+                .bold()
+                .green()
+        );
+        println!(
+            "{}{}",
+            console::style("└─").green(),
+            console::style("─".repeat(12 + cookbook_name.len())).green()
+        );
 
-    // Register the template
-    handlebars
-        .register_template_string("template", &template.template_content)
-        .with_context(|| "Failed to register template")?;
-
-    // Render with parameters
-    let rendered = handlebars
-        .render("template", &template_params)
-        .with_context(|| "Failed to render template")?;
-
-    // Output to file or stdout
-    match &args.output {
-        Some(output_path) => {
-            std::fs::write(output_path, rendered)
-                .with_context(|| format!("Failed to write to {output_path}"))?;
-            println!("Template rendered to: {output_path}");
-        }
-        None => {
-            println!("{rendered}");
+        match serde_yaml::to_string(cookbook) {
+            Ok(yaml) => {
+                println!("{}", yaml.trim());
+            }
+            Err(err) => {
+                eprintln!("Error serializing cookbook '{cookbook_name}' to YAML: {err}");
+                return Err(err.into());
+            }
         }
     }
 
@@ -411,7 +514,14 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
 pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(&bake_path, variables, args.verbose > 0).await?;
+    let project = load_project_with_feedback(
+        &bake_path,
+        variables,
+        args.verbose > 0,
+        args.jobs,
+        args.fail_fast,
+    )
+    .await?;
 
     // Handle clean command
     if args.clean {
@@ -439,6 +549,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
             .collect();
 
         let _cache = CacheBuilder::new(project.clone())
+            .default_strategies()
             .build_for_recipes(&all_recipes)
             .await?;
 
@@ -494,22 +605,6 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Set parallelism
-    if let Some(jobs) = args.jobs {
-        Arc::get_mut(&mut project.clone())
-            .unwrap()
-            .config
-            .max_parallel = jobs;
-    }
-
-    // Set fail fast
-    Arc::get_mut(&mut project.clone()).unwrap().config.fast_fail = args.fail_fast;
-
-    // Set verbose mode
-    if args.verbose > 0 {
-        Arc::get_mut(&mut project.clone()).unwrap().config.verbose = true;
-    }
-
     // Build cache for recipes
     let all_recipes: Vec<String> = execution_plan
         .iter()
@@ -518,6 +613,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         .collect();
 
     let cache = CacheBuilder::new(project.clone())
+        .default_strategies()
         .build_for_recipes(&all_recipes)
         .await?;
 
@@ -553,7 +649,7 @@ pub async fn run() -> anyhow::Result<()> {
         return handle_validate_templates(&args).await;
     }
 
-    if args.render.is_some() {
+    if args.render {
         return handle_render(&args).await;
     }
 
@@ -670,9 +766,7 @@ name: test_project
             prerelease: false,
             list_templates: true,
             validate_templates: false,
-            render: None,
-            template_params: vec![],
-            output: None,
+            render: false,
         };
 
         // This should succeed and print "No templates found"
@@ -707,9 +801,7 @@ name: test_project
             prerelease: false,
             list_templates: false,
             validate_templates: true,
-            render: None,
-            template_params: vec![],
-            output: None,
+            render: false,
         };
 
         // This should succeed and print "No templates found"
@@ -744,9 +836,7 @@ name: test_project
             prerelease: false,
             list_templates: false,
             validate_templates: false,
-            render: None,
-            template_params: vec![],
-            output: None,
+            render: false,
         };
 
         // This should succeed but print "No recipes to bake"
@@ -773,9 +863,7 @@ name: test_project
             prerelease: false,
             list_templates: false,
             validate_templates: false,
-            render: None,
-            template_params: vec![],
-            output: None,
+            render: false,
         };
 
         // Test that Args implements Debug (this will compile if it does)

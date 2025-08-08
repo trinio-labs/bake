@@ -85,20 +85,15 @@ fn test_project_with_custom_variables() {
     let temp_dir = tempdir().unwrap();
     let config_path = temp_dir.path().join("bake.yml");
 
-    // Create bake.yml without variables (variables come from separate files)
+    // Create bake.yml with inline variables
     let config_content = r#"
 name: custom_var_test
-"#;
-    std::fs::write(&config_path, config_content).unwrap();
 
-    // Create a variables file like the system expects
-    let vars_path = temp_dir.path().join("vars.yml");
-    let vars_content = r#"
-default:
+variables:
   custom_var: "original_value"
   another_var: 42
 "#;
-    std::fs::write(&vars_path, vars_content).unwrap();
+    std::fs::write(&config_path, config_content).unwrap();
 
     // Test with override variables
     let mut override_vars = IndexMap::new();
@@ -110,9 +105,9 @@ default:
     let project = result.unwrap();
     assert_eq!(project.name, "custom_var_test");
 
-    // Variables should be loaded from vars.yml
-    assert!(project.variables.contains_key("custom_var"));
-    assert!(project.variables.contains_key("another_var"));
+    // Variables should be loaded from inline variables
+    assert!(project.processed_variables.contains_key("custom_var"));
+    assert!(project.processed_variables.contains_key("another_var"));
 }
 
 #[test]

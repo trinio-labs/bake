@@ -36,7 +36,7 @@ pub struct RecipeCacheConfig {
     pub outputs: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
 pub struct Recipe {
     #[serde(skip)]
     pub name: String,
@@ -55,8 +55,17 @@ pub struct Recipe {
 
     pub description: Option<String>,
 
-    #[serde(skip)]
+    /// Recipe-level variables
+    #[serde(default)]
     pub variables: IndexMap<String, serde_yaml::Value>,
+
+    /// Environment-specific variable overrides for this recipe
+    #[serde(default)]
+    pub overrides: BTreeMap<String, IndexMap<String, serde_yaml::Value>>,
+
+    /// Processed variables for runtime use (combines variables + overrides)
+    #[serde(skip)]
+    pub processed_variables: IndexMap<String, serde_yaml::Value>,
 
     #[serde(default)]
     pub environment: Vec<String>,
@@ -367,6 +376,8 @@ mod tests {
             dependencies: None,
             environment: vec!["FOO".to_owned()],
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             run: String::from("test"),
             cache: Some(RecipeCacheConfig {
                 inputs: vec![String::from("build.sh"), String::from("../*.txt")],
@@ -420,6 +431,8 @@ mod tests {
             dependencies: None,
             environment: vec![],
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             run: String::from("test"),
             cache: Some(RecipeCacheConfig {
                 inputs: vec![
@@ -458,6 +471,8 @@ mod tests {
             dependencies: None,
             environment: vec![],
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             run: String::from("echo 'test'"),
             cache: Some(RecipeCacheConfig {
                 inputs: vec![

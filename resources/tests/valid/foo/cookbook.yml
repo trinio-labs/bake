@@ -1,4 +1,20 @@
 name: "foo"
+environment:
+  - TEST_COOKBOOK_VAR
+variables:
+  cookbook_name: "foo"
+  foo: "build-bar"
+  baz: bar
+  env_var: test
+
+overrides:
+  dev:
+    foo: dev_bar
+    baz: dev_bar
+  test:
+    foo: bar
+    baz: bar
+
 recipes:
   post-test:
     description: "Post-test recipe for {{ var.cookbook_name }}"

@@ -1,6 +1,18 @@
 name: test
 environment:
   - TEST_BAKE_VAR
+
+variables:
+  bake_project_var: bar
+
+overrides:
+  test:
+    bake_project_var: bar
+  dev:
+    bake_project_var: dev_bar
+  prod:
+    bake_project_var: prod_bar
+
 config:
   verbose: true
   cache:

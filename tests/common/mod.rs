@@ -22,6 +22,8 @@ impl TestProjectBuilder {
             cookbooks: BTreeMap::new(),
             description: Some("".to_owned()),
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             environment: vec![],
             config: ToolConfig::default(),
 
@@ -48,6 +50,8 @@ impl TestProjectBuilder {
                         cache: Default::default(),
                         environment: vec![],
                         variables: IndexMap::new(),
+                        overrides: BTreeMap::new(),
+                        processed_variables: IndexMap::new(),
                         run: format!("echo Hello from recipe {recipe}"),
                         run_status: Default::default(),
                         config_path: config_path.clone(),
@@ -62,6 +66,8 @@ impl TestProjectBuilder {
             name: name.to_owned(),
             environment: vec![],
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             recipes,
             config_path: config_path.clone(),
         };

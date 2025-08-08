@@ -4,7 +4,7 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-use crate::template::VariableContext;
+use crate::template::{extract_yaml_block, VariableContext};
 
 /// Represents a parameter type for template validation
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -116,73 +116,17 @@ impl RecipeTemplate {
         })
     }
 
-    /// Extracts a specific indented block from YAML content
-    /// Returns (remaining_lines, extracted_block_content)
-    fn extract_yaml_block<'a>(lines: Vec<&'a str>, block_name: &str) -> (Vec<&'a str>, String) {
-        let mut remaining_lines = Vec::new();
-        let mut block_lines = Vec::new();
-        let mut block_start_line = None;
-        let mut block_indent = 0;
-
-        // First pass: find the block boundaries
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with(&format!("{block_name}:")) {
-                block_start_line = Some(i);
-                block_indent = line.len() - line.trim_start().len();
-                break;
-            }
-        }
-
-        if let Some(block_start) = block_start_line {
-            // Extract block content (everything under the block section)
-            let mut in_block_section = false;
-
-            for (i, &line) in lines.iter().enumerate() {
-                if i == block_start {
-                    in_block_section = true;
-                    continue; // Skip the "block_name:" header line
-                }
-
-                if in_block_section {
-                    let line_indent = line.len() - line.trim_start().len();
-                    let trimmed = line.trim();
-
-                    // If we hit a line with same or less indentation than block (and it's not empty/comment),
-                    // we've left the block section
-                    if line_indent <= block_indent
-                        && !trimmed.is_empty()
-                        && !trimmed.starts_with('#')
-                    {
-                        in_block_section = false;
-                        remaining_lines.push(line);
-                    } else {
-                        block_lines.push(line);
-                    }
-                } else {
-                    remaining_lines.push(line);
-                }
-            }
-        } else {
-            // No block found - everything goes to remaining
-            remaining_lines = lines;
-        }
-
-        (remaining_lines, block_lines.join("\n"))
-    }
-
     /// Splits template content into metadata, parameters, and template sections
     /// Extracts both parameters and template blocks, treating the remainder as metadata
     fn split_template_content(content: &str) -> anyhow::Result<(String, String, String)> {
         let lines: Vec<&str> = content.lines().collect();
 
         // Extract parameters block first
-        let (remaining_after_params, parameters_content) =
-            Self::extract_yaml_block(lines, "parameters");
+        let (remaining_after_params, parameters_content) = extract_yaml_block(lines, "parameters");
 
         // Extract template block from what remains
         let (metadata_lines, template_content) =
-            Self::extract_yaml_block(remaining_after_params, "template");
+            extract_yaml_block(remaining_after_params, "template");
 
         Ok((
             metadata_lines.join("\n"),

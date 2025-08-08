@@ -5,172 +5,154 @@ use handlebars::Handlebars;
 use indexmap::IndexMap;
 use serde_json::{json, Value as JsonValue};
 
-/// Helper struct for loading variables from variable files with environment support
-pub struct VariableFileLoader;
+/// Extracts a specific indented block from YAML content
+/// Returns (remaining_lines, extracted_block_content)
+pub fn extract_yaml_block<'a>(lines: Vec<&'a str>, block_name: &str) -> (Vec<&'a str>, String) {
+    let mut remaining_lines = Vec::new();
+    let mut block_lines = Vec::new();
+    let mut block_start_line = None;
+    let mut block_indent = 0;
 
-impl VariableFileLoader {
-    /// Loads variables from a variable file (vars.yml or variables.yml) for a specific environment
-    ///
-    /// # Arguments
-    /// * `directory` - Directory to search for variable files
-    /// * `environment` - Environment name (e.g., "dev", "prod", "default")
-    ///
-    /// # Returns
-    /// * `Ok(IndexMap<String, serde_yaml::Value>)` - Variables for the specified environment
-    /// * `Err` if file reading or parsing fails
-    pub fn load_variables_from_directory(
-        directory: &Path,
-        environment: Option<&str>,
-    ) -> anyhow::Result<IndexMap<String, serde_yaml::Value>> {
-        // Try to find variable files in order of preference
-        let var_file_names = ["vars.yml", "vars.yaml", "variables.yml", "variables.yaml"];
+    // First pass: find the block boundaries
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("{block_name}:")) {
+            block_start_line = Some(i);
+            block_indent = line.len() - line.trim_start().len();
+            break;
+        }
+    }
 
-        for file_name in &var_file_names {
-            let file_path = directory.join(file_name);
-            if file_path.exists() {
-                return Self::load_variables_from_file(&file_path, environment);
+    if let Some(block_start) = block_start_line {
+        // Extract block content (everything under the block section)
+        let mut in_block_section = false;
+
+        for (i, &line) in lines.iter().enumerate() {
+            if i == block_start {
+                in_block_section = true;
+                continue; // Skip the "block_name:" header line
+            }
+
+            if in_block_section {
+                let line_indent = line.len() - line.trim_start().len();
+                let trimmed = line.trim();
+
+                // If we hit a line with same or less indentation than block (and it's not empty/comment),
+                // we've left the block section
+                if line_indent <= block_indent && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    in_block_section = false;
+                    remaining_lines.push(line);
+                } else {
+                    block_lines.push(line);
+                }
+            } else {
+                remaining_lines.push(line);
             }
         }
-
-        // No variable file found, return empty variables
-        Ok(IndexMap::new())
+    } else {
+        // No block found - everything goes to remaining
+        remaining_lines = lines;
     }
 
-    /// Loads variables from a specific variable file for a given environment
-    ///
-    /// # Arguments
-    /// * `file_path` - Path to the variable file
-    /// * `environment` - Environment name (e.g., "dev", "prod", "default")
-    ///
-    /// # Returns
-    /// * `Ok(IndexMap<String, serde_yaml::Value>)` - Variables for the specified environment
-    /// * `Err` if file reading or parsing fails
-    pub fn load_variables_from_file(
-        file_path: &Path,
-        environment: Option<&str>,
-    ) -> anyhow::Result<IndexMap<String, serde_yaml::Value>> {
-        let content = std::fs::read_to_string(file_path).map_err(|e| {
+    (remaining_lines, block_lines.join("\n"))
+}
+
+/// Extracts both variables and overrides blocks from YAML content
+/// Returns (variables_block, overrides_block) as optional strings
+pub fn extract_variables_blocks(content: &str) -> (Option<String>, Option<String>) {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Extract variables block first
+    let (remaining_after_vars, variables_content) = extract_yaml_block(lines, "variables");
+
+    // Extract overrides block from what remains
+    let (_, overrides_content) = extract_yaml_block(remaining_after_vars, "overrides");
+
+    let variables_block = if variables_content.trim().is_empty() {
+        None
+    } else {
+        Some(variables_content)
+    };
+
+    let overrides_block = if overrides_content.trim().is_empty() {
+        None
+    } else {
+        Some(overrides_content)
+    };
+
+    (variables_block, overrides_block)
+}
+
+/// Renders variable blocks with hierarchical context, then parses as YAML and resolves overrides
+pub fn process_variable_blocks(
+    variables_block: Option<&str>,
+    overrides_block: Option<&str>,
+    context: &VariableContext,
+    build_environment: Option<&str>,
+) -> anyhow::Result<IndexMap<String, serde_yaml::Value>> {
+    // Render and parse default variables
+    let mut result = if let Some(vars_str) = variables_block {
+        let rendered_vars = context.render_raw_template(vars_str)?;
+        serde_yaml::from_str(&rendered_vars).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to read variable file '{}': {}",
-                file_path.display(),
-                e
+                "Failed to parse rendered variables block as YAML: {}. Rendered content: '{}'",
+                e,
+                rendered_vars
             )
-        })?;
+        })?
+    } else {
+        IndexMap::new()
+    };
 
-        // Parse the YAML content
-        let yaml_value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to parse variable file '{}': {}",
-                file_path.display(),
-                e
-            )
-        })?;
-
-        // Extract environment-specific variables
-        Self::extract_environment_variables(&yaml_value, environment, file_path)
-    }
-
-    /// Extracts variables for a specific environment from parsed YAML
-    ///
-    /// # Arguments
-    /// * `yaml_value` - Parsed YAML content
-    /// * `environment` - Environment name to extract (e.g., "dev", "prod")
-    /// * `file_path` - File path for error reporting
-    ///
-    /// # Returns
-    /// * `Ok(IndexMap<String, serde_yaml::Value>)` - Variables for the environment (default + env overrides)
-    /// * `Err` if file structure is invalid
-    fn extract_environment_variables(
-        yaml_value: &serde_yaml::Value,
-        environment: Option<&str>,
-        file_path: &Path,
-    ) -> anyhow::Result<IndexMap<String, serde_yaml::Value>> {
-        let yaml_mapping = yaml_value.as_mapping().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Variable file '{}' must contain a YAML mapping at the root level",
-                file_path.display()
-            )
-        })?;
-
-        // Start with default variables
-        let mut variables = IndexMap::new();
-
-        // Load default variables if present
-        if let Some(default_value) =
-            yaml_mapping.get(serde_yaml::Value::String("default".to_string()))
-        {
-            let default_mapping = default_value.as_mapping().ok_or_else(|| {
+    // Render and apply build environment overrides
+    if let (Some(env), Some(overrides_str)) = (build_environment, overrides_block) {
+        let rendered_overrides = context.render_raw_template(overrides_str)?;
+        let overrides_map: BTreeMap<String, IndexMap<String, serde_yaml::Value>> =
+            serde_yaml::from_str(&rendered_overrides).map_err(|e| {
                 anyhow::anyhow!(
-                    "'default' section in variable file '{}' must contain a mapping of variables",
-                    file_path.display()
+                    "Failed to parse rendered overrides block as YAML: {}. Rendered content: '{}'",
+                    e,
+                    rendered_overrides
                 )
             })?;
 
-            for (key, value) in default_mapping {
-                let key_str = key.as_str().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Variable key in 'default' section must be a string in file '{}'",
-                        file_path.display()
-                    )
-                })?;
-
-                variables.insert(key_str.to_string(), value.clone());
-            }
+        if let Some(build_env_overrides) = overrides_map.get(env) {
+            result.extend(build_env_overrides.clone());
         }
-
-        // Apply environment-specific overrides if environment is specified
-        if let Some(environment) = environment {
-            if let Some(envs_value) =
-                yaml_mapping.get(serde_yaml::Value::String("envs".to_string()))
-            {
-                let envs_mapping = envs_value.as_mapping()
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "'envs' section in variable file '{}' must contain a mapping of environments",
-                        file_path.display()
-                    ))?;
-
-                if let Some(env_value) =
-                    envs_mapping.get(serde_yaml::Value::String(environment.to_string()))
-                {
-                    let env_mapping = env_value.as_mapping()
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Environment '{}' in 'envs' section must contain a mapping of variables in file '{}'",
-                            environment,
-                            file_path.display()
-                        ))?;
-
-                    // Override with environment-specific variables
-                    for (key, value) in env_mapping {
-                        let key_str = key.as_str().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Variable key in environment '{}' must be a string in file '{}'",
-                                environment,
-                                file_path.display()
-                            )
-                        })?;
-
-                        variables.insert(key_str.to_string(), value.clone());
-                    }
-                } else {
-                    // Environment not found in envs section, but that's OK - just use defaults
-                    // Only show warning if there are envs but the requested one is missing
-                    log::debug!(
-                        "Environment '{}' not found in 'envs' section of '{}', using defaults only",
-                        environment,
-                        file_path.display()
-                    );
-                }
-            } else {
-                // No envs section, but that's OK for files with only defaults
-                log::debug!(
-                    "No 'envs' section found in '{}', using defaults only",
-                    file_path.display()
-                );
-            }
-        }
-
-        Ok(variables)
     }
+
+    Ok(result)
+}
+
+/// Multi-pass config parsing: extracts variable blocks, processes them, then renders entire config
+pub fn parse_config<T>(
+    config_str: &str,
+    hierarchical_context: &VariableContext,
+    build_environment: Option<&str>,
+) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    // Step 1: Extract variable blocks as raw strings
+    let (vars_block, overrides_block) = extract_variables_blocks(config_str);
+
+    // Step 2: Render variable blocks with hierarchical context
+    let processed_variables = process_variable_blocks(
+        vars_block.as_deref(),
+        overrides_block.as_deref(),
+        hierarchical_context,
+        build_environment,
+    )?;
+
+    // Step 3: Build complete context with processed variables
+    let mut complete_context = hierarchical_context.clone();
+    complete_context.variables.extend(processed_variables);
+
+    // Step 4: Render entire config with complete context
+    let rendered_yaml = complete_context.render_raw_template(config_str)?;
+
+    // Step 5: Parse final YAML into struct
+    Ok(serde_yaml::from_str(&rendered_yaml)?)
 }
 
 /// Represents the context for template variable processing, containing all
@@ -366,7 +348,7 @@ impl VariableContext {
     }
 
     /// Creates project constants from a project root path
-    pub fn with_project_constants(project_root: &std::path::Path) -> Self {
+    pub fn with_project_constants(project_root: &Path) -> Self {
         let project_constants = json!({
             "root": project_root.display().to_string()
         });
@@ -381,7 +363,7 @@ impl VariableContext {
     }
 
     /// Creates cookbook constants from a cookbook path
-    pub fn with_cookbook_constants(cookbook_path: &std::path::Path) -> anyhow::Result<Self> {
+    pub fn with_cookbook_constants(cookbook_path: &Path) -> anyhow::Result<Self> {
         let cookbook_constants = json!({
             "root": cookbook_path
                 .parent()
@@ -470,25 +452,6 @@ impl VariableContextBuilder {
     pub fn overrides(mut self, overrides: IndexMap<String, String>) -> Self {
         self.context.overrides = overrides;
         self
-    }
-
-    /// Loads variables from a directory's variable file for a specific environment
-    ///
-    /// # Arguments
-    /// * `directory` - Directory to search for variable files
-    /// * `environment` - Environment name (e.g., "dev", "prod", "default")
-    ///
-    /// # Returns
-    /// * `Self` - Builder instance for chaining
-    /// * Will set variables to empty if file not found or environment not available
-    pub fn variables_from_directory(
-        mut self,
-        directory: &Path,
-        environment: Option<&str>,
-    ) -> anyhow::Result<Self> {
-        let variables = VariableFileLoader::load_variables_from_directory(directory, environment)?;
-        self.context.variables.extend(variables);
-        Ok(self)
     }
 
     pub fn build(self) -> VariableContext {
@@ -785,6 +748,86 @@ null_value: "{{ var.null_value }}"
             assert!(matches!(map.get("cache_path"), Some(Value::String(s)) if s == "/tmp/cache"));
             assert!(matches!(map.get("null_value"), Some(Value::Null)));
         }
+    }
+
+    #[test]
+    fn test_extract_variables_blocks() {
+        let yaml_content = r#"
+name: test
+variables:
+  foo: bar
+  count: 42
+overrides:
+  dev:
+    foo: dev_bar
+  prod:
+    count: 100
+recipes:
+  build:
+    run: echo test
+"#;
+
+        let (variables, overrides) = extract_variables_blocks(yaml_content);
+
+        assert!(variables.is_some());
+        assert!(overrides.is_some());
+
+        let vars = variables.unwrap();
+        assert!(vars.contains("foo: bar"));
+        assert!(vars.contains("count: 42"));
+
+        let overrides_content = overrides.unwrap();
+        assert!(overrides_content.contains("dev:"));
+        assert!(overrides_content.contains("foo: dev_bar"));
+    }
+
+    #[test]
+    fn test_process_variable_blocks() {
+        let variables_block = r#"
+service_name: api
+port: 3000
+"#;
+
+        let overrides_block = r#"
+dev:
+  port: 3001
+prod:
+  port: 80
+"#;
+
+        let context = VariableContext::builder().build();
+
+        // Test default environment
+        let result =
+            process_variable_blocks(Some(variables_block), Some(overrides_block), &context, None)
+                .unwrap();
+
+        assert_eq!(
+            result.get("service_name"),
+            Some(&serde_yaml::Value::String("api".to_string()))
+        );
+        assert_eq!(
+            result.get("port"),
+            Some(&serde_yaml::Value::Number(serde_yaml::Number::from(3000)))
+        );
+
+        // Test dev environment
+        let result = process_variable_blocks(
+            Some(variables_block),
+            Some(overrides_block),
+            &context,
+            Some("dev"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.get("service_name"),
+            Some(&serde_yaml::Value::String("api".to_string()))
+        );
+        assert_eq!(
+            result.get("port"),
+            Some(&serde_yaml::Value::Number(serde_yaml::Number::from(3001)))
+        );
     }
 
     // Filesystem-dependent tests have been moved to tests/integration/template_tests.rs

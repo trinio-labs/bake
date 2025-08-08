@@ -23,6 +23,8 @@ fn create_test_project_with_s3() -> Arc<BakeProject> {
         recipe_dependency_graph: RecipeDependencyGraph::default(),
         description: Some("A test project with S3 cache".to_string()),
         variables: IndexMap::new(),
+        overrides: BTreeMap::new(),
+        processed_variables: IndexMap::new(),
         environment: Vec::new(),
         config: ToolConfig {
             cache: CacheConfig {
@@ -148,6 +150,8 @@ async fn test_s3_cache_strategy_creation_without_credentials() {
         recipe_dependency_graph: RecipeDependencyGraph::default(),
         description: None,
         variables: IndexMap::new(),
+        overrides: BTreeMap::new(),
+        processed_variables: IndexMap::new(),
         environment: Vec::new(),
         config: ToolConfig {
             cache: CacheConfig {

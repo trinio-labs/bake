@@ -84,6 +84,8 @@ mod tests {
             cache: Default::default(),
             environment: vec![],
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             run: format!("echo 'Running {name}'"),
             run_status: Default::default(),
             config_path: PathBuf::from(format!("{cookbook}.yml")),

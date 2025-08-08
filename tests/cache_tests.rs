@@ -22,6 +22,8 @@ fn create_test_project_with_tool_config(tool_config: ToolConfig) -> Arc<BakeProj
         recipe_dependency_graph: RecipeDependencyGraph::default(),
         description: Some("A test project".to_string()),
         variables: IndexMap::new(),
+        overrides: BTreeMap::new(),
+        processed_variables: IndexMap::new(),
         environment: Vec::new(),
         config: tool_config,
         root_path: project_root_path,

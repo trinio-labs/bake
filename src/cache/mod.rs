@@ -319,6 +319,8 @@ mod test {
             recipe_dependency_graph: RecipeDependencyGraph::default(),
             description: Some("Test project".to_string()),
             variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
             environment: Vec::new(),
             config: ToolConfig::default(),
             root_path: std::env::temp_dir().join("test_project"),
