@@ -12,6 +12,7 @@ use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use log::debug;
 use serde::Deserialize;
+use serde_json::{json, Value as JsonValue};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Cookbook {
@@ -38,6 +39,23 @@ pub struct Cookbook {
     pub config_path: PathBuf,
 }
 impl Cookbook {
+    /// Generates builtin constants for the cookbook context
+    pub fn generate_cookbook_constants(
+        cookbook_path: &Path,
+    ) -> anyhow::Result<IndexMap<String, JsonValue>> {
+        let cookbook_constants = json!({
+            "root": cookbook_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Cookbook path has no parent directory"))?
+                .display()
+                .to_string()
+        });
+        Ok(IndexMap::from([(
+            "cookbook".to_owned(),
+            cookbook_constants,
+        )]))
+    }
+
     /// Creates a cookbook config from a path to a cookbook file
     ///
     /// # Arguments
@@ -58,9 +76,11 @@ impl Cookbook {
         };
 
         // Build hierarchical context for cookbook processing
-        let mut cookbook_context = context.clone(); // Contains project variables
-        cookbook_context.merge(&VariableContext::with_project_constants(project_root));
-        cookbook_context.merge(&VariableContext::with_cookbook_constants(path)?);
+        let mut cookbook_context = context.clone(); // Contains project variables and constants
+
+        // Add cookbook constants to the context
+        let cookbook_constants = Self::generate_cookbook_constants(path)?;
+        cookbook_context.constants.extend(cookbook_constants);
 
         // Extract cookbook variable blocks from raw YAML
         let (cb_vars_block, cb_overrides_block) = extract_variables_blocks(&config_str);
@@ -74,13 +94,12 @@ impl Cookbook {
         )?;
 
         // Build complete context with cookbook variables for rendering entire config
-        let mut complete_context = cookbook_context.clone();
-        complete_context
+        cookbook_context
             .variables
             .extend(cookbook_processed_variables.clone());
 
         // Render entire cookbook YAML with complete context
-        let rendered_yaml = complete_context.render_raw_template(&config_str)?;
+        let rendered_yaml = cookbook_context.render_raw_template(&config_str)?;
 
         // Parse rendered YAML into cookbook struct
         let mut parsed: Self = serde_yaml::from_str(&rendered_yaml)
@@ -108,7 +127,7 @@ impl Cookbook {
             recipe.environment = recipe_environment.clone();
 
             // Build recipe context with project + cookbook variables
-            let mut recipe_context = complete_context.clone();
+            let mut recipe_context = cookbook_context.clone();
             recipe_context.environment = recipe_environment.clone();
 
             // Process recipe-level variables if they exist
@@ -271,6 +290,7 @@ recipes:
 "#;
 
         let mut yaml_value: Value = serde_yaml::from_str(yaml_str).unwrap();
+        let _my_str = "str".to_owned();
 
         // Create a context with the variables
         let variables = IndexMap::from([

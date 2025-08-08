@@ -102,11 +102,6 @@ Variables are resolved in order of precedence:
 ### Project Configuration (bake.yml)
 
 ```yaml
-cookbooks:
-  - path: ./frontend
-  - path: ./backend
-  - path: ./shared
-
 variables:
   NODE_ENV: production
   BUILD_DIR: dist

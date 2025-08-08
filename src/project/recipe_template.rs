@@ -209,16 +209,13 @@ impl RecipeTemplate {
         config_path: PathBuf,
         project_root: PathBuf,
         parameters: &BTreeMap<String, Value>,
-        _context: &VariableContext,
+        context: &VariableContext,
     ) -> anyhow::Result<crate::project::Recipe> {
         // Resolve parameters with defaults and validate
         let resolved_params = self.resolve_parameters(parameters)?;
 
-        // Create template context with parameters and built-in constants
-        let mut template_context = VariableContext::with_project_constants(&project_root);
-        if let Ok(cookbook_constants) = VariableContext::with_cookbook_constants(&config_path) {
-            template_context.merge(&cookbook_constants);
-        }
+        // Use provided context (already has project and cookbook constants)
+        let mut template_context = context.clone();
 
         // Add parameters to template context for rendering
         let params_json: serde_json::Map<String, serde_json::Value> = resolved_params

@@ -7,12 +7,11 @@ pub mod recipe_template;
 
 use anyhow::bail;
 
+use self::graph::RecipeDependencyGraph;
 pub use cookbook::*;
 use indexmap::IndexMap;
-pub use recipe_template::*;
-// Note: Some petgraph imports were moved or are now managed by RecipeDependencyGraph.
-use self::graph::RecipeDependencyGraph;
 pub use recipe::*;
+pub use recipe_template::*;
 
 pub use validator::Validate;
 
@@ -24,6 +23,7 @@ use std::{
 use serde::Deserialize;
 
 use crate::template::{extract_variables_blocks, process_variable_blocks, VariableContext};
+use serde_json::{json, Value as JsonValue};
 
 use self::config::ToolConfig;
 
@@ -88,9 +88,6 @@ pub struct BakeProject {
     #[serde(skip)]
     /// The root path of the project, typically the directory containing the `bake.yml` file.
     pub root_path: PathBuf,
-    //#[serde(skip)]
-    //// Maps all dependencies, direct and indirect of each recipe in the project.
-    // pub dependency_map: BTreeMap<String, HashSet<String>>, // This was replaced by recipe_graph.
 }
 
 impl BakeProject {
@@ -178,7 +175,13 @@ impl BakeProject {
                 parsed.root_path = file_path
                     .parent()
                     .expect("Config file must have a parent directory.")
-                    .to_path_buf();
+                    .canonicalize()
+                    .unwrap_or_else(|_| {
+                        file_path
+                            .parent()
+                            .expect("Config file must have a parent directory.")
+                            .to_path_buf()
+                    });
                 Ok(parsed)
             }
             Err(err) => bail!(
@@ -189,20 +192,22 @@ impl BakeProject {
         }
     }
 
-    /// Initializes project-level variables from inline config.
+    /// Initializes project-level variables and returns the base project context.
     fn initialize_project_variables(
         &mut self,
         config_str: &str,
         environment: Option<&str>,
         override_variables: &IndexMap<String, String>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<VariableContext> {
         // Extract variables and overrides blocks from raw YAML
         let (vars_block, overrides_block) = extract_variables_blocks(config_str);
 
-        // Build context with built-in constants only
-        let mut context = VariableContext::with_project_constants(&self.root_path);
-        context.environment = self.environment.clone();
-        context.overrides = override_variables.clone();
+        // Build base context with project constants
+        let context = VariableContext::builder()
+            .environment(self.environment.clone())
+            .overrides(override_variables.clone())
+            .constants(self.generate_project_constants())
+            .build();
 
         // Process variable blocks with template rendering
         self.processed_variables = process_variable_blocks(
@@ -212,22 +217,30 @@ impl BakeProject {
             environment,
         )?;
 
-        Ok(())
-    }
-
-    /// Loads cookbooks for the project.
-    fn load_project_cookbooks(
-        &mut self,
-        environment: Option<&str>,
-        override_variables: &IndexMap<String, String>,
-    ) -> anyhow::Result<()> {
-        let context = VariableContext::builder()
+        // Return context with processed variables for downstream operations
+        Ok(VariableContext::builder()
             .environment(self.environment.clone())
             .variables(self.processed_variables.clone())
             .overrides(override_variables.clone())
-            .build();
+            .constants(self.generate_project_constants())
+            .build())
+    }
 
-        self.cookbooks = Cookbook::map_from(&self.root_path, environment, &context)?;
+    /// Generates builtin constants for the project context
+    fn generate_project_constants(&self) -> IndexMap<String, JsonValue> {
+        let project_constants = json!({
+            "root": self.root_path.display().to_string()
+        });
+        IndexMap::from([("project".to_owned(), project_constants)])
+    }
+
+    /// Loads cookbooks for the project using the provided context.
+    fn load_project_cookbooks(
+        &mut self,
+        environment: Option<&str>,
+        context: &VariableContext,
+    ) -> anyhow::Result<()> {
+        self.cookbooks = Cookbook::map_from(&self.root_path, environment, context)?;
         Ok(())
     }
 
@@ -280,27 +293,18 @@ impl BakeProject {
         Ok(())
     }
 
-    /// Resolves template-based recipes in all cookbooks.
-    fn resolve_template_recipes(
-        &mut self,
-        override_variables: &IndexMap<String, String>,
-    ) -> anyhow::Result<()> {
-        // Create the variable context for template instantiation
-        let context = VariableContext::builder()
-            .environment(self.environment.clone())
-            .variables(self.processed_variables.clone())
-            .overrides(override_variables.clone())
-            .build();
-
+    /// Resolves template-based recipes in all cookbooks using the provided context.
+    fn resolve_template_recipes(&mut self, context: &VariableContext) -> anyhow::Result<()> {
         // Process each cookbook
         for cookbook in self.cookbooks.values_mut() {
-            // Create cookbook-specific context
+            // Create cookbook-specific context (already has project constants)
             let mut cookbook_context = context.clone();
-            cookbook_context.merge(&VariableContext::with_project_constants(&self.root_path));
-            if let Ok(cb_constants) =
-                VariableContext::with_cookbook_constants(&cookbook.config_path)
+
+            // Add cookbook constants
+            if let Ok(cookbook_constants) =
+                Cookbook::generate_cookbook_constants(&cookbook.config_path)
             {
-                cookbook_context.merge(&cb_constants);
+                cookbook_context.constants.extend(cookbook_constants);
             }
 
             // Process each recipe in the cookbook
@@ -506,17 +510,18 @@ impl BakeProject {
         // Validate bake version compatibility
         project.validate_min_version(force_version_override)?;
 
-        // Initialize project-level variables.
-        project.initialize_project_variables(&config_str, environment, &override_variables)?;
+        // Initialize project-level variables and get the base context.
+        let project_context =
+            project.initialize_project_variables(&config_str, environment, &override_variables)?;
 
         // Load cookbooks for the project.
-        project.load_project_cookbooks(environment, &override_variables)?;
+        project.load_project_cookbooks(environment, &project_context)?;
 
         // Load recipe templates for the project.
         project.load_project_templates()?;
 
         // Resolve template-based recipes in cookbooks.
-        project.resolve_template_recipes(&override_variables)?;
+        project.resolve_template_recipes(&project_context)?;
 
         // Validate that all recipes have run commands.
         project.validate_recipes()?;

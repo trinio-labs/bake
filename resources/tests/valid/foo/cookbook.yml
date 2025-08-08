@@ -6,6 +6,7 @@ variables:
   foo: "build-bar"
   baz: bar
   env_var: test
+  data_dir: "{{ var.cookbook_name }}/data"
 
 overrides:
   dev:

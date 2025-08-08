@@ -1,4 +1,4 @@
-#![feature(coverage_attribute)]
+// #![feature(coverage_attribute)]
 
 // Re-export all modules for external use
 pub mod baker;
@@ -55,10 +55,6 @@ pub struct Args {
     #[arg(short = 'e', long, alias = "explain")]
     pub show_plan: bool,
 
-    /// Show execution plan as tree
-    #[arg(short, long)]
-    pub tree: bool,
-
     /// Clean outputs and caches for the selected recipes
     #[arg(short, long)]
     pub clean: bool,
@@ -111,6 +107,10 @@ pub struct Args {
     /// Print rendered cookbooks with all variables and templates resolved
     #[arg(long)]
     pub render: bool,
+
+    /// Skip using and saving to cache
+    #[arg(long)]
+    pub skip_cache: bool,
 }
 
 pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -592,7 +592,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     }
 
     // Show execution plan if requested
-    if args.show_plan || args.tree {
+    if args.show_plan {
         // Both tree and show_plan use the same display function
         execution_plan::display_full_execution_plan(&execution_plan)?;
         return Ok(());
@@ -603,6 +603,17 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         println!("Dry run mode - showing what would be executed:");
         execution_plan::display_full_execution_plan(&execution_plan)?;
         return Ok(());
+    }
+
+    // Handle skip cache option
+    if args.skip_cache {
+        println!("Skipping cache...");
+        // Modify the project's cache configuration in place
+        unsafe {
+            let project_ptr = Arc::as_ptr(&project) as *mut BakeProject;
+            (*project_ptr).config.cache.local.enabled = false;
+            (*project_ptr).config.cache.remotes = None;
+        }
     }
 
     // Build cache for recipes
@@ -753,7 +764,6 @@ name: test_project
             recipe: None,
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
-            tree: false,
             clean: false,
             verbose: 0,
             vars: vec![],
@@ -767,6 +777,7 @@ name: test_project
             list_templates: true,
             validate_templates: false,
             render: false,
+            skip_cache: false,
         };
 
         // This should succeed and print "No templates found"
@@ -788,7 +799,6 @@ name: test_project
             recipe: None,
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
-            tree: false,
             clean: false,
             verbose: 0,
             vars: vec![],
@@ -802,6 +812,7 @@ name: test_project
             list_templates: false,
             validate_templates: true,
             render: false,
+            skip_cache: false,
         };
 
         // This should succeed and print "No templates found"
@@ -823,7 +834,6 @@ name: test_project
             recipe: None,
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
-            tree: false,
             clean: false,
             verbose: 0,
             vars: vec![],
@@ -837,6 +847,7 @@ name: test_project
             list_templates: false,
             validate_templates: false,
             render: false,
+            skip_cache: false,
         };
 
         // This should succeed but print "No recipes to bake"
@@ -850,7 +861,6 @@ name: test_project
             recipe: Some("test:recipe".to_string()),
             path: Some("/test/path".to_string()),
             show_plan: false,
-            tree: false,
             clean: false,
             verbose: 1,
             vars: vec![("key".to_string(), "value".to_string())],
@@ -864,6 +874,7 @@ name: test_project
             list_templates: false,
             validate_templates: false,
             render: false,
+            skip_cache: false,
         };
 
         // Test that Args implements Debug (this will compile if it does)

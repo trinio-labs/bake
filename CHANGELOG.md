@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+## v0.13.0
+
+### Added
+
+- **Comprehensive documentation restructure** - Complete reorganization of project documentation
+  - New structured documentation hierarchy: getting-started, guides, reference, development  
+  - 15+ new focused documentation files covering all aspects of Bake
+  - Improved navigation and discoverability of documentation content
+  - Better separation between user guides and developer documentation
+
+### Changed
+
+- **README.md completely rewritten** - Much more concise and user-focused  
+  - Streamlined quick start guide and installation instructions
+  - Clear feature highlights with visual formatting
+  - Better organized sections for different user needs
+  - Reduced from verbose explanations to focused, actionable content
+
+### Removed
+
+- **Legacy documentation files** - Cleaned up outdated documentation structure
+  - Removed docs/auto-update.md, docs/configuration.md, docs/recipe-templates.md
+  - Removed schemas/README.md and empty CONTRIBUTING.md
+  - Content migrated to new structured documentation format
+
+### Technical
+
+- **Development environment improvements**
+  - Enhanced VSCode configuration with better debug settings
+  - Updated Rust toolchain to 1.87.0
+  - Minor code quality improvements and unused variable cleanup
+  - Improved test resource configurations
+
 ## v0.12.0
 
 ### Added

@@ -1,6 +1,6 @@
 [package]
 name = "bake-cli"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 authors = ["Theo Ribeiro <repitilian.intern@proton.me>"]
 license = "Apache-2.0"
@@ -19,6 +19,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "bake"
 path = "src/main.rs"
+
+[profile.dev]
+opt-level = 0
+debug = true
+debug-assertions = true
 
 [dependencies]
 anyhow = "1.0.98"

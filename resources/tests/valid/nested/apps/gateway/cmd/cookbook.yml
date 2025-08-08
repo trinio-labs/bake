@@ -5,7 +5,7 @@ recipes:
     cache:
       inputs:
         - "main.go"                           # simple relative pattern
-        - "../../../../../libs/test_reader/**/*.go"  # complex multi-level pattern going outside cookbook dir
+        - "../../../../libs/test_reader/**/*.go"  # complex multi-level pattern going outside cookbook dir
         - "../../shared.txt"                  # intermediate level pattern
       outputs:
         - "build/binary"

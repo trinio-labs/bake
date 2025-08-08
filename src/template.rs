@@ -454,6 +454,11 @@ impl VariableContextBuilder {
         self
     }
 
+    pub fn constants(mut self, constants: IndexMap<String, JsonValue>) -> Self {
+        self.context.constants = constants;
+        self
+    }
+
     pub fn build(self) -> VariableContext {
         self.context
     }

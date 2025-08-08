@@ -18,8 +18,8 @@ config:
   cache:
     local:
       enabled: true
-    remotes:
-      # s3:
-      #   bucket: trinio-bake-cache
-      gcs:
-        bucket: trinio-bake-cache
+    # remotes:
+    # s3:
+    #   bucket: trinio-bake-cache
+    # gcs:
+    # bucket: trinio-bake-cache

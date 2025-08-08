@@ -6,7 +6,9 @@
       "type": "codelldb",
       "request": "launch",
       "program": "${workspaceFolder}/target/debug/bake",
-      "args": ["-p", "resources/tests/valid"]
+      "args": ["-p", "resources/tests/valid", "foo:"],
+      "preLaunchTask": "cargo-build",
+      "initCommands": ["command source ~/.lldbinit"]
     }
   ]
 }
