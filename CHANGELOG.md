@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.13.1
+
+### Fixed
+
+- **Enhanced error messaging for template resolution failures** - Improved error context when template resolution fails
+  - Error messages now include the specific recipe (cookbook:recipe) where template resolution failed
+  - Provides better debugging information for template variable issues
+  - Helps developers quickly identify which recipe is experiencing template problems
+
 ## v0.13.0
 
 ### Added

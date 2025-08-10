@@ -338,7 +338,7 @@ impl BakeProject {
                     self.root_path.clone(),
                     &recipe.parameters,
                     &cookbook_context,
-                )?;
+                ).map_err(|e| anyhow::anyhow!("{} (used by recipe '{}:{}')", e, cookbook.name, recipe_name))?;
 
                 // Apply environment-resolved variables to the instantiated recipe
                 let mut final_recipe = instantiated_recipe;
