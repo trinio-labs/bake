@@ -930,7 +930,7 @@ mod tests {
         std::env::set_var("TEST_BAKE_VAR", "test");
         super::BakeProject::from(
             &PathBuf::from(path_str),
-            Some("default"),
+            None,
             IndexMap::new(),
             false,
         )
@@ -945,7 +945,7 @@ mod tests {
         std::fs::set_permissions(&path, perms.clone()).unwrap();
         let project = super::BakeProject::from(
             &PathBuf::from(config_path("/invalid/permission")),
-            Some("default"),
+            None,
             IndexMap::new(),
             false,
         );
@@ -960,7 +960,7 @@ mod tests {
         std::env::set_var("TEST_BAKE_VAR", "test");
         super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
-            Some("default"),
+            None,
             IndexMap::new(),
             false,
         )
@@ -1193,6 +1193,53 @@ mod tests {
         ).unwrap();
         
         // With "prod" environment, {{var.envName}} should resolve to "prod" 
+        assert_eq!(
+            project_prod.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            "trinio-bake-cache-prod"
+        );
+    }
+
+    #[test]
+    fn test_environment_overrides() {
+        std::env::set_var("TEST_BAKE_VAR", "test");
+        
+        // Test with "test" environment - should have envName: test and bake_project_var: bar
+        let project_test = super::BakeProject::from(
+            &PathBuf::from(config_path("/valid")),
+            Some("test"),
+            IndexMap::new(),
+            false,
+        ).unwrap();
+        
+        // Check that project variables were overridden correctly
+        assert_eq!(
+            project_test.processed_variables.get("envName").unwrap(),
+            &serde_yaml::Value::String("test".to_string())
+        );
+        assert_eq!(
+            project_test.processed_variables.get("bake_project_var").unwrap(),
+            &serde_yaml::Value::String("bar".to_string())
+        );
+        
+        // Test with "prod" environment - should have envName: prod and bake_project_var: prod_bar
+        let project_prod = super::BakeProject::from(
+            &PathBuf::from(config_path("/valid")),
+            Some("prod"),
+            IndexMap::new(),
+            false,
+        ).unwrap();
+        
+        // Check that project variables were overridden correctly
+        assert_eq!(
+            project_prod.processed_variables.get("envName").unwrap(),
+            &serde_yaml::Value::String("prod".to_string())
+        );
+        assert_eq!(
+            project_prod.processed_variables.get("bake_project_var").unwrap(),
+            &serde_yaml::Value::String("prod_bar".to_string())
+        );
+        
+        // Test that both template rendering and environment overrides work together
         assert_eq!(
             project_prod.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
             "trinio-bake-cache-prod"

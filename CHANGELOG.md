@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.14.1
+
+### Fixed
+
+- **Test environment parameter consistency** - Standardized test environment parameters for better test isolation
+  - Tests now use `None` for environment parameter unless specifically testing environment override functionality
+  - Environment override tests (`test_environment_overrides()`, `test_project_file_template_rendering()`) continue to use specific environment values
+  - Improves test predictability and reduces potential side effects between test runs
+  - All 194 tests continue to pass with improved test isolation
+
 ## v0.14.0
 
 ### Added

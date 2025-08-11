@@ -25,7 +25,7 @@ fn validate_project(project_result: anyhow::Result<BakeProject>) {
 fn test_project_loading(path: &str) {
     let result = BakeProject::from(
         &PathBuf::from(config_path(path)),
-        Some("default"),
+        None,
         IndexMap::new(),
         false,
     );
@@ -42,7 +42,7 @@ fn test_invalid_permission_handling() {
 
     let project = BakeProject::from(
         &PathBuf::from(config_path("/invalid/permission")),
-        Some("default"),
+        None,
         IndexMap::new(),
         false,
     );
@@ -73,7 +73,7 @@ variables:
     fs::write(&config_path, config_content).unwrap();
 
     // Test that version validation works
-    let result = BakeProject::from(temp_dir.path(), Some("default"), IndexMap::new(), false);
+    let result = BakeProject::from(temp_dir.path(), None, IndexMap::new(), false);
     assert!(result.is_ok());
 
     let project = result.unwrap();
@@ -99,7 +99,7 @@ variables:
     let mut override_vars = IndexMap::new();
     override_vars.insert("custom_var".to_string(), "overridden_value".to_string());
 
-    let result = BakeProject::from(temp_dir.path(), Some("default"), override_vars, false);
+    let result = BakeProject::from(temp_dir.path(), None, override_vars, false);
     assert!(result.is_ok());
 
     let project = result.unwrap();
@@ -167,7 +167,7 @@ recipes:
     )
     .unwrap();
 
-    let result = BakeProject::from(temp_dir.path(), Some("default"), IndexMap::new(), false);
+    let result = BakeProject::from(temp_dir.path(), None, IndexMap::new(), false);
     assert!(result.is_ok());
 
     let project = result.unwrap();
@@ -192,7 +192,7 @@ recipes:
 fn test_invalid_project_configurations(path: &str) {
     let result = BakeProject::from(
         &PathBuf::from(config_path(path)),
-        Some("default"),
+        None,
         IndexMap::new(),
         false,
     );
@@ -230,7 +230,7 @@ content: |
 "#;
     std::fs::write(templates_dir.join("test-template.yml"), template_config).unwrap();
 
-    let result = BakeProject::from(temp_dir.path(), Some("default"), IndexMap::new(), false);
+    let result = BakeProject::from(temp_dir.path(), None, IndexMap::new(), false);
     assert!(result.is_ok());
 
     let project = result.unwrap();

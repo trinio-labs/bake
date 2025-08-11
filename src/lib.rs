@@ -111,6 +111,10 @@ pub struct Args {
     /// Skip using and saving to cache
     #[arg(long)]
     pub skip_cache: bool,
+
+    /// Environment for variable overrides (e.g., dev, prod, test)
+    #[arg(long)]
+    pub env: Option<String>,
 }
 
 pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -128,6 +132,7 @@ pub fn parse_variables(vars: &[(String, String)]) -> IndexMap<String, String> {
 pub async fn load_project_with_feedback(
     bake_path: &std::path::Path,
     variables: IndexMap<String, String>,
+    environment: Option<&str>,
     verbose: Option<bool>,
     jobs: Option<usize>,
     fail_fast: bool,
@@ -140,7 +145,7 @@ pub async fn load_project_with_feedback(
         term.write_line(&loading_message)?;
     }
 
-    let mut project = match BakeProject::from(bake_path, Some("default"), variables, cli_verbose) {
+    let mut project = match BakeProject::from(bake_path, environment, variables, cli_verbose) {
         Ok(p) => p,
         Err(e) => {
             if !cli_verbose {
@@ -226,7 +231,7 @@ pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
     let project =
-        load_project_with_feedback(&bake_path, variables, args.verbose, None, false).await?;
+        load_project_with_feedback(&bake_path, variables, args.env.as_deref(), args.verbose, None, false).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -283,7 +288,7 @@ pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
     let project =
-        load_project_with_feedback(&bake_path, variables, args.verbose, None, false).await?;
+        load_project_with_feedback(&bake_path, variables, args.env.as_deref(), args.verbose, None, false).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -339,7 +344,7 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
     let project =
-        load_project_with_feedback(&bake_path, variables, args.verbose, None, false).await?;
+        load_project_with_feedback(&bake_path, variables, args.env.as_deref(), args.verbose, None, false).await?;
 
     // Get the execution plan to determine which recipes to show
     let recipe_filter = args.recipe.as_deref();
@@ -439,7 +444,7 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
                     RenderedCookbook {
                         name: cookbook.name.clone(),
                         environment: cookbook.environment.clone(),
-                        variables: cookbook.variables.clone(),
+                        variables: cookbook.processed_variables.clone(),
                         recipes: filtered_recipes,
                     },
                 ))
@@ -462,7 +467,7 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     let project_info = ProjectInfo {
         name: project.name.clone(),
         description: project.description.clone(),
-        variables: project.variables.clone(),
+        variables: project.processed_variables.clone(),
         environment: project.environment.clone(),
     };
 
@@ -521,6 +526,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let project = load_project_with_feedback(
         &bake_path,
         variables,
+        args.env.as_deref(),
         args.verbose,
         args.jobs,
         args.fail_fast,
@@ -782,6 +788,7 @@ name: test_project
             validate_templates: false,
             render: false,
             skip_cache: false,
+            env: None,
         };
 
         // This should succeed and print "No templates found"
@@ -817,6 +824,7 @@ name: test_project
             validate_templates: true,
             render: false,
             skip_cache: false,
+            env: None,
         };
 
         // This should succeed and print "No templates found"
@@ -852,6 +860,7 @@ name: test_project
             validate_templates: false,
             render: false,
             skip_cache: false,
+            env: None,
         };
 
         // This should succeed but print "No recipes to bake"
@@ -879,6 +888,7 @@ name: test_project
             validate_templates: false,
             render: false,
             skip_cache: false,
+            env: None,
         };
 
         // Test that Args implements Debug (this will compile if it does)
