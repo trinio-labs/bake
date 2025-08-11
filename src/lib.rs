@@ -59,9 +59,9 @@ pub struct Args {
     #[arg(short, long)]
     pub clean: bool,
 
-    /// Verbose mode (-v, -vv, -vvv, etc.)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    pub verbose: u8,
+    /// Verbose mode
+    #[arg(short, long)]
+    pub verbose: Option<bool>,
 
     /// Variables to override (key=value).
     /// Variables specified here override those defined at recipe, cookbook, or project level.
@@ -128,21 +128,22 @@ pub fn parse_variables(vars: &[(String, String)]) -> IndexMap<String, String> {
 pub async fn load_project_with_feedback(
     bake_path: &std::path::Path,
     variables: IndexMap<String, String>,
-    verbose: bool,
+    verbose: Option<bool>,
     jobs: Option<usize>,
     fail_fast: bool,
 ) -> anyhow::Result<Arc<BakeProject>> {
     let term = Term::stderr();
     let loading_message = format!("Loading project from {}...", bake_path.display());
 
-    if !verbose {
+    let cli_verbose = verbose.unwrap_or(false);
+    if !cli_verbose {
         term.write_line(&loading_message)?;
     }
 
-    let mut project = match BakeProject::from(bake_path, Some("default"), variables, verbose) {
+    let mut project = match BakeProject::from(bake_path, Some("default"), variables, cli_verbose) {
         Ok(p) => p,
         Err(e) => {
-            if !verbose {
+            if !cli_verbose {
                 term.clear_line()?;
                 term.move_cursor_up(1)?;
                 term.clear_line()?;
@@ -156,9 +157,12 @@ pub async fn load_project_with_feedback(
         project.config.max_parallel = jobs;
     }
     project.config.fast_fail = fail_fast;
-    project.config.verbose = verbose;
 
-    if !verbose {
+    if let Some(verbose) = verbose {
+        project.config.verbose = verbose;
+    }
+
+    if !cli_verbose {
         term.clear_line()?;
         term.move_cursor_up(1)?;
         term.clear_line()?;
@@ -222,7 +226,7 @@ pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
     let project =
-        load_project_with_feedback(&bake_path, variables, args.verbose > 0, None, false).await?;
+        load_project_with_feedback(&bake_path, variables, args.verbose, None, false).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -279,7 +283,7 @@ pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
     let project =
-        load_project_with_feedback(&bake_path, variables, args.verbose > 0, None, false).await?;
+        load_project_with_feedback(&bake_path, variables, args.verbose, None, false).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -335,7 +339,7 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
     let project =
-        load_project_with_feedback(&bake_path, variables, args.verbose > 0, None, false).await?;
+        load_project_with_feedback(&bake_path, variables, args.verbose, None, false).await?;
 
     // Get the execution plan to determine which recipes to show
     let recipe_filter = args.recipe.as_deref();
@@ -517,7 +521,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let project = load_project_with_feedback(
         &bake_path,
         variables,
-        args.verbose > 0,
+        args.verbose,
         args.jobs,
         args.fail_fast,
     )
@@ -765,7 +769,7 @@ name: test_project
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
             clean: false,
-            verbose: 0,
+            verbose: None,
             vars: vec![],
             regex: false,
             dry_run: false,
@@ -800,7 +804,7 @@ name: test_project
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
             clean: false,
-            verbose: 0,
+            verbose: None,
             vars: vec![],
             regex: false,
             dry_run: false,
@@ -835,7 +839,7 @@ name: test_project
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
             clean: false,
-            verbose: 0,
+            verbose: None,
             vars: vec![],
             regex: false,
             dry_run: false,
@@ -862,7 +866,7 @@ name: test_project
             path: Some("/test/path".to_string()),
             show_plan: false,
             clean: false,
-            verbose: 1,
+            verbose: Some(true),
             vars: vec![("key".to_string(), "value".to_string())],
             regex: false,
             dry_run: false,

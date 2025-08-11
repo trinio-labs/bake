@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.13.2
+
+### Fixed
+
+- **Verbose mode precedence** - Fixed verbose mode configuration priority
+  - CLI verbose flag now properly overrides project config verbose setting
+  - Changed verbose field from `u8` to `Option<bool>` for cleaner semantics
+  - When CLI verbose flag is not specified, project config verbose setting is used
+  - When CLI verbose flag is specified, it overrides project config setting
+
 ## v0.13.1
 
 ### Fixed
