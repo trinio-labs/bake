@@ -165,66 +165,73 @@ impl BakeProject {
         }
     }
 
-    /// Parses the configuration string, validates the project, and sets the root path.
-    fn parse_and_validate_project(file_path: &Path, config_str: &str) -> anyhow::Result<Self> {
-        match serde_yaml::from_str::<Self>(config_str) {
+    /// Parses the configuration string with template rendering, validates the project, and sets the root path.
+    /// Returns the parsed project and the processed variables.
+    fn parse_and_validate_project(
+        file_path: &Path,
+        config_str: &str,
+        environment: Option<&str>,
+        override_variables: &IndexMap<String, String>,
+    ) -> anyhow::Result<(Self, IndexMap<String, serde_yaml::Value>)> {
+        // Determine project root from file path for template processing
+        let project_root = file_path
+            .parent()
+            .expect("Config file must have a parent directory.")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                file_path
+                    .parent()
+                    .expect("Config file must have a parent directory.")
+                    .to_path_buf()
+            });
+
+        // Create base context with project constants for template processing
+        let project_constants = json!({
+            "root": project_root.display().to_string()
+        });
+        let constants = IndexMap::from([("project".to_owned(), project_constants)]);
+
+        let base_context = VariableContext::builder()
+            .overrides(override_variables.clone())
+            .constants(constants)
+            .build();
+
+        // Extract project variable blocks from raw YAML
+        let (vars_block, overrides_block) = extract_variables_blocks(config_str);
+
+        // Process project variables with base context
+        let processed_variables = process_variable_blocks(
+            vars_block.as_deref(),
+            overrides_block.as_deref(),
+            &base_context,
+            environment,
+        )?;
+
+        // Build complete context with processed variables for rendering entire config
+        let mut complete_context = base_context;
+        complete_context.variables.extend(processed_variables.clone());
+
+        // Render entire project YAML with complete context
+        let rendered_yaml = complete_context.render_raw_template(config_str)?;
+
+        // Parse rendered YAML into project struct
+        match serde_yaml::from_str::<Self>(&rendered_yaml) {
             Ok(mut parsed) => {
                 if let Err(err) = parsed.validate() {
                     bail!("Project Load: Configuration file '{}' validation failed: {}", file_path.display(), err);
                 }
-                parsed.root_path = file_path
-                    .parent()
-                    .expect("Config file must have a parent directory.")
-                    .canonicalize()
-                    .unwrap_or_else(|_| {
-                        file_path
-                            .parent()
-                            .expect("Config file must have a parent directory.")
-                            .to_path_buf()
-                    });
-                Ok(parsed)
+                parsed.root_path = project_root;
+                Ok((parsed, processed_variables))
             }
             Err(err) => bail!(
-                "Project Load: Failed to parse configuration file '{}': {}. Check YAML syntax and project structure.",
+                "Project Load: Failed to parse rendered project YAML at '{}': {}. Check YAML syntax and template variable usage. Rendered content: '{}'",
                 file_path.display(),
-                err
+                err,
+                rendered_yaml
             ),
         }
     }
 
-    /// Initializes project-level variables and returns the base project context.
-    fn initialize_project_variables(
-        &mut self,
-        config_str: &str,
-        environment: Option<&str>,
-        override_variables: &IndexMap<String, String>,
-    ) -> anyhow::Result<VariableContext> {
-        // Extract variables and overrides blocks from raw YAML
-        let (vars_block, overrides_block) = extract_variables_blocks(config_str);
-
-        // Build base context with project constants
-        let context = VariableContext::builder()
-            .environment(self.environment.clone())
-            .overrides(override_variables.clone())
-            .constants(self.generate_project_constants())
-            .build();
-
-        // Process variable blocks with template rendering
-        self.processed_variables = process_variable_blocks(
-            vars_block.as_deref(),
-            overrides_block.as_deref(),
-            &context,
-            environment,
-        )?;
-
-        // Return context with processed variables for downstream operations
-        Ok(VariableContext::builder()
-            .environment(self.environment.clone())
-            .variables(self.processed_variables.clone())
-            .overrides(override_variables.clone())
-            .constants(self.generate_project_constants())
-            .build())
-    }
 
     /// Generates builtin constants for the project context
     fn generate_project_constants(&self) -> IndexMap<String, JsonValue> {
@@ -504,15 +511,22 @@ impl BakeProject {
         // Find and load the configuration file content.
         let (file_path, config_str) = Self::find_and_load_config_str(path)?;
 
-        // Parse the configuration string, validate, and set the root path.
-        let mut project = Self::parse_and_validate_project(&file_path, &config_str)?;
+        // Parse the configuration string with template rendering, validate, and set the root path.
+        let (mut project, processed_variables) = Self::parse_and_validate_project(&file_path, &config_str, environment, &override_variables)?;
+        
+        // Set processed variables in project
+        project.processed_variables = processed_variables;
 
         // Validate bake version compatibility
         project.validate_min_version(force_version_override)?;
 
-        // Initialize project-level variables and get the base context.
-        let project_context =
-            project.initialize_project_variables(&config_str, environment, &override_variables)?;
+        // Build project context with processed variables for downstream operations.
+        let project_context = VariableContext::builder()
+            .environment(project.environment.clone())
+            .variables(project.processed_variables.clone())
+            .overrides(override_variables.clone())
+            .constants(project.generate_project_constants())
+            .build();
 
         // Load cookbooks for the project.
         project.load_project_cookbooks(environment, &project_context)?;
@@ -1135,5 +1149,53 @@ mod tests {
     ) -> anyhow::Result<Vec<Vec<super::Recipe>>> {
         let project = get_test_project();
         project.get_recipes_for_execution(Some(pattern), true)
+    }
+
+    #[test]
+    fn test_project_file_template_rendering() {
+        std::env::set_var("TEST_BAKE_VAR", "test");
+        
+        // Test with default environment (should be "dev")
+        let project = super::BakeProject::from(
+            &PathBuf::from(config_path("/valid")),
+            Some("default"),
+            IndexMap::new(),
+            false,
+        ).unwrap();
+        
+        // Check that the S3 bucket template variable was resolved correctly
+        // With "dev" environment, {{var.envName}} should resolve to "dev"
+        assert_eq!(
+            project.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            "trinio-bake-cache-dev"
+        );
+        
+        // Test with "test" environment
+        let project_test = super::BakeProject::from(
+            &PathBuf::from(config_path("/valid")),
+            Some("test"),
+            IndexMap::new(),
+            false,
+        ).unwrap();
+        
+        // With "test" environment, {{var.envName}} should resolve to "test"
+        assert_eq!(
+            project_test.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            "trinio-bake-cache-test"
+        );
+        
+        // Test with "prod" environment  
+        let project_prod = super::BakeProject::from(
+            &PathBuf::from(config_path("/valid")),
+            Some("prod"),
+            IndexMap::new(),
+            false,
+        ).unwrap();
+        
+        // With "prod" environment, {{var.envName}} should resolve to "prod" 
+        assert_eq!(
+            project_prod.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            "trinio-bake-cache-prod"
+        );
     }
 }

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## v0.14.0
+
+### Added
+
+- **Project file template rendering** - Project files (`bake.yml`) now support full template processing
+  - Variables like `{{var.name}}`, `{{env.VAR}}`, and `{{project.root}}` work in project configuration
+  - Environment-specific overrides function correctly in project config
+  - S3 bucket names, cache paths, and other config values can now use template variables
+  - Consistent behavior with cookbook template rendering
+  - Example: `bucket: my-cache-{{var.env}}-{{var.region}}` resolves correctly
+
+- **Parallel execution info in verbose output** - Verbose mode now shows parallelism configuration
+  - Displays `🔧 Parallel Execution: X threads (system: Y, configured: Z)` at start of execution
+  - Shows actual threads used vs system capacity vs configured value
+  - Helps with debugging performance and resource usage
+  - Only appears when verbose mode is enabled in project config
+
 ## v0.13.2
 
 ### Fixed

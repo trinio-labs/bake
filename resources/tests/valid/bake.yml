@@ -4,22 +4,25 @@ environment:
 
 variables:
   bake_project_var: bar
+  envName: dev
 
 overrides:
   test:
     bake_project_var: bar
+    envName: test
   dev:
     bake_project_var: dev_bar
   prod:
     bake_project_var: prod_bar
+    envName: prod
 
 config:
   verbose: true
   cache:
     local:
       enabled: true
-    # remotes:
-    # s3:
-    #   bucket: trinio-bake-cache
-    # gcs:
-    # bucket: trinio-bake-cache
+    remotes:
+      s3:
+        bucket: trinio-bake-cache-{{var.envName}}
+      # gcs:
+      #   bucket: trinio-bake-cache

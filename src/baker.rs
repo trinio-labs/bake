@@ -49,6 +49,18 @@ pub async fn bake(
         execution_plan::display_full_execution_plan(&execution_plan)?;
     }
 
+    // Display parallel execution settings in verbose mode
+    if project.config.verbose {
+        let available_parallelism = std::thread::available_parallelism().unwrap().get();
+        let max_parallel = project.config.max_parallel;
+        println!(
+            "🔧 Parallel Execution: {} threads (system: {}, configured: {})",
+            max_parallel,
+            available_parallelism,
+            max_parallel
+        );
+    }
+
     let arc_cache = Arc::new(cache);
     let multi_progress = Arc::new(MultiProgress::new());
     let execution_results: Arc<Mutex<BTreeMap<String, RunStatus>>> =
