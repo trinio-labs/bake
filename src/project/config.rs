@@ -102,13 +102,13 @@ fn validate_order(value: &[String]) -> Result<(), ValidationError> {
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ToolConfig {
-    #[serde(default = "max_parallel_default")]
+    #[serde(default = "max_parallel_default", rename = "maxParallel")]
     pub max_parallel: usize,
 
-    #[serde(default = "reserved_threads_default")]
+    #[serde(default = "reserved_threads_default", rename = "reservedThreads")]
     pub reserved_threads: usize,
 
-    #[serde(default)]
+    #[serde(default, rename = "fastFail")]
     pub fast_fail: bool,
 
     #[serde(default)]
@@ -118,7 +118,7 @@ pub struct ToolConfig {
     #[validate(nested)]
     pub cache: CacheConfig,
 
-    #[serde(default)]
+    #[serde(default, rename = "cleanEnvironment")]
     pub clean_environment: bool,
 
     #[serde(default)]
@@ -310,10 +310,10 @@ prerelease: true
     #[test]
     fn test_tool_config_deserialization() {
         let yaml = r#"
-max_parallel: 4
-reserved_threads: 2
+maxParallel: 4
+reservedThreads: 2
 verbose: true
-fast_fail: false
+fastFail: false
 minVersion: "1.0.0"
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
@@ -327,9 +327,9 @@ minVersion: "1.0.0"
     #[test]
     fn test_complex_tool_config_deserialization() {
         let yaml = r#"
-max_parallel: 8
+maxParallel: 8
 verbose: true
-fast_fail: false
+fastFail: false
 minVersion: "2.1.0"
 cache:
   local:
@@ -408,7 +408,7 @@ cache:
     fn test_reserved_threads_zero() {
         // Test CI scenario where all threads should be used
         let yaml = r#"
-reserved_threads: 0
+reservedThreads: 0
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.reserved_threads, 0);
@@ -433,7 +433,7 @@ reserved_threads: 0
 
         // Test when both max_parallel and reserved_threads are explicitly set
         let yaml = format!(
-            "max_parallel: {}\nreserved_threads: 2",
+            "maxParallel: {}\nreservedThreads: 2",
             available.saturating_sub(2)
         );
         let config: ToolConfig = serde_yaml::from_str(&yaml).unwrap();
@@ -452,14 +452,14 @@ reserved_threads: 0
 
         // Test with reserved_threads = 0 (CI scenario)
         let yaml = r#"
-reserved_threads: 0
+reservedThreads: 0
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.effective_max_parallel(), available);
 
         // Test with reserved_threads = 2
         let yaml = r#"
-reserved_threads: 2
+reservedThreads: 2
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.effective_max_parallel(), available.saturating_sub(2));

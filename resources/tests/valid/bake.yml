@@ -20,7 +20,7 @@ overrides:
 config:
   verbose: true
   {{#if (eq env.CI_BUILD "true")}}
-  reserved_threads: 0
+  reservedThreads: 0
   {{/if}}
   cache:
     local:

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v0.16.0
+
+### Changed
+
+- **BREAKING: Configuration field naming** - Changed serialization field names from snake_case to camelCase for consistency
+  - `max_parallel` → `maxParallel`
+  - `reserved_threads` → `reservedThreads`
+  - `fast_fail` → `fastFail`
+  - `clean_environment` → `cleanEnvironment`
+  - This change affects project configuration files (`bake.yml`) and may require updating existing configurations
+  - Updated all tests to use the new camelCase field names
+  - This aligns with common JSON/YAML conventions and improves consistency across the configuration schema
+
 ## v0.15.0
 
 ### Fixed
