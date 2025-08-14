@@ -22,7 +22,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::template::{extract_variables_blocks, process_variable_blocks, VariableContext};
+use crate::template::{extract_environment_block, extract_variables_blocks, process_variable_blocks, VariableContext};
 use serde_json::{json, Value as JsonValue};
 
 use self::config::ToolConfig;
@@ -191,7 +191,11 @@ impl BakeProject {
         });
         let constants = IndexMap::from([("project".to_owned(), project_constants)]);
 
+        // Extract project environment variables from raw YAML
+        let project_environment = extract_environment_block(config_str);
+
         let base_context = VariableContext::builder()
+            .environment(project_environment)
             .overrides(override_variables.clone())
             .constants(constants)
             .build();
@@ -209,7 +213,9 @@ impl BakeProject {
 
         // Build complete context with processed variables for rendering entire config
         let mut complete_context = base_context;
-        complete_context.variables.extend(processed_variables.clone());
+        complete_context
+            .variables
+            .extend(processed_variables.clone());
 
         // Render entire project YAML with complete context
         let rendered_yaml = complete_context.render_raw_template(config_str)?;
@@ -231,7 +237,6 @@ impl BakeProject {
             ),
         }
     }
-
 
     /// Generates builtin constants for the project context
     fn generate_project_constants(&self) -> IndexMap<String, JsonValue> {
@@ -338,14 +343,23 @@ impl BakeProject {
                 };
 
                 // Instantiate the template into a new recipe
-                let instantiated_recipe = template.instantiate(
-                    recipe_name.clone(),
-                    cookbook.name.clone(),
-                    cookbook.config_path.clone(),
-                    self.root_path.clone(),
-                    &recipe.parameters,
-                    &cookbook_context,
-                ).map_err(|e| anyhow::anyhow!("{} (used by recipe '{}:{}')", e, cookbook.name, recipe_name))?;
+                let instantiated_recipe = template
+                    .instantiate(
+                        recipe_name.clone(),
+                        cookbook.name.clone(),
+                        cookbook.config_path.clone(),
+                        self.root_path.clone(),
+                        &recipe.parameters,
+                        &cookbook_context,
+                    )
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "{} (used by recipe '{}:{}')",
+                            e,
+                            cookbook.name,
+                            recipe_name
+                        )
+                    })?;
 
                 // Apply environment-resolved variables to the instantiated recipe
                 let mut final_recipe = instantiated_recipe;
@@ -512,8 +526,13 @@ impl BakeProject {
         let (file_path, config_str) = Self::find_and_load_config_str(path)?;
 
         // Parse the configuration string with template rendering, validate, and set the root path.
-        let (mut project, processed_variables) = Self::parse_and_validate_project(&file_path, &config_str, environment, &override_variables)?;
-        
+        let (mut project, processed_variables) = Self::parse_and_validate_project(
+            &file_path,
+            &config_str,
+            environment,
+            &override_variables,
+        )?;
+
         // Set processed variables in project
         project.processed_variables = processed_variables;
 
@@ -928,12 +947,7 @@ mod tests {
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
         std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(
-            &PathBuf::from(path_str),
-            None,
-            IndexMap::new(),
-            false,
-        )
+        super::BakeProject::from(&PathBuf::from(path_str), None, IndexMap::new(), false)
     }
 
     #[test]
@@ -1154,47 +1168,77 @@ mod tests {
     #[test]
     fn test_project_file_template_rendering() {
         std::env::set_var("TEST_BAKE_VAR", "test");
-        
+
         // Test with default environment (should be "dev")
         let project = super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
             Some("default"),
             IndexMap::new(),
             false,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Check that the S3 bucket template variable was resolved correctly
         // With "dev" environment, {{var.envName}} should resolve to "dev"
         assert_eq!(
-            project.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            project
+                .config
+                .cache
+                .remotes
+                .as_ref()
+                .unwrap()
+                .s3
+                .as_ref()
+                .unwrap()
+                .bucket,
             "trinio-bake-cache-dev"
         );
-        
+
         // Test with "test" environment
         let project_test = super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
             Some("test"),
             IndexMap::new(),
             false,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // With "test" environment, {{var.envName}} should resolve to "test"
         assert_eq!(
-            project_test.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            project_test
+                .config
+                .cache
+                .remotes
+                .as_ref()
+                .unwrap()
+                .s3
+                .as_ref()
+                .unwrap()
+                .bucket,
             "trinio-bake-cache-test"
         );
-        
-        // Test with "prod" environment  
+
+        // Test with "prod" environment
         let project_prod = super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
             Some("prod"),
             IndexMap::new(),
             false,
-        ).unwrap();
-        
-        // With "prod" environment, {{var.envName}} should resolve to "prod" 
+        )
+        .unwrap();
+
+        // With "prod" environment, {{var.envName}} should resolve to "prod"
         assert_eq!(
-            project_prod.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            project_prod
+                .config
+                .cache
+                .remotes
+                .as_ref()
+                .unwrap()
+                .s3
+                .as_ref()
+                .unwrap()
+                .bucket,
             "trinio-bake-cache-prod"
         );
     }
@@ -1202,46 +1246,63 @@ mod tests {
     #[test]
     fn test_environment_overrides() {
         std::env::set_var("TEST_BAKE_VAR", "test");
-        
+
         // Test with "test" environment - should have envName: test and bake_project_var: bar
         let project_test = super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
             Some("test"),
             IndexMap::new(),
             false,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Check that project variables were overridden correctly
         assert_eq!(
             project_test.processed_variables.get("envName").unwrap(),
             &serde_yaml::Value::String("test".to_string())
         );
         assert_eq!(
-            project_test.processed_variables.get("bake_project_var").unwrap(),
+            project_test
+                .processed_variables
+                .get("bake_project_var")
+                .unwrap(),
             &serde_yaml::Value::String("bar".to_string())
         );
-        
+
         // Test with "prod" environment - should have envName: prod and bake_project_var: prod_bar
         let project_prod = super::BakeProject::from(
             &PathBuf::from(config_path("/valid")),
             Some("prod"),
             IndexMap::new(),
             false,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Check that project variables were overridden correctly
         assert_eq!(
             project_prod.processed_variables.get("envName").unwrap(),
             &serde_yaml::Value::String("prod".to_string())
         );
         assert_eq!(
-            project_prod.processed_variables.get("bake_project_var").unwrap(),
+            project_prod
+                .processed_variables
+                .get("bake_project_var")
+                .unwrap(),
             &serde_yaml::Value::String("prod_bar".to_string())
         );
-        
+
         // Test that both template rendering and environment overrides work together
         assert_eq!(
-            project_prod.config.cache.remotes.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            project_prod
+                .config
+                .cache
+                .remotes
+                .as_ref()
+                .unwrap()
+                .s3
+                .as_ref()
+                .unwrap()
+                .bucket,
             "trinio-bake-cache-prod"
         );
     }

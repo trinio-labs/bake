@@ -230,8 +230,15 @@ pub async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
 pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project =
-        load_project_with_feedback(&bake_path, variables, args.env.as_deref(), args.verbose, None, false).await?;
+    let project = load_project_with_feedback(
+        &bake_path,
+        variables,
+        args.env.as_deref(),
+        args.verbose,
+        None,
+        false,
+    )
+    .await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -287,8 +294,15 @@ pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
 pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project =
-        load_project_with_feedback(&bake_path, variables, args.env.as_deref(), args.verbose, None, false).await?;
+    let project = load_project_with_feedback(
+        &bake_path,
+        variables,
+        args.env.as_deref(),
+        args.verbose,
+        None,
+        false,
+    )
+    .await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -343,8 +357,15 @@ pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
 pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project =
-        load_project_with_feedback(&bake_path, variables, args.env.as_deref(), args.verbose, None, false).await?;
+    let project = load_project_with_feedback(
+        &bake_path,
+        variables,
+        args.env.as_deref(),
+        args.verbose,
+        None,
+        false,
+    )
+    .await?;
 
     // Get the execution plan to determine which recipes to show
     let recipe_filter = args.recipe.as_deref();

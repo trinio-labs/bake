@@ -1,6 +1,7 @@
 name: test
 environment:
   - TEST_BAKE_VAR
+  - CI_BUILD
 
 variables:
   bake_project_var: bar
@@ -18,6 +19,9 @@ overrides:
 
 config:
   verbose: true
+  {{#if (eq env.CI_BUILD "true")}}
+  reserved_threads: 0
+  {{/if}}
   cache:
     local:
       enabled: true

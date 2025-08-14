@@ -105,6 +105,9 @@ pub struct ToolConfig {
     #[serde(default = "max_parallel_default")]
     pub max_parallel: usize,
 
+    #[serde(default = "reserved_threads_default")]
+    pub reserved_threads: usize,
+
     #[serde(default)]
     pub fast_fail: bool,
 
@@ -127,10 +130,20 @@ pub struct ToolConfig {
     pub min_version: Option<String>,
 }
 
+impl ToolConfig {
+    /// Calculate effective max_parallel based on reserved_threads.
+    /// This should be used at runtime to get the actual parallelism considering reserved threads.
+    pub fn effective_max_parallel(&self) -> usize {
+        let available = std::thread::available_parallelism().unwrap().get();
+        available.saturating_sub(self.reserved_threads)
+    }
+}
+
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
             max_parallel: max_parallel_default(),
+            reserved_threads: reserved_threads_default(),
             fast_fail: true,
             verbose: false,
             cache: CacheConfig::default(),
@@ -146,7 +159,12 @@ fn bool_true_default() -> bool {
 }
 
 fn max_parallel_default() -> usize {
-    std::thread::available_parallelism().unwrap().get() - 1
+    let available = std::thread::available_parallelism().unwrap().get();
+    available.saturating_sub(reserved_threads_default())
+}
+
+fn reserved_threads_default() -> usize {
+    1
 }
 
 fn update_check_interval_default() -> u64 {
@@ -279,6 +297,7 @@ prerelease: true
     fn test_tool_config_default() {
         let config = ToolConfig::default();
         assert!(config.max_parallel > 0); // Should be calculated from available parallelism
+        assert_eq!(config.reserved_threads, 1); // Default reserved threads
         assert!(!config.verbose);
         assert!(config.fast_fail);
         assert!(config.min_version.is_none());
@@ -292,12 +311,14 @@ prerelease: true
     fn test_tool_config_deserialization() {
         let yaml = r#"
 max_parallel: 4
+reserved_threads: 2
 verbose: true
 fast_fail: false
 minVersion: "1.0.0"
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.max_parallel, 4);
+        assert_eq!(config.reserved_threads, 2);
         assert!(config.verbose);
         assert!(!config.fast_fail);
         assert_eq!(config.min_version, Some("1.0.0".to_string()));
@@ -381,5 +402,73 @@ cache:
 
         // This should pass because all strategies are valid
         assert!(validation_result.is_ok());
+    }
+
+    #[test]
+    fn test_reserved_threads_zero() {
+        // Test CI scenario where all threads should be used
+        let yaml = r#"
+reserved_threads: 0
+"#;
+        let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.reserved_threads, 0);
+
+        // When only reserved_threads is specified, max_parallel uses the default
+        // which is calculated with reserved_threads_default() = 1
+        let expected_max = std::thread::available_parallelism()
+            .unwrap()
+            .get()
+            .saturating_sub(1);
+        assert_eq!(config.max_parallel, expected_max);
+    }
+
+    #[test]
+    fn test_reserved_threads_calculation() {
+        // Test that max_parallel calculation respects reserved_threads when both are specified
+        let available = std::thread::available_parallelism().unwrap().get();
+
+        // Test with default reserved threads (1)
+        let default_config = ToolConfig::default();
+        assert_eq!(default_config.max_parallel, available.saturating_sub(1));
+
+        // Test when both max_parallel and reserved_threads are explicitly set
+        let yaml = format!(
+            "max_parallel: {}\nreserved_threads: 2",
+            available.saturating_sub(2)
+        );
+        let config: ToolConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.max_parallel, available.saturating_sub(2));
+        assert_eq!(config.reserved_threads, 2);
+    }
+
+    #[test]
+    fn test_reserved_threads_default_function() {
+        assert_eq!(reserved_threads_default(), 1);
+    }
+
+    #[test]
+    fn test_effective_max_parallel() {
+        let available = std::thread::available_parallelism().unwrap().get();
+
+        // Test with reserved_threads = 0 (CI scenario)
+        let yaml = r#"
+reserved_threads: 0
+"#;
+        let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.effective_max_parallel(), available);
+
+        // Test with reserved_threads = 2
+        let yaml = r#"
+reserved_threads: 2
+"#;
+        let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.effective_max_parallel(), available.saturating_sub(2));
+
+        // Test default behavior
+        let default_config = ToolConfig::default();
+        assert_eq!(
+            default_config.effective_max_parallel(),
+            available.saturating_sub(1)
+        );
     }
 }

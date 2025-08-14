@@ -37,7 +37,13 @@
           "type": "integer",
           "description": "Maximum number of recipes to run in parallel",
           "minimum": 1,
-          "default": "Available CPU cores - 1"
+          "default": "Available CPU cores - reserved threads"
+        },
+        "reservedThreads": {
+          "type": "integer",
+          "description": "Number of threads to reserve (not use for parallel execution). Set to 0 in CI environments to use all available threads.",
+          "minimum": 0,
+          "default": 1
         },
         "fastFail": {
           "type": "boolean",

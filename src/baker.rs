@@ -52,12 +52,13 @@ pub async fn bake(
     // Display parallel execution settings in verbose mode
     if project.config.verbose {
         let available_parallelism = std::thread::available_parallelism().unwrap().get();
-        let max_parallel = project.config.max_parallel;
+        let effective_max_parallel = project.config.effective_max_parallel();
         println!(
-            "🔧 Parallel Execution: {} threads (system: {}, configured: {})",
-            max_parallel,
+            "🔧 Parallel Execution: {} threads (system: {}, reserved: {}, effective: {})",
+            effective_max_parallel,
             available_parallelism,
-            max_parallel
+            project.config.reserved_threads,
+            effective_max_parallel
         );
     }
 
@@ -80,7 +81,7 @@ pub async fn bake(
         );
 
         let mut level_join_set = JoinSet::new();
-        let semaphore = Arc::new(Semaphore::new(project.config.max_parallel));
+        let semaphore = Arc::new(Semaphore::new(project.config.effective_max_parallel()));
 
         for recipe_to_run in level_recipes {
             let arc_project_clone = project.clone();

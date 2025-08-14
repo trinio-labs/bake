@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v0.15.0
+
+### Fixed
+
+- **Environment variable loading in project configuration** - Fixed issue where environment variables weren't loaded into the template context during project configuration parsing
+  - Project configurations can now properly use `{{env.VARIABLE}}` templates in all sections, including config blocks
+  - Added `extract_environment_block()` function to extract environment variables from raw YAML before template processing
+  - Environment variables are now available during project template rendering, consistent with cookbook behavior
+  - Fixes issues with CI/CD configurations that depend on environment variables like `CI_BUILD`
+  - Example: `{{#if (eq env.CI_BUILD "true")}}reserved_threads: 0{{/if}}` now works correctly in project config
+
 ## v0.14.1
 
 ### Fixed

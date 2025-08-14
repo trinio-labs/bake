@@ -83,6 +83,19 @@ pub fn extract_variables_blocks(content: &str) -> (Option<String>, Option<String
     (variables_block, overrides_block)
 }
 
+/// Extracts the environment block from YAML content
+pub fn extract_environment_block(content: &str) -> Vec<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let (_, environment_content) = extract_yaml_block(lines, "environment");
+
+    if environment_content.trim().is_empty() {
+        return vec![];
+    }
+
+    // Parse the environment block as YAML array
+    serde_yaml::from_str::<Vec<String>>(&environment_content).unwrap_or_default()
+}
+
 /// Renders variable blocks with hierarchical context, then parses as YAML and resolves overrides
 pub fn process_variable_blocks(
     variables_block: Option<&str>,
