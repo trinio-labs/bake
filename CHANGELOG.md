@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.16.1
+
+### Fixed
+
+- **reservedThreads configuration**: Fixed bugs in `reservedThreads` configuration handling
+  - `effective_max_parallel()` now correctly respects both `maxParallel` and `reservedThreads` settings
+  - Setting `reservedThreads: 0` now properly allows usage of all available system threads (common in CI environments)
+  - Fixed `maxParallel` default calculation to not pre-subtract reserved threads, allowing proper thread allocation
+  - Updated comprehensive tests to ensure correct behavior with various configuration combinations
+
 ## v0.16.0
 
 ### Changed

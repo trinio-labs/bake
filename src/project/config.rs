@@ -131,11 +131,14 @@ pub struct ToolConfig {
 }
 
 impl ToolConfig {
-    /// Calculate effective max_parallel based on reserved_threads.
+    /// Calculate effective max_parallel based on both max_parallel and reserved_threads.
     /// This should be used at runtime to get the actual parallelism considering reserved threads.
     pub fn effective_max_parallel(&self) -> usize {
         let available = std::thread::available_parallelism().unwrap().get();
-        available.saturating_sub(self.reserved_threads)
+        let available_minus_reserved = available.saturating_sub(self.reserved_threads);
+
+        // Take the minimum of user-configured max_parallel and available threads minus reserved
+        std::cmp::min(self.max_parallel, available_minus_reserved)
     }
 }
 
@@ -159,8 +162,7 @@ fn bool_true_default() -> bool {
 }
 
 fn max_parallel_default() -> usize {
-    let available = std::thread::available_parallelism().unwrap().get();
-    available.saturating_sub(reserved_threads_default())
+    std::thread::available_parallelism().unwrap().get()
 }
 
 fn reserved_threads_default() -> usize {
@@ -413,23 +415,23 @@ reservedThreads: 0
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.reserved_threads, 0);
 
-        // When only reserved_threads is specified, max_parallel uses the default
-        // which is calculated with reserved_threads_default() = 1
-        let expected_max = std::thread::available_parallelism()
-            .unwrap()
-            .get()
-            .saturating_sub(1);
+        // When only reserved_threads is specified, max_parallel uses the default (available threads)
+        let expected_max = std::thread::available_parallelism().unwrap().get();
         assert_eq!(config.max_parallel, expected_max);
+        
+        // With reservedThreads: 0, effective should be all available threads
+        assert_eq!(config.effective_max_parallel(), expected_max);
     }
 
     #[test]
     fn test_reserved_threads_calculation() {
-        // Test that max_parallel calculation respects reserved_threads when both are specified
+        // Test that effective max_parallel calculation respects reserved_threads
         let available = std::thread::available_parallelism().unwrap().get();
 
-        // Test with default reserved threads (1)
+        // Test with default reserved threads (1) - max_parallel defaults to available, effective is available-1
         let default_config = ToolConfig::default();
-        assert_eq!(default_config.max_parallel, available.saturating_sub(1));
+        assert_eq!(default_config.max_parallel, available);
+        assert_eq!(default_config.effective_max_parallel(), available.saturating_sub(1));
 
         // Test when both max_parallel and reserved_threads are explicitly set
         let yaml = format!(
@@ -450,25 +452,48 @@ reservedThreads: 0
     fn test_effective_max_parallel() {
         let available = std::thread::available_parallelism().unwrap().get();
 
-        // Test with reserved_threads = 0 (CI scenario)
+        // Test with reserved_threads = 0 (CI scenario) - should equal available threads
         let yaml = r#"
 reservedThreads: 0
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
+        // When reservedThreads is 0, we should get all available threads
         assert_eq!(config.effective_max_parallel(), available);
 
-        // Test with reserved_threads = 2
+        // Test with reserved_threads = 2 - should take min of max_parallel and (available - 2)
         let yaml = r#"
 reservedThreads: 2
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.effective_max_parallel(), available.saturating_sub(2));
+        let expected = std::cmp::min(config.max_parallel, available.saturating_sub(2));
+        assert_eq!(config.effective_max_parallel(), expected);
 
-        // Test default behavior
+        // Test default behavior - should take min of default max_parallel and (available - 1)
         let default_config = ToolConfig::default();
-        assert_eq!(
-            default_config.effective_max_parallel(),
-            available.saturating_sub(1)
+        let expected = std::cmp::min(default_config.max_parallel, available.saturating_sub(1));
+        assert_eq!(default_config.effective_max_parallel(), expected);
+
+        // Test with both maxParallel and reservedThreads explicitly set
+        let yaml = r#"
+maxParallel: 2
+reservedThreads: 1
+"#;
+        let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.max_parallel, 2);
+        assert_eq!(config.reserved_threads, 1);
+        // Should use maxParallel=2 since it's lower than (available-1)
+        assert_eq!(config.effective_max_parallel(), 2);
+
+        // Test where reserved_threads limits more than maxParallel
+        let yaml = format!(
+            "maxParallel: {}\nreservedThreads: {}",
+            available, // Set max_parallel to available
+            2          // Reserve 2 threads
         );
+        let config: ToolConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.max_parallel, available);
+        assert_eq!(config.reserved_threads, 2);
+        // Should use (available-2) since it's lower than maxParallel
+        assert_eq!(config.effective_max_parallel(), available.saturating_sub(2));
     }
 }
