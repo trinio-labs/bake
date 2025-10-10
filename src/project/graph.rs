@@ -16,7 +16,7 @@ use crate::project::Cookbook;
 /// and dependencies as directed edges. It provides functionalities to populate the graph
 /// from cookbook definitions, validate dependencies, detect circular dependencies,
 /// and query for transitive dependencies of a given recipe.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RecipeDependencyGraph {
     /// The petgraph `Graph` instance where nodes are recipe FQNs (String) and edges represent dependencies.
     pub graph: Graph<String, ()>,

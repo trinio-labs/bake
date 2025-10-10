@@ -1,11 +1,10 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::anyhow;
 use async_trait::async_trait;
 use log::debug;
 
 use crate::{
-    cache::{CacheResultData, ARCHIVE_EXTENSION},
+    cache::{cache_file_name, CacheResultData},
     project::BakeProject,
 };
 
@@ -19,8 +18,8 @@ pub struct LocalCacheStrategy {
 #[async_trait]
 impl CacheStrategy for LocalCacheStrategy {
     async fn get(&self, key: &str) -> CacheResult {
-        let file_name = format!("{}.{}", key.to_owned(), ARCHIVE_EXTENSION);
-        let archive_path = self.path.join(file_name.clone());
+        let file_name = cache_file_name(key);
+        let archive_path = self.path.join(&file_name);
         debug!("Checking local cache for key {}", archive_path.display());
         if tokio::fs::try_exists(&archive_path).await.unwrap_or(false)
             && tokio::fs::metadata(&archive_path)
@@ -34,19 +33,12 @@ impl CacheStrategy for LocalCacheStrategy {
         CacheResult::Miss
     }
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
-        let file_name = format!("{}.{}", key.to_owned(), ARCHIVE_EXTENSION);
+        let file_name = cache_file_name(key);
         // Create cache dir if it doesn't exist
         if !tokio::fs::try_exists(&self.path).await.unwrap_or(false) {
-            match tokio::fs::create_dir_all(&self.path).await {
-                Ok(_) => (),
-                Err(err) => {
-                    return Err(anyhow!(
-                        "Failed to create cache dir {}: {}",
-                        self.path.display(),
-                        err
-                    ))
-                }
-            }
+            tokio::fs::create_dir_all(&self.path)
+                .await
+                .map_err(|e| super::cache_dir_error(&self.path, e))?;
         }
 
         // Check if cache folder with that key already exists
@@ -57,15 +49,10 @@ impl CacheStrategy for LocalCacheStrategy {
         }
 
         // Copy archive to cache folder
-        if let Err(err) = tokio::fs::copy(archive_path, cache_path.clone()).await {
-            Err(anyhow!(
-                "Failed to copy archive to cache folder {}: {}",
-                cache_path.display(),
-                err
-            ))
-        } else {
-            Ok(())
-        }
+        tokio::fs::copy(archive_path, cache_path.clone())
+            .await
+            .map_err(|e| super::cache_file_error("PUT", &cache_path, e))?;
+        Ok(())
     }
 
     async fn from_config(project: Arc<BakeProject>) -> anyhow::Result<Box<dyn CacheStrategy>> {
@@ -86,55 +73,8 @@ impl CacheStrategy for LocalCacheStrategy {
 mod tests {
     use super::*;
     use crate::project::config::{CacheConfig, LocalCacheConfig, ToolConfig};
-    use crate::project::graph::RecipeDependencyGraph; // Assuming this path and Default impl
-    use indexmap::IndexMap;
-    use std::collections::BTreeMap;
-    use tempfile::tempdir; // Ensure 'tempfile' is in [dev-dependencies] in Cargo.toml
-    use tokio::fs::File;
-    use tokio::io::AsyncWriteExt;
-
-    // Helper function to create a BakeProject with a specific ToolConfig
-    fn create_test_project_with_tool_config(tool_config: ToolConfig) -> Arc<BakeProject> {
-        let temp_dir = tempdir().unwrap();
-        let project_root_path = temp_dir.path().to_path_buf();
-
-        Arc::new(BakeProject {
-            name: "test_project".to_string(),
-            cookbooks: BTreeMap::new(),
-            recipe_dependency_graph: RecipeDependencyGraph::default(), // Assumes Default trait is implemented
-            description: Some("A test project".to_string()),
-            variables: IndexMap::new(),
-            overrides: BTreeMap::new(),
-            processed_variables: IndexMap::new(),
-            environment: Vec::new(),
-            config: tool_config,
-            root_path: project_root_path,
-            template_registry: BTreeMap::new(),
-        })
-    }
-
-    // Helper function to create a BakeProject with default configuration for testing
-    fn create_default_test_project() -> Arc<BakeProject> {
-        let tool_config = ToolConfig {
-            cache: CacheConfig {
-                local: LocalCacheConfig {
-                    enabled: true,
-                    path: None, // Default path
-                },
-                remotes: None,
-                order: vec!["local".to_string()],
-            },
-            ..ToolConfig::default() // For other fields like max_parallel, fast_fail etc.
-        };
-        create_test_project_with_tool_config(tool_config)
-    }
-
-    // Helper function to create a dummy file
-    async fn create_dummy_file(path: &PathBuf) -> anyhow::Result<()> {
-        let mut file = File::create(path).await?;
-        file.write_all(b"test data").await?;
-        Ok(())
-    }
+    use crate::test_utils::{create_default_test_project, create_dummy_file, create_test_project_with_config};
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_from_config_default_path() {
@@ -176,7 +116,7 @@ mod tests {
             },
             ..ToolConfig::default()
         };
-        let project = create_test_project_with_tool_config(tool_config);
+        let project = create_test_project_with_config(tool_config);
 
         let cache_strategy_result = LocalCacheStrategy::from_config(project.clone()).await;
         assert!(cache_strategy_result.is_ok());
@@ -209,7 +149,7 @@ mod tests {
 
         // Test put
         strategy.put(key, dummy_content_path.clone()).await.unwrap();
-        let expected_cache_file_path = strategy.path.join(format!("{key}.{ARCHIVE_EXTENSION}"));
+        let expected_cache_file_path = strategy.path.join(crate::cache::cache_file_name(key));
         assert!(expected_cache_file_path.is_file());
 
         // Test get hit
@@ -246,7 +186,7 @@ mod tests {
 
         strategy.put(key, dummy_content_path.clone()).await.unwrap();
         assert!(cache_dir_path.is_dir()); // Check if the directory was created
-        let expected_cache_file_path = strategy.path.join(format!("{key}.{ARCHIVE_EXTENSION}"));
+        let expected_cache_file_path = strategy.path.join(crate::cache::cache_file_name(key));
         assert!(expected_cache_file_path.is_file());
     }
 
@@ -263,7 +203,7 @@ mod tests {
 
         // First put
         strategy.put(key, dummy_content_path.clone()).await.unwrap();
-        let expected_cache_file_path = strategy.path.join(format!("{key}.{ARCHIVE_EXTENSION}"));
+        let expected_cache_file_path = strategy.path.join(crate::cache::cache_file_name(key));
         assert!(expected_cache_file_path.is_file());
 
         // Second put (should not error)

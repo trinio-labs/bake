@@ -2,6 +2,7 @@ pub mod config;
 pub mod cookbook;
 pub mod graph;
 pub mod hashing;
+pub mod helper;
 pub mod recipe;
 pub mod recipe_template;
 
@@ -9,6 +10,7 @@ use anyhow::bail;
 
 use self::graph::RecipeDependencyGraph;
 pub use cookbook::*;
+pub use helper::{Helper, HelperParameter, HelperReturnType};
 use indexmap::IndexMap;
 pub use recipe::*;
 pub use recipe_template::*;
@@ -22,7 +24,9 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::template::{extract_environment_block, extract_variables_blocks, process_variable_blocks, VariableContext};
+use crate::template::{
+    extract_environment_block, extract_variables_blocks, process_variable_blocks, VariableContext,
+};
 use serde_json::{json, Value as JsonValue};
 
 use self::config::ToolConfig;
@@ -32,7 +36,7 @@ use self::config::ToolConfig;
 ///
 /// A `BakeProject` is the central structure for managing and executing build tasks.
 /// It is typically deserialized from a `bake.yml` or `bake.yaml` file.
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Clone, Deserialize, Validate)]
 #[allow(dead_code)]
 pub struct BakeProject {
     /// The name of the project.
@@ -58,6 +62,10 @@ pub struct BakeProject {
     /// Registry of all available recipe templates, keyed by template name.
     #[serde(skip)]
     pub template_registry: BTreeMap<String, RecipeTemplate>,
+
+    /// Registry of all available custom helpers, keyed by helper name.
+    #[serde(skip)]
+    pub helper_registry: BTreeMap<String, Helper>,
 
     /// An optional description of the project.
     pub description: Option<String>,
@@ -246,13 +254,83 @@ impl BakeProject {
         IndexMap::from([("project".to_owned(), project_constants)])
     }
 
-    /// Loads cookbooks for the project using the provided context.
-    fn load_project_cookbooks(
+    /// Builds a variable context for template rendering with project variables and overrides
+    pub fn build_variable_context(
+        &self,
+        override_variables: &IndexMap<String, String>,
+    ) -> VariableContext {
+        VariableContext::builder()
+            .environment(self.environment.clone())
+            .variables(self.processed_variables.clone())
+            .overrides(override_variables.clone())
+            .constants(self.generate_project_constants())
+            .helpers(self.helper_registry.values().cloned().collect())
+            .build()
+    }
+
+    /// Ensures a specific cookbook is fully loaded with Handlebars rendering.
+    /// If the cookbook is already fully loaded, this is a no-op.
+    ///
+    /// # Arguments
+    /// * `cookbook_name` - Name of the cookbook to fully load
+    /// * `environment` - Environment name for variable loading
+    /// * `context` - Variable context for template rendering
+    fn ensure_cookbook_fully_loaded(
         &mut self,
+        cookbook_name: &str,
         environment: Option<&str>,
         context: &VariableContext,
     ) -> anyhow::Result<()> {
-        self.cookbooks = Cookbook::map_from(&self.root_path, environment, context)?;
+        // Check if cookbook is already fully loaded
+        if let Some(cookbook) = self.cookbooks.get(cookbook_name) {
+            if cookbook.fully_loaded {
+                return Ok(()); // Already fully loaded
+            }
+        }
+
+        // Get the path from minimal cookbook
+        let config_path = self
+            .cookbooks
+            .get(cookbook_name)
+            .ok_or_else(|| anyhow::anyhow!("Cookbook '{}' not found in project", cookbook_name))?
+            .config_path
+            .clone();
+
+        // Fully load with Handlebars
+        let fully_loaded = Cookbook::from(&config_path, &self.root_path, environment, context)?;
+
+        // Replace minimal cookbook with fully loaded one
+        self.cookbooks
+            .insert(cookbook_name.to_string(), fully_loaded);
+
+        Ok(())
+    }
+
+    /// Loads all cookbooks needed for the execution plan.
+    /// Determines which cookbooks contain recipes in the execution plan
+    /// and fully loads them with Handlebars rendering.
+    ///
+    /// # Arguments
+    /// * `recipe_fqns` - Set of recipe FQNs that will be executed
+    /// * `environment` - Environment name for variable loading
+    /// * `context` - Variable context for template rendering
+    fn load_cookbooks_for_execution(
+        &mut self,
+        recipe_fqns: &HashSet<String>,
+        environment: Option<&str>,
+        context: &VariableContext,
+    ) -> anyhow::Result<()> {
+        // Extract unique cookbook names from recipe FQNs
+        let cookbook_names: HashSet<String> = recipe_fqns
+            .iter()
+            .filter_map(|fqn| fqn.split_once(':').map(|(cb, _)| cb.to_string()))
+            .collect();
+
+        // Fully load each cookbook
+        for cookbook_name in cookbook_names {
+            self.ensure_cookbook_fully_loaded(&cookbook_name, environment, context)?;
+        }
+
         Ok(())
     }
 
@@ -305,10 +383,63 @@ impl BakeProject {
         Ok(())
     }
 
+    /// Loads custom helpers for the project.
+    fn load_project_helpers(&mut self) -> anyhow::Result<()> {
+        use ignore::WalkBuilder;
+
+        let helpers_path = self.get_project_helpers_path();
+
+        // If helpers directory doesn't exist, that's fine - just return empty registry
+        if !helpers_path.exists() {
+            self.helper_registry = BTreeMap::new();
+            return Ok(());
+        }
+
+        let all_files = WalkBuilder::new(&helpers_path)
+            .add_custom_ignore_filename(".bakeignore")
+            .build();
+
+        self.helper_registry = all_files
+            .filter_map(|entry_result| match entry_result {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if !entry.file_type().unwrap().is_file() {
+                        return None;
+                    }
+
+                    let filename = match path.file_name().and_then(|name| name.to_str()) {
+                        Some(name) => name,
+                        None => return None,
+                    };
+
+                    // Look for .yml or .yaml helper files
+                    if filename.ends_with(".yml") || filename.ends_with(".yaml") {
+                        match Helper::from_file(&path.to_path_buf()) {
+                            Ok(helper) => Some(Ok((helper.name.clone(), helper))),
+                            Err(err) => Some(Err(err)),
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(err) => {
+                    log::debug!("Ignored helper file: {err}");
+                    None
+                }
+            })
+            .collect::<anyhow::Result<BTreeMap<String, Helper>>>()?;
+
+        Ok(())
+    }
+
     /// Resolves template-based recipes in all cookbooks using the provided context.
     fn resolve_template_recipes(&mut self, context: &VariableContext) -> anyhow::Result<()> {
         // Process each cookbook
         for cookbook in self.cookbooks.values_mut() {
+            // Skip cookbooks that aren't fully loaded
+            if !cookbook.fully_loaded {
+                continue;
+            }
             // Create cookbook-specific context (already has project constants)
             let mut cookbook_context = context.clone();
 
@@ -317,6 +448,11 @@ impl BakeProject {
                 Cookbook::generate_cookbook_constants(&cookbook.config_path)
             {
                 cookbook_context.constants.extend(cookbook_constants);
+            }
+
+            // Set working directory to cookbook directory for helper execution
+            if let Some(cookbook_dir) = cookbook.config_path.parent() {
+                cookbook_context.working_directory = Some(cookbook_dir.to_path_buf());
             }
 
             // Process each recipe in the cookbook
@@ -421,6 +557,11 @@ impl BakeProject {
     /// Validates that all recipes have a run command defined.
     fn validate_recipes(&self) -> anyhow::Result<()> {
         for (cookbook_name, cookbook) in &self.cookbooks {
+            // Skip validation for cookbooks that aren't fully loaded
+            if !cookbook.fully_loaded {
+                continue;
+            }
+
             for (recipe_name, recipe) in &cookbook.recipes {
                 if recipe.run.trim().is_empty() {
                     bail!(
@@ -539,27 +680,18 @@ impl BakeProject {
         // Validate bake version compatibility
         project.validate_min_version(force_version_override)?;
 
-        // Build project context with processed variables for downstream operations.
-        let project_context = VariableContext::builder()
-            .environment(project.environment.clone())
-            .variables(project.processed_variables.clone())
-            .overrides(override_variables.clone())
-            .constants(project.generate_project_constants())
-            .build();
-
-        // Load cookbooks for the project.
-        project.load_project_cookbooks(environment, &project_context)?;
-
         // Load recipe templates for the project.
         project.load_project_templates()?;
 
-        // Resolve template-based recipes in cookbooks.
-        project.resolve_template_recipes(&project_context)?;
+        // Load custom helpers for the project.
+        project.load_project_helpers()?;
 
-        // Validate that all recipes have run commands.
-        project.validate_recipes()?;
+        // CHANGE: Load cookbooks minimally (no Handlebars rendering).
+        // This only parses YAML and extracts names, dependencies, and tags.
+        // Full loading with template rendering happens later when we know which recipes to execute.
+        project.cookbooks = Cookbook::map_from_minimal(&project.root_path)?;
 
-        // Populate the recipe dependency graph.
+        // Populate the recipe dependency graph from minimal cookbook data.
         project.populate_dependency_graph()?;
 
         Ok(project)
@@ -679,11 +811,15 @@ impl BakeProject {
     /// If no recipes match the pattern or if the project has no recipes, an empty
     /// vector `Vec::new()` is returned successfully.
     pub fn get_recipes_for_execution(
-        &self,
+        &mut self,
         pattern: Option<&str>,
         use_regex: bool,
+        tags: &[String],
+        environment: Option<&str>,
+        context: &VariableContext,
     ) -> anyhow::Result<Vec<Vec<Recipe>>> {
-        let initial_target_fqns: HashSet<String> = if let Some(p_str) = pattern {
+        // First apply pattern filter (uses minimal cookbook data)
+        let pattern_filtered_fqns: HashSet<String> = if let Some(p_str) = pattern {
             self.filter_recipes_by_pattern(p_str, use_regex)?
         } else {
             // If no pattern is provided, all recipes in the project are initial targets.
@@ -694,9 +830,12 @@ impl BakeProject {
                 .collect()
         };
 
-        if initial_target_fqns.is_empty() && pattern.is_some() {
-            // Only return early if a pattern was given and it yielded no matches.
-            // If no pattern was given and initial_target_fqns is empty, it means an empty project,
+        // Then apply tags filter (uses minimal cookbook data)
+        let initial_target_fqns = self.filter_recipes_by_tags(&pattern_filtered_fqns, tags)?;
+
+        if initial_target_fqns.is_empty() && (pattern.is_some() || !tags.is_empty()) {
+            // Only return early if a filter was applied and it yielded no matches.
+            // If no filter was given and initial_target_fqns is empty, it means an empty project,
             // which get_execution_plan_for_initial_targets will handle by returning Ok(Vec::new()).
             return Ok(Vec::new());
         }
@@ -713,6 +852,15 @@ impl BakeProject {
         if fqn_levels.is_empty() {
             return Ok(Vec::new());
         }
+
+        // Fully load all cookbooks needed for execution with Handlebars rendering
+        let all_execution_fqns: HashSet<String> = fqn_levels.iter().flatten().cloned().collect();
+
+        self.load_cookbooks_for_execution(&all_execution_fqns, environment, context)?;
+
+        // Now validate recipes and resolve templates (only for loaded cookbooks)
+        self.resolve_template_recipes(context)?;
+        self.validate_recipes()?;
 
         let mut result_levels: Vec<Vec<Recipe>> = Vec::new();
 
@@ -767,6 +915,11 @@ impl BakeProject {
     /// Returns the path to the project's templates directory (`.bake/templates`).
     pub fn get_project_templates_path(&self) -> PathBuf {
         self.get_project_bake_path().join("templates")
+    }
+
+    /// Returns the path to the project's helpers directory (`.bake/helpers`).
+    pub fn get_project_helpers_path(&self) -> PathBuf {
+        self.get_project_bake_path().join("helpers")
     }
 
     /// Returns the path to the project's main Bake directory (`.bake`).
@@ -883,11 +1036,59 @@ impl BakeProject {
 
         Ok(matching_fqns)
     }
+
+    /// Filters recipes based on tags (OR logic - matches ANY tag).
+    ///
+    /// # Arguments
+    ///
+    /// * `recipe_fqns` - The set of recipe FQNs to filter
+    /// * `tags` - The tags to filter by (case-insensitive)
+    ///
+    /// # Returns
+    ///
+    /// A `Result<HashSet<String>, anyhow::Error>` containing the FQNs of matching recipes.
+    /// Returns all recipes if tags is empty (no filtering).
+    fn filter_recipes_by_tags(
+        &self,
+        recipe_fqns: &HashSet<String>,
+        tags: &[String],
+    ) -> anyhow::Result<HashSet<String>> {
+        // If no tags specified, return all recipes (no filtering)
+        if tags.is_empty() {
+            return Ok(recipe_fqns.clone());
+        }
+
+        // Normalize tags to lowercase for case-insensitive matching
+        let normalized_tags: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+
+        let mut matching_fqns = HashSet::new();
+
+        for fqn in recipe_fqns {
+            if let Some(recipe) = self.get_recipe_by_fqn(fqn) {
+                // Check if recipe has any of the specified tags (OR logic)
+                let recipe_tags_normalized: Vec<String> =
+                    recipe.tags.iter().map(|t| t.to_lowercase()).collect();
+
+                if recipe_tags_normalized
+                    .iter()
+                    .any(|tag| normalized_tags.contains(tag))
+                {
+                    matching_fqns.insert(fqn.clone());
+                }
+            }
+        }
+
+        Ok(matching_fqns)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, os::unix::prelude::PermissionsExt, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, HashSet},
+        os::unix::prelude::PermissionsExt,
+        path::PathBuf,
+    };
 
     use indexmap::IndexMap;
     use test_case::test_case;
@@ -899,15 +1100,20 @@ mod tests {
     }
 
     fn validate_project(project_result: anyhow::Result<super::BakeProject>) {
-        let project = project_result.unwrap();
+        let mut project = project_result.unwrap();
         assert_eq!(project.name, "test");
         assert_eq!(
             project.processed_variables.get("bake_project_var"),
             Some(&serde_yaml::Value::String("bar".to_string()))
         );
 
+        // Build context for full loading
+        let context = project.build_variable_context(&IndexMap::new());
+
         // Fetch all recipes and convert to a BTreeMap for easy lookup in tests
-        let all_recipes_staged = project.get_recipes_for_execution(None, false).unwrap();
+        let all_recipes_staged = project
+            .get_recipes_for_execution(None, false, &[], None, &context)
+            .unwrap();
         let recipes_map: BTreeMap<String, Recipe> = all_recipes_staged
             .into_iter()
             .flatten()
@@ -1122,9 +1328,10 @@ mod tests {
     #[test_case(":test"; "Valid recipe pattern")]
     #[test_case("foo:build"; "Valid specific pattern")]
     fn test_get_recipes_for_execution_with_patterns(pattern: &str) {
-        let project = get_test_project();
-        let result = project.get_recipes_for_execution(Some(pattern), true);
-        assert!(result.is_ok());
+        let mut project = get_test_project();
+        let context = project.build_variable_context(&IndexMap::new());
+        let result = project.get_recipes_for_execution(Some(pattern), true, &[], None, &context);
+        assert!(result.is_ok(), "Failed with error: {:?}", result.err());
         assert!(!result.unwrap().is_empty());
     }
 
@@ -1132,8 +1339,9 @@ mod tests {
     #[test_case("foo:"; "Exact cookbook pattern")]
     #[test_case(":build"; "Exact recipe pattern")]
     fn test_get_recipes_for_execution_exact_matching(pattern: &str) {
-        let project = get_test_project();
-        let result = project.get_recipes_for_execution(Some(pattern), false);
+        let mut project = get_test_project();
+        let context = project.build_variable_context(&IndexMap::new());
+        let result = project.get_recipes_for_execution(Some(pattern), false, &[], None, &context);
         assert!(result.is_ok());
         assert!(!result.unwrap().is_empty());
     }
@@ -1141,8 +1349,9 @@ mod tests {
     #[test_case("foo_something:build"; "Similar cookbook name should not match")]
     #[test_case("foo:build_something"; "Similar recipe name should not match")]
     fn test_get_recipes_for_execution_exact_no_matches(pattern: &str) {
-        let project = get_test_project();
-        let result = project.get_recipes_for_execution(Some(pattern), false);
+        let mut project = get_test_project();
+        let context = project.build_variable_context(&IndexMap::new());
+        let result = project.get_recipes_for_execution(Some(pattern), false, &[], None, &context);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -1150,8 +1359,9 @@ mod tests {
     #[test_case("^f.*:build"; "Regex cookbook pattern")]
     #[test_case("foo:^build"; "Regex recipe pattern")]
     fn test_get_recipes_for_execution_regex_patterns(pattern: &str) {
-        let project = get_test_project();
-        let result = project.get_recipes_for_execution(Some(pattern), true);
+        let mut project = get_test_project();
+        let context = project.build_variable_context(&IndexMap::new());
+        let result = project.get_recipes_for_execution(Some(pattern), true, &[], None, &context);
         assert!(result.is_ok());
         assert!(!result.unwrap().is_empty());
     }
@@ -1161,8 +1371,9 @@ mod tests {
     fn test_get_recipes_for_execution_errors(
         pattern: &str,
     ) -> anyhow::Result<Vec<Vec<super::Recipe>>> {
-        let project = get_test_project();
-        project.get_recipes_for_execution(Some(pattern), true)
+        let mut project = get_test_project();
+        let context = project.build_variable_context(&IndexMap::new());
+        project.get_recipes_for_execution(Some(pattern), true, &[], None, &context)
     }
 
     #[test]
@@ -1305,5 +1516,37 @@ mod tests {
                 .bucket,
             "trinio-bake-cache-prod"
         );
+    }
+
+    #[test]
+    fn test_filter_recipes_by_tags_empty_tags() {
+        // Empty tags should return all recipes (no filtering)
+        let project = get_test_project();
+        let all_fqns: HashSet<String> = project
+            .recipe_dependency_graph
+            .fqn_to_node_index
+            .keys()
+            .cloned()
+            .collect();
+
+        let result = project.filter_recipes_by_tags(&all_fqns, &[]).unwrap();
+        assert_eq!(result.len(), all_fqns.len());
+    }
+
+    #[test]
+    fn test_filter_recipes_by_tags_no_matches() {
+        // Tags that don't match any recipe should return empty set
+        let project = get_test_project();
+        let all_fqns: HashSet<String> = project
+            .recipe_dependency_graph
+            .fqn_to_node_index
+            .keys()
+            .cloned()
+            .collect();
+
+        let result = project
+            .filter_recipes_by_tags(&all_fqns, &["nonexistent".to_string()])
+            .unwrap();
+        assert_eq!(result.len(), 0);
     }
 }

@@ -36,6 +36,23 @@
           "type": "string",
           "description": "Description of the recipe when instantiated (supports template variables)"
         },
+        "tags": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            {
+              "type": "string",
+              "description": "Template variable reference like {{ params.tags }}"
+            }
+          ],
+          "description": "Tags for filtering this recipe (supports template variables)"
+        },
         "run": {
           "type": "string",
           "description": "The shell command(s) to execute (supports template variables)"
@@ -281,6 +298,7 @@
       },
       "template": {
         "description": "Build {{ params.language }} application",
+        "tags": ["build", "{{ params.language }}"],
         "cache": {
           "inputs": "{{ params.cache_inputs }}",
           "outputs": ["dist/**/*", "build/**/*"]
@@ -305,6 +323,7 @@
       },
       "template": {
         "description": "Run tests with {{ params.test_command }}",
+        "tags": ["test"],
         "dependencies": ["build"],
         "run": "echo 'Running tests...'; {{#if params.coverage}}echo 'Coverage enabled';{{/if}} {{ params.test_command }}"
       }

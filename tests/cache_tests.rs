@@ -1,58 +1,9 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-
 use bake::cache::{builder::CacheBuilder, local::LocalCacheStrategy, CacheStrategy};
-use bake::project::{
-    config::{CacheConfig, LocalCacheConfig, ToolConfig},
-    graph::RecipeDependencyGraph,
-    BakeProject,
-};
-use indexmap::IndexMap;
+use bake::project::config::{CacheConfig, LocalCacheConfig, ToolConfig};
 use tempfile::tempdir;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 
-// Helper function to create a BakeProject with a specific ToolConfig
-fn create_test_project_with_tool_config(tool_config: ToolConfig) -> Arc<BakeProject> {
-    let temp_dir = tempdir().unwrap();
-    let project_root_path = temp_dir.path().to_path_buf();
-
-    Arc::new(BakeProject {
-        name: "test_project".to_string(),
-        cookbooks: BTreeMap::new(),
-        recipe_dependency_graph: RecipeDependencyGraph::default(),
-        description: Some("A test project".to_string()),
-        variables: IndexMap::new(),
-        overrides: BTreeMap::new(),
-        processed_variables: IndexMap::new(),
-        environment: Vec::new(),
-        config: tool_config,
-        root_path: project_root_path,
-        template_registry: BTreeMap::new(),
-    })
-}
-
-// Helper function to create a BakeProject with default configuration for testing
-fn create_default_test_project() -> Arc<BakeProject> {
-    let tool_config = ToolConfig {
-        cache: CacheConfig {
-            local: LocalCacheConfig {
-                enabled: true,
-                path: None, // Default path
-            },
-            remotes: None,
-            order: vec!["local".to_string()],
-        },
-        ..ToolConfig::default()
-    };
-    create_test_project_with_tool_config(tool_config)
-}
-
-// Helper function to create a dummy file
-async fn create_dummy_file(path: &PathBuf) -> anyhow::Result<()> {
-    let mut file = File::create(path).await?;
-    file.write_all(b"test data").await?;
-    Ok(())
-}
+mod common;
+use common::{create_default_test_project, create_dummy_file, create_test_project_with_config};
 
 #[tokio::test]
 async fn test_local_cache_from_config_default_path() {
@@ -77,7 +28,7 @@ async fn test_local_cache_from_config_custom_path() {
         },
         ..ToolConfig::default()
     };
-    let project = create_test_project_with_tool_config(tool_config);
+    let project = create_test_project_with_config(tool_config);
 
     let cache_strategy_result = LocalCacheStrategy::from_config(project.clone()).await;
     assert!(cache_strategy_result.is_ok());

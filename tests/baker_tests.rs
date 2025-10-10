@@ -83,11 +83,24 @@ fn create_test_project() -> BakeProject {
     project
 }
 
+// Helper to get execution plan with proper context
+fn get_execution_plan(
+    project: &mut BakeProject,
+    pattern: Option<&str>,
+    use_regex: bool,
+    tags: &[String],
+) -> anyhow::Result<Vec<Vec<bake::project::Recipe>>> {
+    use indexmap::IndexMap;
+    let context = project.build_variable_context(&IndexMap::new());
+    project.get_recipes_for_execution(pattern, use_regex, tags, None, &context)
+}
+
 #[tokio::test]
 async fn test_run_all_recipes() {
-    let project = Arc::new(create_test_project());
+    let mut project = create_test_project();
+    let execution_plan = get_execution_plan(&mut project, None, false, &[]).unwrap();
+    let project = Arc::new(project);
     let cache = build_cache(project.clone()).await;
-    let execution_plan = project.get_recipes_for_execution(None, false).unwrap();
     let result = baker::bake(project.clone(), cache, execution_plan, false).await;
     assert!(result.is_ok());
 }
@@ -96,11 +109,9 @@ async fn test_run_all_recipes() {
 async fn test_run_bar_recipes_only() {
     let mut project = create_test_project();
     project.config.verbose = true;
+    let execution_plan = get_execution_plan(&mut project, Some("bar:"), false, &[]).unwrap();
     let project = Arc::new(project);
     let cache = build_cache(project.clone()).await;
-    let execution_plan = project
-        .get_recipes_for_execution(Some("bar:"), false)
-        .unwrap();
     let result = baker::bake(project.clone(), cache, execution_plan, false).await;
     assert!(result.is_ok());
 }
@@ -135,9 +146,9 @@ async fn test_recipe_failure_handling() {
         .populate_from_cookbooks(&project.cookbooks)
         .expect("Failed to repopulate dependency graph");
 
+    let execution_plan = get_execution_plan(&mut project, None, false, &[]).unwrap();
     let project = Arc::new(project);
     let cache = build_cache(project.clone()).await;
-    let execution_plan = project.get_recipes_for_execution(None, false).unwrap();
     let result = baker::bake(project.clone(), cache, execution_plan, false).await;
 
     // Should fail due to bar:test failing
@@ -149,11 +160,10 @@ async fn test_recipe_failure_handling() {
 #[test_case(":build"; "recipe pattern")]
 #[tokio::test]
 async fn test_recipe_filtering(filter: &str) {
-    let project = Arc::new(create_test_project());
+    let mut project = create_test_project();
+    let execution_plan = get_execution_plan(&mut project, Some(filter), false, &[]).unwrap();
+    let project = Arc::new(project);
     let cache = build_cache(project.clone()).await;
-    let execution_plan = project
-        .get_recipes_for_execution(Some(filter), false)
-        .unwrap();
     let result = baker::bake(project.clone(), cache, execution_plan, false).await;
     assert!(result.is_ok());
 }
@@ -163,26 +173,205 @@ async fn test_verbose_mode() {
     let mut project = create_test_project();
     project.config.verbose = true;
 
+    let execution_plan = get_execution_plan(&mut project, None, false, &[]).unwrap();
     let project = Arc::new(project);
     let cache = build_cache(project.clone()).await;
-    let execution_plan = project.get_recipes_for_execution(None, false).unwrap();
     let result = baker::bake(project.clone(), cache, execution_plan, false).await;
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_with_dependencies() {
-    let project = common::TestProjectBuilder::new()
+    let mut project = common::TestProjectBuilder::new()
         .with_cookbook("app", &["install", "build", "test"])
         .with_dependency("app:build", "app:install")
         .with_dependency("app:test", "app:build")
         .build();
 
+    let execution_plan = get_execution_plan(&mut project, Some("app:test"), false, &[]).unwrap();
     let project = Arc::new(project);
     let cache = build_cache(project.clone()).await;
-    let execution_plan = project
-        .get_recipes_for_execution(Some("app:test"), false)
-        .unwrap();
     let result = baker::bake(project.clone(), cache, execution_plan, false).await;
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_tag_filtering_single_tag() {
+    use indexmap::IndexMap;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tests")
+        .join("valid");
+
+    let mut project = BakeProject::from(
+        &project_root,
+        Some("default"),
+        IndexMap::new(),
+        false,
+    )
+    .unwrap();
+
+    // Filter by "frontend" tag - should match tagged:deploy and tagged:frontend-build
+    let execution_plan = get_execution_plan(&mut project, None, false, &["frontend".to_string()])
+        .unwrap();
+
+    let all_recipes: Vec<String> = execution_plan
+        .iter()
+        .flatten()
+        .map(|r| r.full_name())
+        .collect();
+
+    // Should include frontend-tagged recipes and their dependencies
+    assert!(all_recipes.contains(&"tagged:deploy".to_string()));
+    assert!(all_recipes.contains(&"tagged:frontend-build".to_string()));
+    // Should include dependency even if not tagged
+    assert!(all_recipes.contains(&"tagged:build".to_string()));
+}
+
+#[tokio::test]
+async fn test_tag_filtering_multiple_tags_or_logic() {
+    use indexmap::IndexMap;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tests")
+        .join("valid");
+
+    let mut project = BakeProject::from(
+        &project_root,
+        Some("default"),
+        IndexMap::new(),
+        false,
+    )
+    .unwrap();
+
+    // Filter by "backend" OR "deploy" tags
+    let execution_plan = get_execution_plan(&mut project, None, false, &["backend".to_string(), "deploy".to_string()])
+        .unwrap();
+
+    let all_recipes: Vec<String> = execution_plan
+        .iter()
+        .flatten()
+        .map(|r| r.full_name())
+        .collect();
+
+    // Should include recipes with backend tag (inherited from cookbook)
+    assert!(all_recipes.contains(&"tagged:build".to_string()));
+    assert!(all_recipes.contains(&"tagged:test".to_string()));
+    // Should include recipes with deploy tag
+    assert!(all_recipes.contains(&"tagged:deploy".to_string()));
+}
+
+#[tokio::test]
+async fn test_tag_filtering_with_pattern() {
+    use indexmap::IndexMap;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tests")
+        .join("valid");
+
+    let mut project = BakeProject::from(
+        &project_root,
+        Some("default"),
+        IndexMap::new(),
+        false,
+    )
+    .unwrap();
+
+    // Filter by pattern AND tags
+    let execution_plan = get_execution_plan(&mut project, Some("tagged:"), false, &["frontend".to_string()])
+        .unwrap();
+
+    let all_recipes: Vec<String> = execution_plan
+        .iter()
+        .flatten()
+        .map(|r| r.full_name())
+        .collect();
+
+    // Should only include recipes from "tagged" cookbook with "frontend" tag
+    assert!(all_recipes.contains(&"tagged:deploy".to_string()));
+    assert!(all_recipes.contains(&"tagged:frontend-build".to_string()));
+    // Should NOT include recipes from other cookbooks
+    assert!(!all_recipes.iter().any(|r| r.starts_with("foo:")));
+}
+
+#[tokio::test]
+async fn test_tag_filtering_case_insensitive() {
+    use indexmap::IndexMap;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tests")
+        .join("valid");
+
+    let mut project = BakeProject::from(
+        &project_root,
+        Some("default"),
+        IndexMap::new(),
+        false,
+    )
+    .unwrap();
+
+    // Test case-insensitive matching with "FRONTEND" (uppercase)
+    let execution_plan = get_execution_plan(&mut project, None, false, &["FRONTEND".to_string()])
+        .unwrap();
+
+    let all_recipes: Vec<String> = execution_plan
+        .iter()
+        .flatten()
+        .map(|r| r.full_name())
+        .collect();
+
+    // Should match despite case difference
+    assert!(all_recipes.contains(&"tagged:deploy".to_string()));
+    assert!(all_recipes.contains(&"tagged:frontend-build".to_string()));
+}
+
+#[tokio::test]
+async fn test_tag_filtering_empty_tags_no_filtering() {
+    use indexmap::IndexMap;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tests")
+        .join("valid");
+
+    let mut project = BakeProject::from(
+        &project_root,
+        Some("default"),
+        IndexMap::new(),
+        false,
+    )
+    .unwrap();
+
+    // Empty tags should return all recipes
+    let execution_plan_all = get_execution_plan(&mut project, None, false, &[])
+        .unwrap();
+
+    let execution_plan_no_tags = get_execution_plan(&mut project, None, false, &[])
+        .unwrap();
+
+    // Both should be equal (no filtering)
+    assert_eq!(execution_plan_all.len(), execution_plan_no_tags.len());
+}
+
+#[tokio::test]
+async fn test_tag_filtering_no_matches() {
+    use indexmap::IndexMap;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tests")
+        .join("valid");
+
+    let mut project = BakeProject::from(
+        &project_root,
+        Some("default"),
+        IndexMap::new(),
+        false,
+    )
+    .unwrap();
+
+    // Filter by non-existent tag
+    let execution_plan = get_execution_plan(&mut project, None, false, &["nonexistent".to_string()])
+        .unwrap();
+
+    // Should be empty
+    assert!(execution_plan.is_empty());
 }

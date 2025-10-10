@@ -1,0 +1,15 @@
+name: list-files
+description: List files in a directory
+returns: array
+parameters:
+  dir:
+    type: string
+    required: false
+    default: "."
+    description: Directory to list files from
+run: |
+  files=$(ls {{params.dir}})
+  files+="
+  '**/*.rs'
+  "
+  printf "%s\n" ${files[@]}

@@ -7,8 +7,9 @@ Bake uses YAML configuration files to define projects, cookbooks, and recipes. T
 Bake uses three types of configuration files:
 
 - **`bake.yml`** - Project-level configuration in the project root
-- **`cookbook.yml`** - Cookbook configuration in each cookbook directory  
+- **`cookbook.yml`** - Cookbook configuration in each cookbook directory
 - **`.bake/templates/*.yml`** - Recipe templates for reusable patterns
+- **`.bake/helpers/*.yml`** - Custom Handlebars helpers for template functionality
 
 ## Project Configuration (`bake.yml`)
 
@@ -337,6 +338,56 @@ recipes:
 
 **See the [Recipe Templates Guide](recipe-templates.md) for complete documentation.**
 
+## Custom Helpers
+
+Extend template functionality with custom Handlebars helpers that can execute shell commands, transform strings, and process data.
+
+### Helper Definition
+
+Create helpers in the `.bake/helpers/` directory:
+
+```yaml
+# .bake/helpers/uppercase.yml
+name: uppercase
+description: Convert text to uppercase
+returns: string
+parameters:
+  text:
+    type: string
+    required: true
+    description: The text to convert
+run: |
+  echo "{{params.text}}" | tr '[:lower:]' '[:upper:]'
+```
+
+### Using Helpers in Recipes
+
+```yaml
+recipes:
+  build:
+    run: |
+      # Built-in shell helper
+      echo "Git branch: {{shell 'git rev-parse --abbrev-ref HEAD'}}"
+
+      # Custom helper
+      echo "{{uppercase text="hello world"}}"  # Outputs: HELLO WORLD
+
+      # Helper with arrays
+      {{#each (shell_lines 'ls *.txt')}}
+      process-file {{this}}
+      {{/each}}
+```
+
+### Helper Features
+
+- **Typed Parameters** - string, number, boolean, array, object
+- **Default Values** - Optional parameters with defaults
+- **Variables** - Helper-specific variables and environment access
+- **Return Types** - String or array output
+- **Caching** - Results cached based on rendered script
+
+**See the [Custom Helpers Guide](custom-helpers.md) for complete documentation.**
+
 ## Configuration Examples
 
 ### Simple Project
@@ -557,7 +608,8 @@ recipes:
 ## Related Documentation
 
 - [Variables Guide](variables.md) - Complete variable system documentation
-- [Caching Guide](caching.md) - Cache configuration and optimization  
+- [Caching Guide](caching.md) - Cache configuration and optimization
 - [Recipe Templates](recipe-templates.md) - Reusable recipe patterns
+- [Custom Helpers](custom-helpers.md) - Custom Handlebars helpers for templates
 - [CLI Commands](../reference/cli-commands.md) - Command-line options
 - [Configuration Schema](../reference/configuration-schema.md) - Complete schema reference

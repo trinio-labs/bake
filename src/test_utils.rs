@@ -1,9 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use indexmap::IndexMap;
 use tempfile::TempDir;
 
-use bake::project::{
+use crate::project::{
     config::{CacheConfig, LocalCacheConfig, ToolConfig},
     graph::RecipeDependencyGraph,
     BakeProject, Cookbook, Recipe, RecipeCacheConfig,
@@ -11,7 +11,6 @@ use bake::project::{
 use rand::distr::{Alphanumeric, SampleString};
 
 /// Helper function to create a BakeProject with a specific ToolConfig for testing
-#[allow(dead_code)]
 pub fn create_test_project_with_config(tool_config: ToolConfig) -> Arc<BakeProject> {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let project_root_path = temp_dir.path().to_path_buf();
@@ -36,7 +35,6 @@ pub fn create_test_project_with_config(tool_config: ToolConfig) -> Arc<BakeProje
 }
 
 /// Helper function to create a BakeProject with default configuration for testing
-#[allow(dead_code)]
 pub fn create_default_test_project() -> Arc<BakeProject> {
     let tool_config = ToolConfig {
         cache: CacheConfig {
@@ -195,8 +193,8 @@ impl Default for TestProjectBuilder {
 }
 
 /// Helper to create a dummy file for testing
-#[allow(dead_code)]
-pub async fn create_dummy_file(path: &std::path::PathBuf) -> anyhow::Result<()> {
+#[cfg(test)]
+pub async fn create_dummy_file(path: &PathBuf) -> anyhow::Result<()> {
     use tokio::fs::File;
     use tokio::io::AsyncWriteExt;
 

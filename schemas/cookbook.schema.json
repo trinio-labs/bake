@@ -25,6 +25,15 @@
         "type": "string"
       }
     },
+    "tags": {
+      "type": "array",
+      "description": "Tags for filtering recipes (e.g., 'frontend', 'backend', 'api'). Recipes without tags inherit these cookbook tags.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
     "recipes": {
       "type": "object",
       "description": "Collection of recipes in this cookbook",
@@ -60,6 +69,15 @@
         "description": {
           "type": "string",
           "description": "Human-readable description of what this recipe does"
+        },
+        "tags": {
+          "type": "array",
+          "description": "Tags for filtering this recipe (e.g., 'frontend', 'backend', 'api'). If not specified, inherits from cookbook tags.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
         },
         "run": {
           "type": "string",
@@ -133,6 +151,7 @@
         "PORT": "3000"
       },
       "environment": ["PATH", "NODE_ENV"],
+      "tags": ["frontend", "web"],
       "recipes": {
         "install": {
           "description": "Install npm dependencies",
@@ -144,6 +163,7 @@
         },
         "build": {
           "description": "Build the application",
+          "tags": ["build"],
           "run": "npm run build",
           "dependencies": ["install"],
           "variables": {

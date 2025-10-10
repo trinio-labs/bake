@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use validator::{Validate, ValidationError};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalCacheConfig {
     #[serde(default = "bool_true_default")]
     pub enabled: bool,
@@ -20,24 +20,24 @@ impl Default for LocalCacheConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteCacheConfig {
     pub s3: Option<S3CacheConfig>,
     pub gcs: Option<GcsCacheConfig>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct S3CacheConfig {
     pub bucket: String,
     pub region: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GcsCacheConfig {
     pub bucket: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, Validate)]
 pub struct CacheConfig {
     #[serde(default)]
     pub local: LocalCacheConfig,
@@ -61,7 +61,7 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateConfig {
     #[serde(default = "bool_true_default")]
     pub enabled: bool,
@@ -100,7 +100,7 @@ fn validate_order(value: &[String]) -> Result<(), ValidationError> {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, Validate)]
 pub struct ToolConfig {
     #[serde(default = "max_parallel_default", rename = "maxParallel")]
     pub max_parallel: usize,
@@ -418,7 +418,7 @@ reservedThreads: 0
         // When only reserved_threads is specified, max_parallel uses the default (available threads)
         let expected_max = std::thread::available_parallelism().unwrap().get();
         assert_eq!(config.max_parallel, expected_max);
-        
+
         // With reservedThreads: 0, effective should be all available threads
         assert_eq!(config.effective_max_parallel(), expected_max);
     }
@@ -431,7 +431,10 @@ reservedThreads: 0
         // Test with default reserved threads (1) - max_parallel defaults to available, effective is available-1
         let default_config = ToolConfig::default();
         assert_eq!(default_config.max_parallel, available);
-        assert_eq!(default_config.effective_max_parallel(), available.saturating_sub(1));
+        assert_eq!(
+            default_config.effective_max_parallel(),
+            available.saturating_sub(1)
+        );
 
         // Test when both max_parallel and reserved_threads are explicitly set
         let yaml = format!(

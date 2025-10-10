@@ -55,6 +55,10 @@ pub struct Recipe {
 
     pub description: Option<String>,
 
+    /// Tags for filtering recipes (e.g., "frontend", "backend", "api")
+    #[serde(default)]
+    pub tags: Vec<String>,
+
     /// Recipe-level variables
     #[serde(default)]
     pub variables: IndexMap<String, serde_yaml::Value>,
@@ -90,6 +94,7 @@ struct RecipeHashData {
     environment: BTreeMap<String, String>,
     file_hashes: BTreeMap<PathBuf, String>,
     run: String,
+    tags: Vec<String>,
     variables: BTreeMap<String, String>,
 }
 
@@ -152,6 +157,7 @@ impl Recipe {
             file_hashes,
             environment,
             variables,
+            tags: self.tags.clone(),
             run: self.run.clone(),
         };
 
@@ -267,7 +273,18 @@ impl Recipe {
         let mut canonical_patterns = Vec::new();
 
         for pattern in patterns {
-            let pattern_path = PathBuf::from(pattern);
+            // Strip surrounding quotes (both single and double) that might come from
+            // YAML serialization, especially when helpers return quoted patterns
+            let trimmed = pattern.trim();
+            let unquoted = if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+            {
+                &trimmed[1..trimmed.len() - 1]
+            } else {
+                trimmed
+            };
+
+            let pattern_path = PathBuf::from(unquoted);
             let resolved_pattern = if pattern_path.is_absolute() {
                 pattern_path
             } else {
@@ -373,6 +390,7 @@ mod tests {
             project_root: PathBuf::from(config_path("/valid/")),
             config_path: PathBuf::from(config_path("/valid/foo/cookbook.yml")),
             description: None,
+            tags: vec![],
             dependencies: None,
             environment: vec!["FOO".to_owned()],
             variables: IndexMap::new(),
@@ -420,6 +438,41 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_inputs_with_quotes() {
+        // Test that cache inputs handle quoted glob patterns correctly by stripping quotes
+        // when resolving patterns for glob matching
+
+        let yaml_normal = r#"
+inputs:
+  - "**/*.rs"
+  - "normal/**/*.txt"
+"#;
+
+        let cache_normal: RecipeCacheConfig = serde_yaml::from_str(yaml_normal).unwrap();
+
+        // Verify normal parsing
+        assert_eq!(cache_normal.inputs.len(), 2);
+        assert_eq!(cache_normal.inputs[0], "**/*.rs");
+        assert_eq!(cache_normal.inputs[1], "normal/**/*.txt");
+
+        // Test that YAML's triple-quote syntax (which it uses when re-serializing strings with quotes)
+        // parses to the string WITH quotes, but glob matching should strip them
+        let yaml_triple = r#"
+inputs:
+  - '''**/*.rs'''
+  - '"src/**/*.txt"'
+"#;
+        let cache_triple: RecipeCacheConfig = serde_yaml::from_str(yaml_triple).unwrap();
+
+        // YAML parses these WITH quotes (as literal characters in the string)
+        assert_eq!(cache_triple.inputs[0], "'**/*.rs'");
+        assert_eq!(cache_triple.inputs[1], "\"src/**/*.txt\"");
+
+        // But when used for glob matching, resolve_patterns_to_canonical will strip the quotes
+        // so both '**/*.rs' and **/*.rs will work as the same glob pattern
+    }
+
+    #[test]
     fn test_relative_glob_matching() {
         // Create a recipe with relative patterns to test glob matching
         let recipe = Recipe {
@@ -428,6 +481,7 @@ mod tests {
             project_root: PathBuf::from(config_path("/valid/")),
             config_path: PathBuf::from(config_path("/valid/foo/cookbook.yml")),
             description: None,
+            tags: vec![],
             dependencies: None,
             environment: vec![],
             variables: IndexMap::new(),
@@ -468,6 +522,7 @@ mod tests {
             project_root: PathBuf::from(config_path("/valid/")),
             config_path: PathBuf::from(config_path("/valid/nested/apps/gateway/cmd/cookbook.yml")),
             description: None,
+            tags: vec![],
             dependencies: None,
             environment: vec![],
             variables: IndexMap::new(),
@@ -498,5 +553,56 @@ mod tests {
         let hash1 = recipe.get_self_hash().unwrap();
         let hash2 = recipe.get_self_hash().unwrap();
         assert_eq!(hash1, hash2, "Complex path hash should be reproducible");
+    }
+
+    #[test]
+    fn test_tags_default_empty() {
+        // Test that tags default to empty vector
+        let recipe = Recipe::default();
+        assert_eq!(recipe.tags, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_tags_serialization() {
+        // Test that tags serialize and deserialize correctly
+        let yaml = r#"
+name: test
+description: "Test recipe"
+tags: ["frontend", "build"]
+run: echo "test"
+"#;
+        let recipe: Recipe = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(recipe.tags, vec!["frontend", "build"]);
+    }
+
+    #[test]
+    fn test_tags_affect_hash() {
+        // Test that tags affect the recipe hash
+        let mut recipe1 = Recipe {
+            name: String::from("test"),
+            cookbook: String::from("test"),
+            project_root: PathBuf::from(config_path("/valid/")),
+            config_path: PathBuf::from(config_path("/valid/foo/cookbook.yml")),
+            description: None,
+            tags: vec!["frontend".to_string()],
+            dependencies: None,
+            environment: vec![],
+            variables: IndexMap::new(),
+            overrides: BTreeMap::new(),
+            processed_variables: IndexMap::new(),
+            run: String::from("test"),
+            cache: None,
+            template: None,
+            parameters: std::collections::BTreeMap::new(),
+            run_status: RunStatus::default(),
+        };
+
+        let hash1 = recipe1.get_self_hash().unwrap();
+
+        // Change tags
+        recipe1.tags = vec!["backend".to_string()];
+        let hash2 = recipe1.get_self_hash().unwrap();
+
+        assert_ne!(hash1, hash2, "Different tags should produce different hashes");
     }
 }

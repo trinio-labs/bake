@@ -80,6 +80,7 @@ mod tests {
             cookbook: cookbook.to_string(),
             project_root: PathBuf::from("/test"),
             description: Some(format!("Test recipe {name}")),
+            tags: vec![],
             dependencies: None,
             cache: Default::default(),
             environment: vec![],

@@ -1,0 +1,13 @@
+name: with-vars
+description: Use helper-specific variables
+returns: string
+variables:
+  greeting: "Hello"
+  punctuation: "!"
+parameters:
+  name:
+    type: string
+    required: true
+    description: Name to greet
+run: |
+  echo "{{var.greeting}}, {{params.name}}{{var.punctuation}}"

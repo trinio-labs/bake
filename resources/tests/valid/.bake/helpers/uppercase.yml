@@ -1,0 +1,10 @@
+name: uppercase
+description: Convert text to uppercase
+returns: string
+parameters:
+  text:
+    type: string
+    required: true
+    description: The text to convert to uppercase
+run: |
+  echo "{{params.text}}" | tr '[:lower:]' '[:upper:]'

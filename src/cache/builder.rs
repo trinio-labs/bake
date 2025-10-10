@@ -105,7 +105,7 @@ mod tests {
     use indexmap::IndexMap;
 
     use crate::{
-        cache::{CacheResult, CacheResultData, ARCHIVE_EXTENSION},
+        cache::{cache_file_name, CacheResult, CacheResultData},
         project::{config::ToolConfig, BakeProject},
     };
 
@@ -125,6 +125,7 @@ mod tests {
             config: ToolConfig::default(),
             root_path: std::env::temp_dir().join("test_project"),
             template_registry: BTreeMap::new(),
+            helper_registry: BTreeMap::new(),
         })
     }
 
@@ -139,7 +140,7 @@ mod tests {
         async fn get(&self, key: &str) -> CacheResult {
             self.get_called.lock().unwrap().push_str(key);
             CacheResult::Hit(CacheResultData {
-                archive_path: PathBuf::from(format!("{key}.{ARCHIVE_EXTENSION}")),
+                archive_path: PathBuf::from(cache_file_name(key)),
             })
         }
         async fn put(&self, key: &str, _: PathBuf) -> anyhow::Result<()> {

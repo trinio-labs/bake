@@ -1,0 +1,25 @@
+name: "tagged"
+tags: ["backend", "api"]
+
+recipes:
+  build:
+    description: "Build recipe with inherited tags"
+    run: echo "building"
+
+  deploy:
+    description: "Deploy recipe with custom tags"
+    tags: ["frontend", "deploy"]
+    run: echo "deploying"
+    dependencies:
+      - build
+
+  test:
+    description: "Test recipe with inherited tags"
+    run: echo "testing"
+    dependencies:
+      - build
+
+  frontend-build:
+    description: "Frontend build"
+    tags: ["frontend", "build"]
+    run: echo "frontend building"

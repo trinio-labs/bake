@@ -1,6 +1,67 @@
 # Bake
 
-## Unreleased
+## v1.0.0 - 2025-10-10
+
+This is the first stable 1.0 release of Bake! 🎉 This milestone reflects the maturity and stability of the codebase, with comprehensive features, excellent test coverage, and production-ready capabilities.
+
+### Added
+
+- **Tags filtering for recipes and cookbooks** - Filter recipe execution by tags for better organization
+  - Execute recipes matching specific tags across cookbooks
+  - Combine tag filtering with pattern matching for powerful recipe selection
+  - Improves workflow organization for large projects with many recipes
+
+- **Custom Handlebars helpers** - Create reusable template helpers with typed parameters and shell execution
+  - Define helpers as YAML files in `.bake/helpers/` directory
+  - Support typed parameters: string, number, boolean, array, object
+  - Optional and required parameters with default values
+  - Helper-specific variables and environment variable access
+  - Return string or array types
+  - Helper results are cached based on rendered script content
+  - See `docs/guides/custom-helpers.md` for complete documentation
+  - Example helper files in `resources/tests/valid/.bake/helpers/` demonstrate all features
+
+- **Shell command helpers in templates** - Execute shell commands dynamically during template rendering
+  - `{{shell 'command'}}` - Execute a command and return trimmed output as a string
+  - `{{shell-lines 'command'}}` - Execute a command and return output as an array of lines
+  - Commands execute in the cookbook directory (or project directory for project variables)
+  - Output is cached during a single bake execution for performance
+  - Useful for dynamic cache inputs (e.g., tracking Go dependencies, git-tracked files)
+  - Example: `cache.inputs: "{{shell-lines 'git ls-files src/'}}"`
+  - Security: Commands execute with same permissions as bake and inherit recipe environment
+
+- **CLI variable overrides** - Override project variables directly from the command line
+  - Use `--var key=value` or `-D key=value` flags to override variables at runtime
+  - Supports dynamic configuration without modifying project files
+  - Useful for CI/CD pipelines and different deployment environments
+
+### Changed
+
+- **Lazy-loading for cookbooks** - Performance optimization for large projects
+  - Cookbooks are now loaded minimally during dependency graph construction
+  - Full cookbook loading only happens when recipes are actually executed
+  - Significantly improves startup time for projects with many cookbooks
+  - Reduces memory footprint for large monorepo setups
+
+### Fixed
+
+- **Verbose mode flag handling** - Improved verbose output configuration
+  - CLI verbose flag now properly overrides project configuration
+  - Better control over logging and debug information
+
+### Technical
+
+- **Code quality improvements** - Applied DRY principles and eliminated duplication
+  - Added `cache_file_name()` helper eliminating 10+ duplicate format strings
+  - Consolidated test helper functions into shared modules
+  - Removed dead code and unused imports
+  - Fixed all clippy warnings (empty doc comments, simplified map_or to is_some_and)
+  - Net result: +414 insertions, -246 deletions with improved maintainability
+  - All 262 tests passing with zero clippy warnings
+
+- **Documentation updates** - Enhanced JSON schemas and documentation for tags support
+  - Updated schema definitions to reflect new tagging features
+  - Improved inline documentation and code comments
 
 ## v0.16.1
 

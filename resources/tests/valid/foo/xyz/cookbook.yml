@@ -1,4 +1,4 @@
-name: "foo"
+name: "xyz"
 environment:
   - TEST_COOKBOOK_VAR
 variables:

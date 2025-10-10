@@ -507,5 +507,6 @@ template:
 
 - [Configuration Guide](configuration.md) - Complete configuration reference
 - [Recipe Templates](recipe-templates.md) - Using variables in templates
+- [Custom Helpers](custom-helpers.md) - Extend templates with custom helpers
 - [CLI Commands](../reference/cli-commands.md) - Command-line variable overrides
 - [First Project Tutorial](../getting-started/first-project.md) - Variables in practice

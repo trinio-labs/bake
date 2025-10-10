@@ -42,6 +42,7 @@ fn create_test_project_with_s3() -> Arc<BakeProject> {
         },
         root_path: project_root_path,
         template_registry: BTreeMap::new(),
+        helper_registry: BTreeMap::new(),
     })
 }
 
@@ -169,6 +170,7 @@ async fn test_s3_cache_strategy_creation_without_credentials() {
         },
         root_path: temp_dir.path().to_path_buf(),
         template_registry: BTreeMap::new(),
+        helper_registry: BTreeMap::new(),
     });
 
     // Without proper AWS credentials, this should fail

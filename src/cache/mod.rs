@@ -15,6 +15,40 @@ pub use builder::CacheBuilder;
 
 pub const ARCHIVE_EXTENSION: &str = "tar.zst";
 
+/// Creates a cache file name from a cache key
+pub fn cache_file_name(key: &str) -> String {
+    format!("{key}.{ARCHIVE_EXTENSION}")
+}
+
+// Common cache error handling utilities
+
+/// Creates a consistent cache error message
+pub fn cache_error(operation: &str, context: &str, error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("Cache {}: {} - {}", operation, context, error)
+}
+
+/// Creates a cache directory error with consistent messaging
+pub fn cache_dir_error(path: &std::path::Path, error: impl std::fmt::Display) -> anyhow::Error {
+    cache_error(
+        "Setup",
+        &format!("Failed to create cache directory at '{}'", path.display()),
+        error,
+    )
+}
+
+/// Creates a cache file operation error
+pub fn cache_file_error(
+    operation: &str,
+    path: &std::path::Path,
+    error: impl std::fmt::Display,
+) -> anyhow::Error {
+    cache_error(
+        operation,
+        &format!("Failed to process file at '{}'", path.display()),
+        error,
+    )
+}
+
 #[async_trait]
 pub trait CacheStrategy: Send + Sync {
     async fn get(&self, key: &str) -> CacheResult;
@@ -179,11 +213,8 @@ impl Cache {
     // Puts the given recipe's outputs in the cache
     pub async fn put(&self, recipe_name: &str) -> anyhow::Result<()> {
         // Create archive in temp dir
-        let archive_path = std::env::temp_dir().join(format!(
-            "{}.{}",
-            recipe_name.replace(':', "."),
-            ARCHIVE_EXTENSION
-        ));
+        let archive_path =
+            std::env::temp_dir().join(cache_file_name(&recipe_name.replace(':', ".")));
         let tar_gz = File::create(archive_path.clone());
 
         match tar_gz {
@@ -300,7 +331,7 @@ mod test {
     use async_trait::async_trait;
 
     use crate::{
-        cache::{CacheBuilder, CacheResult, CacheResultData, ARCHIVE_EXTENSION}, // Added ARCHIVE_EXTENSION
+        cache::{cache_file_name, CacheBuilder, CacheResult, CacheResultData},
         project::BakeProject,
         // TestProjectBuilder moved to integration tests
     };
@@ -325,6 +356,7 @@ mod test {
             config: ToolConfig::default(),
             root_path: std::env::temp_dir().join("test_project"),
             template_registry: BTreeMap::new(),
+            helper_registry: BTreeMap::new(),
         })
     }
 
@@ -356,13 +388,12 @@ mod test {
         // Get the dummy archive path for a key (used by this strategy)
         fn get_dummy_archive_path(&self, key: &str) -> PathBuf {
             // Create a unique path for each strategy instance to avoid collisions
-            std::env::temp_dir().join(format!(
-                "test_cache_{}_{}_{}.{}",
+            std::env::temp_dir().join(cache_file_name(&format!(
+                "test_cache_{}_{}_{}",
                 self.name,
                 key,
-                std::process::id(),
-                ARCHIVE_EXTENSION
-            ))
+                std::process::id()
+            )))
         }
     }
 
@@ -1009,7 +1040,7 @@ mod test {
 
         // Create an archive with nested directory structure
         let temp_archive =
-            std::env::temp_dir().join(format!("nested_test_{recipe_hash}.{ARCHIVE_EXTENSION}"));
+            std::env::temp_dir().join(cache_file_name(&format!("nested_test_{recipe_hash}")));
         {
             let file = std::fs::File::create(&temp_archive).unwrap();
             let enc = zstd::stream::Encoder::new(file, 0).unwrap().auto_finish();

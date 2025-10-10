@@ -1,0 +1,17 @@
+name: repeat
+description: Repeat text a specified number of times
+returns: string
+parameters:
+  text:
+    type: string
+    required: true
+    description: The text to repeat
+  count:
+    type: number
+    required: false
+    default: 1
+    description: Number of times to repeat
+run: |
+  for i in $(seq 1 {{params.count}}); do
+    printf "{{params.text}}"
+  done

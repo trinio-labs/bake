@@ -1,0 +1,13 @@
+name: with-env
+description: Echo an environment variable value
+returns: string
+environment:
+  - TEST_BAKE_VAR
+parameters:
+  prefix:
+    type: string
+    required: false
+    default: ""
+    description: Prefix to add before the value
+run: |
+  echo "{{params.prefix}}$TEST_BAKE_VAR"

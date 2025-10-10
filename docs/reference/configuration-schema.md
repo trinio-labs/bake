@@ -126,7 +126,63 @@ variables:
     {{else}}
     debug
     {{/if}}
+
+  # Dynamic values from shell commands
+  git_commit: "{{shell 'git rev-parse HEAD'}}"
+  git_branch: "{{shell 'git branch --show-current'}}"
+
+  # Arrays from shell command output (note: no quotes around shell-lines)
+  go_deps: {{shell-lines 'go list -m all'}}
 ```
+
+##### Shell Command Helpers
+
+Bake provides Handlebars helpers for executing shell commands during template rendering:
+
+**`{{shell 'command'}}`** - Execute a command and return trimmed output as a string
+- Executes in the cookbook directory (or project directory for project-level variables)
+- Returns stdout with leading/trailing whitespace removed
+- Fails rendering if command exits with non-zero status
+- Output is cached during a single bake execution
+
+**`{{shell-lines 'command'}}`** - Execute a command and return output as an array of lines
+- Same execution context as `shell`
+- Splits output by newlines and filters empty lines
+- Returns a YAML array suitable for cache inputs and other array fields
+- Each line is trimmed and properly escaped
+- **Important**: Do not wrap in quotes - use `key: {{shell-lines 'cmd'}}` not `key: "{{shell-lines 'cmd'}}"`
+
+**Example: Dynamic Cache Inputs**
+
+```yaml
+# Go project - track all dependencies
+recipes:
+  build:
+    cache:
+      inputs:
+        - "go.mod"
+        - "go.sum"
+        - "{{shell-lines 'go list -f {{.GoFiles}} ./...'}}"
+    run: go build
+
+# Git-tracked files (note: no quotes for array output)
+  frontend:
+    cache:
+      inputs: {{shell-lines 'git ls-files src/'}}
+    run: npm run build
+
+# Dynamic version from git
+variables:
+  version: "{{shell 'git describe --tags --always'}}"
+```
+
+**Security Considerations:**
+
+- Shell commands execute with the same permissions as bake
+- Commands inherit environment variables from the recipe context
+- Only use trusted commands in your configuration files
+- Avoid using user input directly in shell commands
+- Command output is cached per bake invocation (same command = same result)
 
 #### Environment Overrides
 

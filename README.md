@@ -123,6 +123,7 @@ recipes:
 - [Variables](docs/guides/variables.md)
 - [Caching](docs/guides/caching.md)
 - [Recipe Templates](docs/guides/recipe-templates.md)
+- [Custom Helpers](docs/guides/custom-helpers.md)
 - [Best Practices](docs/guides/best-practices.md)
 - [Troubleshooting](docs/guides/troubleshooting.md)
 

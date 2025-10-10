@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use log::{debug, warn};
 
 use crate::{
-    cache::{CacheResultData, ARCHIVE_EXTENSION},
+    cache::{cache_file_name, CacheResultData},
     project::BakeProject,
 };
 
@@ -112,7 +112,7 @@ impl std::fmt::Debug for GcsCacheStrategy {
 impl CacheStrategy for GcsCacheStrategy {
     // #[coverage(off)]
     async fn get(&self, key: &str) -> CacheResult {
-        let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
+        let file_name = cache_file_name(key);
         let archive_path = std::env::temp_dir().join(&file_name);
 
         debug!("Getting key {key} from GCS");
@@ -174,7 +174,7 @@ impl CacheStrategy for GcsCacheStrategy {
 
     // #[coverage(off)]
     async fn put(&self, key: &str, archive_path: PathBuf) -> anyhow::Result<()> {
-        let file_name = format!("{key}.{ARCHIVE_EXTENSION}");
+        let file_name = cache_file_name(key);
         let upload_type = UploadType::Simple(Media::new(file_name.clone()));
         debug!("Uploading key {key} to GCS");
         if let Ok(file) = File::open(&archive_path).await {

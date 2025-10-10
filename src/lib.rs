@@ -8,6 +8,10 @@ pub mod project;
 pub mod template;
 pub mod update;
 
+// Test utilities module (available for both unit and integration tests)
+#[cfg(test)]
+pub mod test_utils;
+
 // Re-export commonly used types for convenience
 pub use cache::CacheBuilder;
 pub use project::BakeProject;
@@ -59,18 +63,27 @@ pub struct Args {
     #[arg(short, long)]
     pub clean: bool,
 
-    /// Verbose mode
+    /// Verbose mode - show detailed output
     #[arg(short, long)]
-    pub verbose: Option<bool>,
+    pub verbose: bool,
+
+    /// Quiet mode - suppress non-essential output
+    #[arg(short, long, conflicts_with = "verbose")]
+    pub quiet: bool,
 
     /// Variables to override (key=value).
     /// Variables specified here override those defined at recipe, cookbook, or project level.
-    #[arg(short = 'D', long = "define", value_parser = parse_key_val, action = clap::ArgAction::Append)]
+    #[arg(short = 'D', long = "var", visible_alias = "define", value_parser = parse_key_val, action = clap::ArgAction::Append)]
     pub vars: Vec<(String, String)>,
 
     /// Enable regex pattern matching for recipe filters
     #[arg(long)]
     pub regex: bool,
+
+    /// Filter recipes by tags (comma-separated). Multiple tags are OR-ed (matches ANY tag).
+    /// Example: --tags frontend,backend or --tags frontend --tags backend
+    #[arg(long, value_delimiter = ',')]
+    pub tags: Vec<String>,
 
     /// Dry run mode - just show what would be done
     #[arg(short = 'n', long)]
@@ -133,22 +146,24 @@ pub async fn load_project_with_feedback(
     bake_path: &std::path::Path,
     variables: IndexMap<String, String>,
     environment: Option<&str>,
-    verbose: Option<bool>,
+    verbose: bool,
     jobs: Option<usize>,
     fail_fast: bool,
+    quiet: bool,
 ) -> anyhow::Result<Arc<BakeProject>> {
     let term = Term::stderr();
     let loading_message = format!("Loading project from {}...", bake_path.display());
 
-    let cli_verbose = verbose.unwrap_or(false);
-    if !cli_verbose {
+    // For initial loading UI, use the verbose parameter
+    // (will be reconciled with config after project loads)
+    if !verbose {
         term.write_line(&loading_message)?;
     }
 
-    let mut project = match BakeProject::from(bake_path, environment, variables, cli_verbose) {
+    let mut project = match BakeProject::from(bake_path, environment, variables, verbose) {
         Ok(p) => p,
         Err(e) => {
-            if !cli_verbose {
+            if !verbose {
                 term.clear_line()?;
                 term.move_cursor_up(1)?;
                 term.clear_line()?;
@@ -157,17 +172,23 @@ pub async fn load_project_with_feedback(
         }
     };
 
-    // Apply configuration overrides
+    // Apply configuration overrides only when flags are explicitly set
     if let Some(jobs) = jobs {
         project.config.max_parallel = jobs;
     }
-    project.config.fast_fail = fail_fast;
-
-    if let Some(verbose) = verbose {
-        project.config.verbose = verbose;
+    if fail_fast {
+        project.config.fast_fail = true;
     }
+    // Only override verbose config if CLI flags were provided
+    if verbose {
+        project.config.verbose = true;
+    } else if quiet {
+        project.config.verbose = false;
+    }
+    // Otherwise, keep the value from bake.yml config
 
-    if !cli_verbose {
+    // Use the effective verbose setting (after applying overrides) for UI
+    if !project.config.verbose {
         term.clear_line()?;
         term.move_cursor_up(1)?;
         term.clear_line()?;
@@ -237,6 +258,7 @@ pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
         args.verbose,
         None,
         false,
+        args.quiet,
     )
     .await?;
 
@@ -301,6 +323,7 @@ pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
         args.verbose,
         None,
         false,
+        args.quiet,
     )
     .await?;
 
@@ -359,17 +382,30 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     let variables = parse_variables(&args.vars);
     let project = load_project_with_feedback(
         &bake_path,
-        variables,
+        variables.clone(),
         args.env.as_deref(),
         args.verbose,
         None,
         false,
+        args.quiet,
     )
     .await?;
 
-    // Get the execution plan to determine which recipes to show
+    // Unwrap Arc to get mutable access to project
+    let mut project = Arc::try_unwrap(project).unwrap_or_else(|arc| (*arc).clone());
+
+    // Build context for full loading
+    let context = project.build_variable_context(&variables);
+
+    // Get the execution plan to determine which recipes to show (triggers full loading)
     let recipe_filter = args.recipe.as_deref();
-    let execution_plan = project.get_recipes_for_execution(recipe_filter, args.regex)?;
+    let execution_plan = project.get_recipes_for_execution(
+        recipe_filter,
+        args.regex,
+        &args.tags,
+        args.env.as_deref(),
+        &context,
+    )?;
 
     // Create a set of all recipe FQNs that should be included
     let included_recipes: std::collections::HashSet<String> = execution_plan
@@ -546,18 +582,30 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let variables = parse_variables(&args.vars);
     let project = load_project_with_feedback(
         &bake_path,
-        variables,
+        variables.clone(),
         args.env.as_deref(),
         args.verbose,
         args.jobs,
         args.fail_fast,
+        args.quiet,
     )
     .await?;
 
+    // Unwrap Arc to get mutable access to project
+    let mut project = Arc::try_unwrap(project).unwrap_or_else(|arc| (*arc).clone());
+
+    // Build context for full loading
+    let context = project.build_variable_context(&variables);
+
     // Handle clean command
     if args.clean {
-        let execution_plan =
-            project.get_recipes_for_execution(args.recipe.as_deref(), args.regex)?;
+        let execution_plan = project.get_recipes_for_execution(
+            args.recipe.as_deref(),
+            args.regex,
+            &args.tags,
+            args.env.as_deref(),
+            &context,
+        )?;
 
         if execution_plan.is_empty() {
             println!("No recipes found to clean");
@@ -579,7 +627,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
             .map(|recipe| format!("{}:{}", recipe.cookbook, recipe.name))
             .collect();
 
-        let _cache = CacheBuilder::new(project.clone())
+        let _cache = CacheBuilder::new(Arc::new(project.clone()))
             .default_strategies()
             .build_for_recipes(&all_recipes)
             .await?;
@@ -614,8 +662,14 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Get execution plan
-    let execution_plan = project.get_recipes_for_execution(args.recipe.as_deref(), args.regex)?;
+    // Get execution plan (triggers full loading)
+    let execution_plan = project.get_recipes_for_execution(
+        args.recipe.as_deref(),
+        args.regex,
+        &args.tags,
+        args.env.as_deref(),
+        &context,
+    )?;
 
     if execution_plan.is_empty() {
         println!("No recipes to bake in the project.");
@@ -639,13 +693,12 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     // Handle skip cache option
     if args.skip_cache {
         println!("Skipping cache...");
-        // Modify the project's cache configuration in place
-        unsafe {
-            let project_ptr = Arc::as_ptr(&project) as *mut BakeProject;
-            (*project_ptr).config.cache.local.enabled = false;
-            (*project_ptr).config.cache.remotes = None;
-        }
+        project.config.cache.local.enabled = false;
+        project.config.cache.remotes = None;
     }
+
+    // Wrap project back in Arc for execution
+    let project = Arc::new(project);
 
     // Build cache for recipes
     let all_recipes: Vec<String> = execution_plan
@@ -796,9 +849,11 @@ name: test_project
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
             clean: false,
-            verbose: None,
+            verbose: false,
+            quiet: false,
             vars: vec![],
             regex: false,
+            tags: vec![],
             dry_run: false,
             fail_fast: false,
             jobs: None,
@@ -832,9 +887,11 @@ name: test_project
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
             clean: false,
-            verbose: None,
+            verbose: false,
+            quiet: false,
             vars: vec![],
             regex: false,
+            tags: vec![],
             dry_run: false,
             fail_fast: false,
             jobs: None,
@@ -868,9 +925,11 @@ name: test_project
             path: Some(temp_dir.path().to_string_lossy().to_string()),
             show_plan: false,
             clean: false,
-            verbose: None,
+            verbose: false,
+            quiet: false,
             vars: vec![],
             regex: false,
+            tags: vec![],
             dry_run: false,
             fail_fast: false,
             jobs: None,
@@ -896,9 +955,11 @@ name: test_project
             path: Some("/test/path".to_string()),
             show_plan: false,
             clean: false,
-            verbose: Some(true),
+            verbose: true,
+            quiet: false,
             vars: vec![("key".to_string(), "value".to_string())],
             regex: false,
+            tags: vec![],
             dry_run: false,
             fail_fast: false,
             jobs: Some(4),
