@@ -1,5 +1,18 @@
 # Bake
 
+## v1.0.1 - 2025-10-10
+
+### Fixed
+
+- **Remote cache error handling** - Improved graceful degradation when remote caches fail
+  - Remote cache failures (S3, GCS) no longer print verbose error messages in normal mode
+  - Local cache failure still logs warnings as it's more critical
+  - Build continues successfully if local cache works but remote caches fail
+  - All cache errors are available in debug logs (`RUST_LOG=debug`) for troubleshooting
+  - In verbose mode (`--verbose`), concise notifications are shown for remote cache failures
+  - Only fails if ALL cache strategies fail to store the recipe output
+  - Improves user experience by reducing noise from transient remote cache issues
+
 ## v1.0.0 - 2025-10-10
 
 This is the first stable 1.0 release of Bake! 🎉 This milestone reflects the maturity and stability of the codebase, with comprehensive features, excellent test coverage, and production-ready capabilities.

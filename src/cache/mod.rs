@@ -312,8 +312,34 @@ impl Cache {
         }
 
         let hash = self.hashes.get(recipe_name).unwrap();
-        for strategy in self.strategies.iter() {
-            strategy.put(hash, archive_path.clone()).await?;
+        let verbose = self.project.config.verbose;
+        let mut any_success = false;
+
+        for (idx, strategy) in self.strategies.iter().enumerate() {
+            match strategy.put(hash, archive_path.clone()).await {
+                Ok(_) => {
+                    any_success = true;
+                }
+                Err(err) => {
+                    // Log all errors as debug
+                    log::debug!("Cache strategy {} failed to store recipe '{}': {}", idx, recipe_name, err);
+
+                    // For remote caches (non-first strategies), only print in verbose mode
+                    if idx > 0 {
+                        if verbose {
+                            eprintln!("Remote cache failed for recipe '{}' (details in debug logs)", recipe_name);
+                        }
+                    } else {
+                        // If the first strategy (typically local cache) fails, it's more serious
+                        warn!("Cache failed to store recipe '{}': {}", recipe_name, err);
+                    }
+                }
+            }
+        }
+
+        // Only fail if no strategy succeeded
+        if !any_success && !self.strategies.is_empty() {
+            bail!("All cache strategies failed to store recipe '{}'", recipe_name);
         }
 
         Ok(())
