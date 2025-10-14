@@ -535,7 +535,7 @@ impl BakeProject {
                 if recipe
                     .dependencies
                     .as_ref()
-                    .map_or(false, |deps| !deps.is_empty())
+                    .is_some_and(|deps| !deps.is_empty())
                 {
                     final_recipe.dependencies = recipe.dependencies.clone();
                 }

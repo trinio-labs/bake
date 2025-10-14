@@ -81,25 +81,30 @@ impl Cookbook {
         };
 
         // Parse as serde_yaml::Value first to handle template expressions in non-essential fields
-        let mut yaml_value: serde_yaml::Value = serde_yaml::from_str(&config_str)
-            .map_err(|e| anyhow::anyhow!("Cookbook: Failed to parse YAML at '{}': {}. Check YAML syntax.", path.display(), e))?;
+        let mut yaml_value: serde_yaml::Value = serde_yaml::from_str(&config_str).map_err(|e| {
+            anyhow::anyhow!(
+                "Cookbook: Failed to parse YAML at '{}': {}. Check YAML syntax.",
+                path.display(),
+                e
+            )
+        })?;
 
         // Extract only the fields we need for minimal loading: name, tags, recipes (with just names, tags, and dependencies)
         if let serde_yaml::Value::Mapping(ref mut map) = yaml_value {
             // Keep only essential top-level fields
             let essential_keys: Vec<&str> = vec!["name", "tags", "environment", "recipes"];
-            map.retain(|k, _| {
-                k.as_str().is_some_and(|key| essential_keys.contains(&key))
-            });
+            map.retain(|k, _| k.as_str().is_some_and(|key| essential_keys.contains(&key)));
 
             // For each recipe, keep only essential fields
             if let Some(serde_yaml::Value::Mapping(recipes_map)) = map.get_mut("recipes") {
                 for (_, recipe_value) in recipes_map.iter_mut() {
                     if let serde_yaml::Value::Mapping(recipe_map) = recipe_value {
                         // Keep only: dependencies, tags, description (for debugging)
-                        let essential_recipe_keys: Vec<&str> = vec!["dependencies", "tags", "description"];
+                        let essential_recipe_keys: Vec<&str> =
+                            vec!["dependencies", "tags", "description"];
                         recipe_map.retain(|k, _| {
-                            k.as_str().is_some_and(|key| essential_recipe_keys.contains(&key))
+                            k.as_str()
+                                .is_some_and(|key| essential_recipe_keys.contains(&key))
                         });
                     }
                 }
@@ -107,8 +112,13 @@ impl Cookbook {
         }
 
         // Now deserialize the filtered YAML into our struct
-        let mut parsed: Self = serde_yaml::from_value(yaml_value)
-            .map_err(|e| anyhow::anyhow!("Cookbook: Failed to deserialize minimal YAML at '{}': {}.", path.display(), e))?;
+        let mut parsed: Self = serde_yaml::from_value(yaml_value).map_err(|e| {
+            anyhow::anyhow!(
+                "Cookbook: Failed to deserialize minimal YAML at '{}': {}.",
+                path.display(),
+                e
+            )
+        })?;
 
         // Set cookbook metadata
         parsed.config_path = path.to_path_buf();

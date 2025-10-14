@@ -132,10 +132,7 @@ pub fn process_variable_blocks(
 /// Parses YAML content with detailed error context
 ///
 /// Helper function to parse YAML with consistent error messages across the codebase
-pub fn parse_yaml_with_context<T>(
-    yaml_content: &str,
-    error_context: &str,
-) -> anyhow::Result<T>
+pub fn parse_yaml_with_context<T>(yaml_content: &str, error_context: &str) -> anyhow::Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -492,7 +489,11 @@ impl VariableContext {
                     out.write(cached_output)?;
                     return Ok(());
                 } else {
-                    log::debug!("Cache MISS for helper '{}', working_dir: {:?}", helper_def.name, context.working_directory);
+                    log::debug!(
+                        "Cache MISS for helper '{}', working_dir: {:?}",
+                        helper_def.name,
+                        context.working_directory
+                    );
                 }
             }
 

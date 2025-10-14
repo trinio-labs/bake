@@ -603,6 +603,9 @@ run: echo "test"
         recipe1.tags = vec!["backend".to_string()];
         let hash2 = recipe1.get_self_hash().unwrap();
 
-        assert_ne!(hash1, hash2, "Different tags should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different tags should produce different hashes"
+        );
     }
 }

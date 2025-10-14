@@ -128,6 +128,10 @@ pub struct Args {
     /// Environment for variable overrides (e.g., dev, prod, test)
     #[arg(long)]
     pub env: Option<String>,
+
+    /// Force override version check - run even if project requires newer bake version
+    #[arg(long)]
+    pub force_version_override: bool,
 }
 
 pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -142,28 +146,54 @@ pub fn parse_variables(vars: &[(String, String)]) -> IndexMap<String, String> {
     vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
+/// Configuration for loading a bake project
+pub struct ProjectLoadConfig {
+    pub variables: IndexMap<String, String>,
+    pub environment: Option<String>,
+    pub verbose: bool,
+    pub jobs: Option<usize>,
+    pub fail_fast: bool,
+    pub quiet: bool,
+    pub force_version_override: bool,
+}
+
+impl ProjectLoadConfig {
+    /// Create a ProjectLoadConfig from Args
+    pub fn from_args(args: &Args, variables: IndexMap<String, String>) -> Self {
+        Self {
+            variables,
+            environment: args.env.clone(),
+            verbose: args.verbose,
+            jobs: args.jobs,
+            fail_fast: args.fail_fast,
+            quiet: args.quiet,
+            force_version_override: args.force_version_override,
+        }
+    }
+}
+
 pub async fn load_project_with_feedback(
     bake_path: &std::path::Path,
-    variables: IndexMap<String, String>,
-    environment: Option<&str>,
-    verbose: bool,
-    jobs: Option<usize>,
-    fail_fast: bool,
-    quiet: bool,
+    config: ProjectLoadConfig,
 ) -> anyhow::Result<Arc<BakeProject>> {
     let term = Term::stderr();
     let loading_message = format!("Loading project from {}...", bake_path.display());
 
     // For initial loading UI, use the verbose parameter
     // (will be reconciled with config after project loads)
-    if !verbose {
+    if !config.verbose {
         term.write_line(&loading_message)?;
     }
 
-    let mut project = match BakeProject::from(bake_path, environment, variables, verbose) {
+    let mut project = match BakeProject::from(
+        bake_path,
+        config.environment.as_deref(),
+        config.variables,
+        config.force_version_override,
+    ) {
         Ok(p) => p,
         Err(e) => {
-            if !verbose {
+            if !config.verbose {
                 term.clear_line()?;
                 term.move_cursor_up(1)?;
                 term.clear_line()?;
@@ -173,16 +203,16 @@ pub async fn load_project_with_feedback(
     };
 
     // Apply configuration overrides only when flags are explicitly set
-    if let Some(jobs) = jobs {
+    if let Some(jobs) = config.jobs {
         project.config.max_parallel = jobs;
     }
-    if fail_fast {
+    if config.fail_fast {
         project.config.fast_fail = true;
     }
     // Only override verbose config if CLI flags were provided
-    if verbose {
+    if config.verbose {
         project.config.verbose = true;
-    } else if quiet {
+    } else if config.quiet {
         project.config.verbose = false;
     }
     // Otherwise, keep the value from bake.yml config
@@ -251,16 +281,8 @@ pub async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
 pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(
-        &bake_path,
-        variables,
-        args.env.as_deref(),
-        args.verbose,
-        None,
-        false,
-        args.quiet,
-    )
-    .await?;
+    let config = ProjectLoadConfig::from_args(args, variables);
+    let project = load_project_with_feedback(&bake_path, config).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -316,16 +338,8 @@ pub async fn handle_list_templates(args: &Args) -> anyhow::Result<()> {
 pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(
-        &bake_path,
-        variables,
-        args.env.as_deref(),
-        args.verbose,
-        None,
-        false,
-        args.quiet,
-    )
-    .await?;
+    let config = ProjectLoadConfig::from_args(args, variables);
+    let project = load_project_with_feedback(&bake_path, config).await?;
 
     if project.template_registry.is_empty() {
         println!("No templates found in this project.");
@@ -380,16 +394,8 @@ pub async fn handle_validate_templates(args: &Args) -> anyhow::Result<()> {
 pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(
-        &bake_path,
-        variables.clone(),
-        args.env.as_deref(),
-        args.verbose,
-        None,
-        false,
-        args.quiet,
-    )
-    .await?;
+    let config = ProjectLoadConfig::from_args(args, variables.clone());
+    let project = load_project_with_feedback(&bake_path, config).await?;
 
     // Unwrap Arc to get mutable access to project
     let mut project = Arc::try_unwrap(project).unwrap_or_else(|arc| (*arc).clone());
@@ -580,16 +586,8 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
 pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
-    let project = load_project_with_feedback(
-        &bake_path,
-        variables.clone(),
-        args.env.as_deref(),
-        args.verbose,
-        args.jobs,
-        args.fail_fast,
-        args.quiet,
-    )
-    .await?;
+    let config = ProjectLoadConfig::from_args(&args, variables.clone());
+    let project = load_project_with_feedback(&bake_path, config).await?;
 
     // Unwrap Arc to get mutable access to project
     let mut project = Arc::try_unwrap(project).unwrap_or_else(|arc| (*arc).clone());
@@ -865,6 +863,7 @@ name: test_project
             render: false,
             skip_cache: false,
             env: None,
+            force_version_override: false,
         };
 
         // This should succeed and print "No templates found"
@@ -903,6 +902,7 @@ name: test_project
             render: false,
             skip_cache: false,
             env: None,
+            force_version_override: false,
         };
 
         // This should succeed and print "No templates found"
@@ -941,6 +941,7 @@ name: test_project
             render: false,
             skip_cache: false,
             env: None,
+            force_version_override: false,
         };
 
         // This should succeed but print "No recipes to bake"
@@ -971,6 +972,7 @@ name: test_project
             render: false,
             skip_cache: false,
             env: None,
+            force_version_override: false,
         };
 
         // Test that Args implements Debug (this will compile if it does)

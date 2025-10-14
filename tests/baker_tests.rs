@@ -203,17 +203,12 @@ async fn test_tag_filtering_single_tag() {
         .join("tests")
         .join("valid");
 
-    let mut project = BakeProject::from(
-        &project_root,
-        Some("default"),
-        IndexMap::new(),
-        false,
-    )
-    .unwrap();
+    let mut project =
+        BakeProject::from(&project_root, Some("default"), IndexMap::new(), false).unwrap();
 
     // Filter by "frontend" tag - should match tagged:deploy and tagged:frontend-build
-    let execution_plan = get_execution_plan(&mut project, None, false, &["frontend".to_string()])
-        .unwrap();
+    let execution_plan =
+        get_execution_plan(&mut project, None, false, &["frontend".to_string()]).unwrap();
 
     let all_recipes: Vec<String> = execution_plan
         .iter()
@@ -236,17 +231,17 @@ async fn test_tag_filtering_multiple_tags_or_logic() {
         .join("tests")
         .join("valid");
 
-    let mut project = BakeProject::from(
-        &project_root,
-        Some("default"),
-        IndexMap::new(),
-        false,
-    )
-    .unwrap();
+    let mut project =
+        BakeProject::from(&project_root, Some("default"), IndexMap::new(), false).unwrap();
 
     // Filter by "backend" OR "deploy" tags
-    let execution_plan = get_execution_plan(&mut project, None, false, &["backend".to_string(), "deploy".to_string()])
-        .unwrap();
+    let execution_plan = get_execution_plan(
+        &mut project,
+        None,
+        false,
+        &["backend".to_string(), "deploy".to_string()],
+    )
+    .unwrap();
 
     let all_recipes: Vec<String> = execution_plan
         .iter()
@@ -269,17 +264,17 @@ async fn test_tag_filtering_with_pattern() {
         .join("tests")
         .join("valid");
 
-    let mut project = BakeProject::from(
-        &project_root,
-        Some("default"),
-        IndexMap::new(),
-        false,
-    )
-    .unwrap();
+    let mut project =
+        BakeProject::from(&project_root, Some("default"), IndexMap::new(), false).unwrap();
 
     // Filter by pattern AND tags
-    let execution_plan = get_execution_plan(&mut project, Some("tagged:"), false, &["frontend".to_string()])
-        .unwrap();
+    let execution_plan = get_execution_plan(
+        &mut project,
+        Some("tagged:"),
+        false,
+        &["frontend".to_string()],
+    )
+    .unwrap();
 
     let all_recipes: Vec<String> = execution_plan
         .iter()
@@ -302,17 +297,12 @@ async fn test_tag_filtering_case_insensitive() {
         .join("tests")
         .join("valid");
 
-    let mut project = BakeProject::from(
-        &project_root,
-        Some("default"),
-        IndexMap::new(),
-        false,
-    )
-    .unwrap();
+    let mut project =
+        BakeProject::from(&project_root, Some("default"), IndexMap::new(), false).unwrap();
 
     // Test case-insensitive matching with "FRONTEND" (uppercase)
-    let execution_plan = get_execution_plan(&mut project, None, false, &["FRONTEND".to_string()])
-        .unwrap();
+    let execution_plan =
+        get_execution_plan(&mut project, None, false, &["FRONTEND".to_string()]).unwrap();
 
     let all_recipes: Vec<String> = execution_plan
         .iter()
@@ -333,20 +323,13 @@ async fn test_tag_filtering_empty_tags_no_filtering() {
         .join("tests")
         .join("valid");
 
-    let mut project = BakeProject::from(
-        &project_root,
-        Some("default"),
-        IndexMap::new(),
-        false,
-    )
-    .unwrap();
+    let mut project =
+        BakeProject::from(&project_root, Some("default"), IndexMap::new(), false).unwrap();
 
     // Empty tags should return all recipes
-    let execution_plan_all = get_execution_plan(&mut project, None, false, &[])
-        .unwrap();
+    let execution_plan_all = get_execution_plan(&mut project, None, false, &[]).unwrap();
 
-    let execution_plan_no_tags = get_execution_plan(&mut project, None, false, &[])
-        .unwrap();
+    let execution_plan_no_tags = get_execution_plan(&mut project, None, false, &[]).unwrap();
 
     // Both should be equal (no filtering)
     assert_eq!(execution_plan_all.len(), execution_plan_no_tags.len());
@@ -360,17 +343,12 @@ async fn test_tag_filtering_no_matches() {
         .join("tests")
         .join("valid");
 
-    let mut project = BakeProject::from(
-        &project_root,
-        Some("default"),
-        IndexMap::new(),
-        false,
-    )
-    .unwrap();
+    let mut project =
+        BakeProject::from(&project_root, Some("default"), IndexMap::new(), false).unwrap();
 
     // Filter by non-existent tag
-    let execution_plan = get_execution_plan(&mut project, None, false, &["nonexistent".to_string()])
-        .unwrap();
+    let execution_plan =
+        get_execution_plan(&mut project, None, false, &["nonexistent".to_string()]).unwrap();
 
     // Should be empty
     assert!(execution_plan.is_empty());

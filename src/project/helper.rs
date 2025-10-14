@@ -216,9 +216,7 @@ impl Helper {
 
         // Add helper-specific environment variables
         if !self.environment.is_empty() {
-            context
-                .environment
-                .extend(self.environment.iter().cloned());
+            context.environment.extend(self.environment.iter().cloned());
         }
 
         context
@@ -355,7 +353,10 @@ run: echo "test"
 
         // Valid types
         let valid_params = BTreeMap::from([
-            ("string_param".to_string(), Value::String("test".to_string())),
+            (
+                "string_param".to_string(),
+                Value::String("test".to_string()),
+            ),
             (
                 "number_param".to_string(),
                 Value::Number(serde_yaml::Number::from(42)),
