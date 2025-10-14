@@ -73,7 +73,9 @@ impl CacheStrategy for LocalCacheStrategy {
 mod tests {
     use super::*;
     use crate::project::config::{CacheConfig, LocalCacheConfig, ToolConfig};
-    use crate::test_utils::{create_default_test_project, create_dummy_file, create_test_project_with_config};
+    use crate::test_utils::{
+        create_default_test_project, create_dummy_file, create_test_project_with_config,
+    };
     use tempfile::tempdir;
 
     #[tokio::test]

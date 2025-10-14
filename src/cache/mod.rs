@@ -322,12 +322,20 @@ impl Cache {
                 }
                 Err(err) => {
                     // Log all errors as debug
-                    log::debug!("Cache strategy {} failed to store recipe '{}': {}", idx, recipe_name, err);
+                    log::debug!(
+                        "Cache strategy {} failed to store recipe '{}': {}",
+                        idx,
+                        recipe_name,
+                        err
+                    );
 
                     // For remote caches (non-first strategies), only print in verbose mode
                     if idx > 0 {
                         if verbose {
-                            eprintln!("Remote cache failed for recipe '{}' (details in debug logs)", recipe_name);
+                            eprintln!(
+                                "Remote cache failed for recipe '{}' (details in debug logs)",
+                                recipe_name
+                            );
                         }
                     } else {
                         // If the first strategy (typically local cache) fails, it's more serious
@@ -339,7 +347,10 @@ impl Cache {
 
         // Only fail if no strategy succeeded
         if !any_success && !self.strategies.is_empty() {
-            bail!("All cache strategies failed to store recipe '{}'", recipe_name);
+            bail!(
+                "All cache strategies failed to store recipe '{}'",
+                recipe_name
+            );
         }
 
         Ok(())

@@ -253,6 +253,63 @@ bake --validate-templates
 
 ## Cache Management
 
+**`--cache <STRATEGY>`**
+
+Override cache strategy at runtime. Controls which caches are used and in what order:
+
+```bash
+# Use only local cache (disable remote)
+bake --cache local-only frontend:build
+
+# Use only remote cache (disable local)
+bake --cache remote-only frontend:build
+
+# Check local cache first, then remote (typical default)
+bake --cache local-first frontend:build
+
+# Check remote cache first, then local
+bake --cache remote-first frontend:build
+
+# Disable all caching
+bake --cache disabled frontend:build
+```
+
+**Available strategies:**
+- `local-only` - Use only local filesystem cache
+- `remote-only` - Use only remote caches (S3, GCS)
+- `local-first` - Check local first, then remote
+- `remote-first` - Check remote first, then local
+- `disabled` - Disable all caching
+
+**Use cases:**
+```bash
+# Development: fast local-only builds
+bake --cache local-only
+
+# CI/CD: use shared team cache
+bake --cache remote-only --var environment=ci
+
+# Debugging: force clean build
+bake --cache disabled --verbose
+
+# Fresh from team: prioritize remote cache
+bake --cache remote-first
+```
+
+See [Caching Guide](../guides/caching.md#cli-cache-overrides) for detailed usage examples.
+
+**`--skip-cache`**
+
+Disable all caching (legacy flag, equivalent to `--cache disabled`):
+
+```bash
+# Skip all caches
+bake --skip-cache
+
+# Equivalent to:
+bake --cache disabled
+```
+
 **`-c, --clean`**
 
 Clean outputs and caches for selected recipes:

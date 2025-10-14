@@ -30,6 +30,7 @@ fn create_test_project_with_s3() -> Arc<BakeProject> {
             cache: CacheConfig {
                 local: Default::default(),
                 remotes: Some(RemoteCacheConfig {
+                    enabled: true,
                     s3: Some(S3CacheConfig {
                         bucket: "test-cache-bucket".to_string(),
                         region: Some("us-east-1".to_string()),
@@ -158,6 +159,7 @@ async fn test_s3_cache_strategy_creation_without_credentials() {
             cache: CacheConfig {
                 local: Default::default(),
                 remotes: Some(RemoteCacheConfig {
+                    enabled: true,
                     s3: Some(S3CacheConfig {
                         bucket: "invalid-bucket-for-testing".to_string(),
                         region: Some("us-east-1".to_string()),
