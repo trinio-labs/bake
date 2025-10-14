@@ -531,8 +531,12 @@ impl BakeProject {
                     .variables
                     .extend(recipe.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-                // Override dependencies if specified in recipe
-                if recipe.dependencies.is_some() {
+                // Override dependencies if specified in recipe (and non-empty)
+                if recipe
+                    .dependencies
+                    .as_ref()
+                    .map_or(false, |deps| !deps.is_empty())
+                {
                     final_recipe.dependencies = recipe.dependencies.clone();
                 }
 
@@ -861,6 +865,23 @@ impl BakeProject {
         // Now validate recipes and resolve templates (only for loaded cookbooks)
         self.resolve_template_recipes(context)?;
         self.validate_recipes()?;
+
+        // Re-populate dependency graph after templates are resolved
+        // This ensures template dependencies are included in the execution plan
+        self.populate_dependency_graph()?;
+
+        // Re-calculate execution plan with template dependencies
+        let fqn_levels = self
+            .recipe_dependency_graph
+            .get_execution_plan_for_initial_targets(&initial_target_fqns)?;
+
+        // Load any additional cookbooks that might be needed due to template dependencies
+        let new_execution_fqns: HashSet<String> = fqn_levels.iter().flatten().cloned().collect();
+        if new_execution_fqns != all_execution_fqns {
+            self.load_cookbooks_for_execution(&new_execution_fqns, environment, context)?;
+            self.resolve_template_recipes(context)?;
+            self.validate_recipes()?;
+        }
 
         let mut result_levels: Vec<Vec<Recipe>> = Vec::new();
 
