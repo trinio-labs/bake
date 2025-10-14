@@ -22,6 +22,8 @@ impl Default for LocalCacheConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteCacheConfig {
+    #[serde(default = "bool_true_default")]
+    pub enabled: bool,
     pub s3: Option<S3CacheConfig>,
     pub gcs: Option<GcsCacheConfig>,
 }
@@ -243,6 +245,7 @@ order: ["local", "s3"]
         assert_eq!(config.local.path, Some(PathBuf::from("/tmp/cache")));
 
         let remotes = config.remotes.unwrap();
+        assert!(remotes.enabled); // Should default to true
         let s3_config = remotes.s3.unwrap();
         assert_eq!(s3_config.bucket, "my-s3-cache");
         assert_eq!(s3_config.region, Some("eu-central-1".to_string()));
@@ -265,10 +268,32 @@ order: ["gcs"]
         assert!(!config.local.enabled);
 
         let remotes = config.remotes.unwrap();
+        assert!(remotes.enabled); // Should default to true
         let gcs_config = remotes.gcs.unwrap();
         assert_eq!(gcs_config.bucket, "my-gcs-cache");
 
         assert_eq!(config.order, vec!["gcs"]);
+    }
+
+    #[test]
+    fn test_cache_config_with_disabled_remotes() {
+        let yaml = r#"
+local:
+  enabled: true
+remotes:
+  enabled: false
+  s3:
+    bucket: "my-s3-cache"
+    region: "us-west-2"
+"#;
+        let config: CacheConfig = serde_yaml::from_str(yaml).unwrap();
+
+        assert!(config.local.enabled);
+
+        let remotes = config.remotes.unwrap();
+        assert!(!remotes.enabled); // Explicitly disabled
+        let s3_config = remotes.s3.unwrap();
+        assert_eq!(s3_config.bucket, "my-s3-cache");
     }
 
     #[test]

@@ -65,17 +65,20 @@ impl CacheBuilder {
         let mut strategies: Vec<Arc<Box<dyn CacheStrategy>>> = Vec::new();
 
         let mut order = self.project.config.cache.order.clone();
-        // If no order is defined, use local -> s3 -> gcs if configuration exists
+        // If no order is defined, use local -> s3 -> gcs if configuration exists and enabled
         if order.is_empty() {
             if self.project.config.cache.local.enabled {
                 order.push("local".to_string());
             }
             if let Some(remotes) = &self.project.config.cache.remotes {
-                if remotes.s3.is_some() {
-                    order.push("s3".to_string());
-                }
-                if remotes.gcs.is_some() {
-                    order.push("gcs".to_string());
+                // Only add remote caches if remotes are enabled
+                if remotes.enabled {
+                    if remotes.s3.is_some() {
+                        order.push("s3".to_string());
+                    }
+                    if remotes.gcs.is_some() {
+                        order.push("gcs".to_string());
+                    }
                 }
             }
         }

@@ -1,5 +1,38 @@
 # Bake
 
+## v1.1.0 - 2025-10-14
+
+### Added
+
+- **Cache strategy CLI flag** - New `--cache` flag for fine-grained cache control
+  - `--cache local-only` - Use only local cache (disables remote)
+  - `--cache remote-only` - Use only remote cache (disables local)
+  - `--cache local-first` - Check local cache first, then remote (typical default)
+  - `--cache remote-first` - Check remote cache first, then local
+  - `--cache disabled` - Disable all caching
+  - Replaces the need for multiple flags with a single, clear strategy option
+  - Directly controls cache order and which backends are active
+  - Backward compatible: `--skip-cache` flag still works as before
+  - See `docs/guides/caching.md` for detailed usage examples
+
+- **Remote cache enabled field** - New `enabled` field in remote cache configuration
+  - Disable remote caching by default in `bake.yml` with `remotes.enabled: false`
+  - Enable selectively via CLI flags like `--cache remote-first` or `--cache local-first`
+  - Useful for opt-in remote caching workflows (e.g., only use team cache when needed)
+  - Defaults to `true` for backward compatibility
+  - Example: Configure S3 cache but keep it disabled unless explicitly enabled via CLI
+
+- **Force version override flag** - New `--force-version-override` flag
+  - Allows running bake even when project requires a newer version
+  - Useful for testing or when you know the version difference is safe
+  - Use with caution as it may lead to unexpected behavior with incompatible versions
+
+### Fixed
+
+- **Dependency graph with templates** - Fixed dependency resolution when using recipe templates
+  - Ensures template-instantiated recipes properly participate in the dependency graph
+  - Resolves issues where template dependencies weren't correctly tracked
+
 ## v1.0.1 - 2025-10-10
 
 ### Fixed

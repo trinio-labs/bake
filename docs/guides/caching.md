@@ -26,22 +26,43 @@ config:
     local:
       enabled: true
       path: .bake/cache         # Cache directory (default)
-      
+
     # Remote cache providers
     remotes:
+      enabled: true             # Enable/disable all remote caches (default: true)
+
       # AWS S3 cache
       s3:
         bucket: my-bake-cache
         region: us-west-2
         prefix: "project/{{var.environment}}"  # Optional key prefix
-        
-      # Google Cloud Storage cache  
+
+      # Google Cloud Storage cache
       gcs:
         bucket: my-bake-cache
         prefix: "builds/{{var.version}}"
-        
+
     # Cache strategy order (first hit wins)
     order: ["local", "s3", "gcs"]
+```
+
+**Disabling remote caches by default:**
+
+```yaml
+# bake.yml - Remote caches disabled by default, enabled via CLI
+config:
+  cache:
+    local:
+      enabled: true
+    remotes:
+      enabled: false            # Disabled by default
+      s3:
+        bucket: my-bake-cache
+        region: us-west-2
+
+# Enable with CLI flag:
+# bake --cache remote-first    # Enables and uses remote cache
+# bake --cache local-first     # Enables remote as fallback
 ```
 
 ### Recipe-Level Cache Configuration
@@ -331,6 +352,190 @@ config:
     
     # Local stores successful cache retrievals from remotes
     # Subsequent runs will hit local cache first
+```
+
+## CLI Cache Overrides
+
+Bake provides CLI flags to override cache configuration at runtime without modifying your `bake.yml` file. This is useful for testing, debugging, or adjusting cache behavior in CI/CD environments.
+
+### Cache Strategy Flag
+
+Use the `--cache` flag to control cache behavior:
+
+```bash
+# Use only local cache (disable remote)
+bake --cache local-only frontend:build
+
+# Use only remote cache (disable local)
+bake --cache remote-only frontend:build
+
+# Check local cache first, then remote (typical default)
+bake --cache local-first frontend:build
+
+# Check remote cache first, then local
+bake --cache remote-first frontend:build
+
+# Disable all caching
+bake --cache disabled frontend:build
+```
+
+### Strategy Details
+
+#### `local-only`
+
+Uses only the local filesystem cache, disabling all remote caches.
+
+**Use cases:**
+- Development environments with slow network connections
+- Working offline without remote cache access
+- Testing local cache behavior
+
+```bash
+# Fast local-only builds
+bake --cache local-only
+```
+
+**Configuration applied:**
+- Local cache: `enabled`
+- Remote caches: `disabled`
+- Cache order: `["local"]`
+
+#### `remote-only`
+
+Uses only remote caches (S3, GCS), disabling the local cache.
+
+**Use cases:**
+- CI/CD environments with ephemeral runners
+- Ensuring fresh builds from team cache
+- Testing remote cache infrastructure
+
+```bash
+# Use team cache only
+bake --cache remote-only frontend:build
+```
+
+**Configuration applied:**
+- Local cache: `disabled`
+- Remote caches: `enabled` (if configured)
+- Cache order: `["s3", "gcs"]` (based on configuration)
+- Warns if no remote caches are configured
+
+#### `local-first`
+
+Checks local cache first, then falls back to remote caches. This is typically the default behavior when both caches are enabled.
+
+**Use cases:**
+- Development environments with remote backup
+- Standard build workflows with cache sharing
+- Hybrid local/remote cache strategies
+- **Opt-in to remote caching** - Enable remote caches that are disabled in config
+
+**Example - Enable disabled remote caches:**
+```yaml
+# bake.yml - Remote caches disabled by default
+config:
+  cache:
+    local:
+      enabled: true
+    remotes:
+      enabled: false  # Disabled by default
+      s3:
+        bucket: team-cache
+```
+
+```bash
+# Enable and use remote cache when needed
+bake --cache local-first
+```
+
+**Configuration applied:**
+- Local cache: `enabled`
+- Remote caches: `enabled` (overrides config if disabled)
+- Cache order: `["local", "s3", "gcs"]`
+
+#### `remote-first`
+
+Checks remote caches first, then falls back to local cache.
+
+**Use cases:**
+- CI/CD environments preferring team cache
+- Getting latest cached artifacts from the team
+- Prioritizing shared cache over local
+
+```bash
+# Prefer team cache, fallback to local
+bake --cache remote-first backend:test
+```
+
+**Configuration applied:**
+- Local cache: `enabled`
+- Remote caches: `enabled` (if configured)
+- Cache order: `["s3", "gcs", "local"]`
+
+#### `disabled`
+
+Disables all caching, forcing all recipes to execute.
+
+**Use cases:**
+- Debugging cache issues
+- Forcing clean builds
+- Testing without cache influence
+
+```bash
+# Force fresh build
+bake --cache disabled
+```
+
+**Configuration applied:**
+- Local cache: `disabled`
+- Remote caches: `disabled`
+
+### Legacy Flag
+
+For backward compatibility, the `--skip-cache` flag is still supported and behaves identically to `--cache disabled`:
+
+```bash
+# These are equivalent
+bake --skip-cache
+bake --cache disabled
+```
+
+### Examples
+
+**Development workflow:**
+```bash
+# Normal development - use local cache only
+bake --cache local-only
+
+# Pull latest from team cache
+bake --cache remote-first
+
+# Force clean build to verify issues
+bake --cache disabled
+```
+
+**CI/CD workflow:**
+```bash
+# Pull Request builds - use team cache
+bake --cache remote-only --var environment=ci
+
+# Main branch builds - prioritize remote cache
+bake --cache remote-first --var branch=main
+
+# Release builds - no cache, clean build
+bake --cache disabled --var environment=production
+```
+
+**Debugging cache issues:**
+```bash
+# Test local cache only
+bake --cache local-only --verbose
+
+# Test remote cache only
+bake --cache remote-only --verbose
+
+# Compare cache vs no-cache behavior
+bake --cache disabled --verbose
 ```
 
 ## Cache Performance Optimization

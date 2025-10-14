@@ -18,7 +18,7 @@ pub use project::BakeProject;
 pub use update::{check_for_updates, perform_self_update};
 
 use anyhow::{bail, Context};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use console::Term;
 use env_logger::Env;
 use indexmap::IndexMap;
@@ -34,6 +34,21 @@ const WELCOME_MSG: &str = "
 │                           │
 └───────────────────────────┘
 ";
+
+/// Cache strategy option
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CacheStrategy {
+    /// Use only local cache (disable remote)
+    LocalOnly,
+    /// Use only remote cache (disable local)
+    RemoteOnly,
+    /// Check local cache first, then remote (typical default)
+    LocalFirst,
+    /// Check remote cache first, then local
+    RemoteFirst,
+    /// Disable all caching
+    Disabled,
+}
 
 /// Bake is a build system that runs and caches tasks based on yaml configuration
 /// files.
@@ -121,9 +136,13 @@ pub struct Args {
     #[arg(long)]
     pub render: bool,
 
-    /// Skip using and saving to cache
+    /// Skip using and saving to cache (disables both local and remote caches)
     #[arg(long)]
     pub skip_cache: bool,
+
+    /// Override cache strategy (local-only, remote-only, local-first, remote-first, disabled)
+    #[arg(long, value_enum)]
+    pub cache: Option<CacheStrategy>,
 
     /// Environment for variable overrides (e.g., dev, prod, test)
     #[arg(long)]
@@ -688,11 +707,89 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Handle skip cache option
+    // Handle cache override options
     if args.skip_cache {
         println!("Skipping cache...");
         project.config.cache.local.enabled = false;
-        project.config.cache.remotes = None;
+        if let Some(ref mut remotes) = project.config.cache.remotes {
+            remotes.enabled = false;
+        }
+    } else if let Some(cache_strategy) = args.cache {
+        match cache_strategy {
+            CacheStrategy::LocalOnly => {
+                println!("Cache strategy: local-only");
+                project.config.cache.local.enabled = true;
+                // Disable remote caches but keep configuration
+                if let Some(ref mut remotes) = project.config.cache.remotes {
+                    remotes.enabled = false;
+                }
+                project.config.cache.order = vec!["local".to_string()];
+            }
+            CacheStrategy::RemoteOnly => {
+                println!("Cache strategy: remote-only");
+                project.config.cache.local.enabled = false;
+                if let Some(ref mut remotes) = project.config.cache.remotes {
+                    remotes.enabled = true;
+                    // Set order to remote strategies only
+                    let mut remote_order = Vec::new();
+                    if remotes.s3.is_some() {
+                        remote_order.push("s3".to_string());
+                    }
+                    if remotes.gcs.is_some() {
+                        remote_order.push("gcs".to_string());
+                    }
+                    project.config.cache.order = remote_order;
+                } else {
+                    println!("Warning: Remote caches are not configured in bake.yml");
+                }
+            }
+            CacheStrategy::LocalFirst => {
+                println!("Cache strategy: local-first");
+                project.config.cache.local.enabled = true;
+                // Enable remote caches if configured
+                if let Some(ref mut remotes) = project.config.cache.remotes {
+                    remotes.enabled = true;
+                }
+                // Build order: local, then remotes
+                let mut order = vec!["local".to_string()];
+                if let Some(ref remotes) = project.config.cache.remotes {
+                    if remotes.s3.is_some() {
+                        order.push("s3".to_string());
+                    }
+                    if remotes.gcs.is_some() {
+                        order.push("gcs".to_string());
+                    }
+                }
+                project.config.cache.order = order;
+            }
+            CacheStrategy::RemoteFirst => {
+                println!("Cache strategy: remote-first");
+                project.config.cache.local.enabled = true;
+                // Enable remote caches if configured
+                if let Some(ref mut remotes) = project.config.cache.remotes {
+                    remotes.enabled = true;
+                }
+                // Build order: remotes first, then local
+                let mut order = Vec::new();
+                if let Some(ref remotes) = project.config.cache.remotes {
+                    if remotes.s3.is_some() {
+                        order.push("s3".to_string());
+                    }
+                    if remotes.gcs.is_some() {
+                        order.push("gcs".to_string());
+                    }
+                }
+                order.push("local".to_string());
+                project.config.cache.order = order;
+            }
+            CacheStrategy::Disabled => {
+                println!("Cache strategy: disabled");
+                project.config.cache.local.enabled = false;
+                if let Some(ref mut remotes) = project.config.cache.remotes {
+                    remotes.enabled = false;
+                }
+            }
+        }
     }
 
     // Wrap project back in Arc for execution
@@ -862,6 +959,7 @@ name: test_project
             validate_templates: false,
             render: false,
             skip_cache: false,
+            cache: None,
             env: None,
             force_version_override: false,
         };
@@ -901,6 +999,7 @@ name: test_project
             validate_templates: true,
             render: false,
             skip_cache: false,
+            cache: None,
             env: None,
             force_version_override: false,
         };
@@ -940,6 +1039,7 @@ name: test_project
             validate_templates: false,
             render: false,
             skip_cache: false,
+            cache: None,
             env: None,
             force_version_override: false,
         };
@@ -971,6 +1071,7 @@ name: test_project
             validate_templates: false,
             render: false,
             skip_cache: false,
+            cache: None,
             env: None,
             force_version_override: false,
         };
