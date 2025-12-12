@@ -41,14 +41,20 @@ futures-util = "0.3.31"
 globset = "0.4.16"
 google-cloud-storage = { version = "0.24.0", features = ["external-account"] }
 handlebars = "6.3.2"
+hex = "0.4.3"
+hostname = "0.4.0"
 ignore = "0.4.23"
 indexmap = { version = "2.9.0", features = ["serde"] }
 indicatif = "0.17.11"
+libc = "0.2"
 log = "0.4.27"
+num_cpus = "1.16.0"
 pathdiff = "0.2.3"
 petgraph = "0.8.2"
 rand = "0.9.1"
 regex = "1.11.1"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+sha2 = "0.10.8"
 self_update = { version = "0.42.0", features = [
   "archive-tar",
   "compression-flate2",
@@ -62,7 +68,8 @@ tokio = { version = "1.45.1", features = ["full"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.15"
 validator = { version = "0.20.0", features = ["derive"] }
-zstd = "0.13.3"
+zstd = { version = "0.13.3", features = ["zstdmt"] }
+hmac = "0.12"
 
 [dev-dependencies]
 tempfile = "3.20.0"
