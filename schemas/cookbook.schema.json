@@ -13,9 +13,15 @@
     },
     "variables": {
       "type": "object",
-      "description": "Variables defined at the cookbook level, available to all recipes in this cookbook",
+      "description": "Variables defined at the cookbook level, available to all recipes in this cookbook. Values can be strings, numbers, booleans, arrays, or objects.",
+      "additionalProperties": true
+    },
+    "overrides": {
+      "type": "object",
+      "description": "Environment-specific variable overrides for this cookbook (e.g., dev, prod, staging). Keys are environment names, values are variable name-value maps",
       "additionalProperties": {
-        "type": "string"
+        "type": "object",
+        "additionalProperties": true
       }
     },
     "environment": {
@@ -95,9 +101,15 @@
         },
         "variables": {
           "type": "object",
-          "description": "Recipe-specific variables",
+          "description": "Recipe-specific variables. Values can be strings, numbers, booleans, arrays, or objects.",
+          "additionalProperties": true
+        },
+        "overrides": {
+          "type": "object",
+          "description": "Environment-specific variable overrides for this recipe (e.g., dev, prod, staging). Keys are environment names, values are variable name-value maps",
           "additionalProperties": {
-            "type": "string"
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "environment": {
