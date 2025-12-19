@@ -9,6 +9,13 @@ pub struct LocalCacheConfig {
     #[serde(default = "bool_true_default")]
     pub enabled: bool,
     pub path: Option<PathBuf>,
+    /// Compression level for cache archives (0-19, where 0=no compression, 1=fastest, 19=best compression)
+    /// Default: 1 for local cache (optimized for speed)
+    #[serde(
+        default = "compression_level_local_default",
+        rename = "compressionLevel"
+    )]
+    pub compression_level: i32,
 }
 
 impl Default for LocalCacheConfig {
@@ -16,6 +23,7 @@ impl Default for LocalCacheConfig {
         Self {
             enabled: true,
             path: None,
+            compression_level: compression_level_local_default(),
         }
     }
 }
@@ -32,11 +40,25 @@ pub struct RemoteCacheConfig {
 pub struct S3CacheConfig {
     pub bucket: String,
     pub region: Option<String>,
+    /// Compression level for S3 cache archives (0-19, where 0=no compression, 1=fastest, 19=best compression)
+    /// Default: 3 for remote cache (balanced speed/size for network transfer)
+    #[serde(
+        default = "compression_level_remote_default",
+        rename = "compressionLevel"
+    )]
+    pub compression_level: i32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GcsCacheConfig {
     pub bucket: String,
+    /// Compression level for GCS cache archives (0-19, where 0=no compression, 1=fastest, 19=best compression)
+    /// Default: 3 for remote cache (balanced speed/size for network transfer)
+    #[serde(
+        default = "compression_level_remote_default",
+        rename = "compressionLevel"
+    )]
+    pub compression_level: i32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
@@ -175,6 +197,14 @@ fn update_check_interval_default() -> u64 {
     7 // Default value, you might want to implement a more robust default logic
 }
 
+fn compression_level_local_default() -> i32 {
+    1 // Default for local cache: fastest compression (optimized for speed)
+}
+
+fn compression_level_remote_default() -> i32 {
+    3 // Default for remote cache: balanced compression (good speed/size for network transfer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +216,7 @@ mod tests {
         let config = LocalCacheConfig::default();
         assert!(config.enabled);
         assert!(config.path.is_none());
+        assert_eq!(config.compression_level, 1);
     }
 
     #[test]
@@ -193,10 +224,35 @@ mod tests {
         let yaml = r#"
 enabled: false
 path: "/custom/cache/path"
+compressionLevel: 0
 "#;
         let config: LocalCacheConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(!config.enabled);
         assert_eq!(config.path, Some(PathBuf::from("/custom/cache/path")));
+        assert_eq!(config.compression_level, 0);
+    }
+
+    #[test]
+    fn test_compression_level_defaults() {
+        // Test local cache default (optimized for speed)
+        let local_config = LocalCacheConfig::default();
+        assert_eq!(local_config.compression_level, 1);
+
+        // Test that we can configure different levels
+        let yaml = r#"
+enabled: true
+compressionLevel: 0
+"#;
+        let config: LocalCacheConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.compression_level, 0);
+
+        // Test level 3 for balanced compression
+        let yaml = r#"
+enabled: true
+compressionLevel: 3
+"#;
+        let config: LocalCacheConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.compression_level, 3);
     }
 
     #[test]

@@ -19,7 +19,7 @@ use tokio::{
 use crate::{
     cache::{Cache, CacheResult},
     execution_plan,
-    project::{config::ToolConfig, BakeProject, Recipe, RunStatus, Status},
+    project::{config::ToolConfig, hashing::RecipeHasher, BakeProject, Recipe, RunStatus, Status},
 };
 
 /// Bakes a project by running all recipes and their dependencies.
@@ -62,6 +62,18 @@ pub async fn bake(
         );
     }
 
+    // Compute action keys (hashes) for all recipes upfront
+    let mut hasher = RecipeHasher::new(&project);
+    let mut recipe_hashes = BTreeMap::new();
+    for level in &execution_plan {
+        for recipe in level {
+            let recipe_fqn = recipe.full_name();
+            let hash = hasher.hash_for(&recipe_fqn)?;
+            recipe_hashes.insert(recipe_fqn, hash);
+        }
+    }
+    let recipe_hashes = Arc::new(recipe_hashes);
+
     let arc_cache = Arc::new(cache);
     let multi_progress = Arc::new(MultiProgress::new());
     let execution_results: Arc<Mutex<BTreeMap<String, RunStatus>>> =
@@ -89,6 +101,7 @@ pub async fn bake(
             let multi_progress_clone = multi_progress.clone();
             let results_clone = execution_results.clone();
             let semaphore_clone = semaphore.clone();
+            let recipe_hashes_clone = recipe_hashes.clone();
 
             // Clone the sender for this specific task.
             // The task will use this cloned sender to create its own receivers.
@@ -147,6 +160,7 @@ pub async fn bake(
                         recipe_to_run.clone(),
                         arc_project_clone,
                         arc_cache_clone,
+                        recipe_hashes_clone,
                         progress_bar_for_manage, // Pass the clone that can be moved
                         cancel_tx_clone_for_task.subscribe(), // Use cloned sender to subscribe
                     ) => status,
@@ -308,6 +322,7 @@ async fn manage_single_recipe_execution(
     recipe_to_run: Recipe,
     project: Arc<BakeProject>,
     cache: Arc<Cache>,
+    recipe_hashes: Arc<BTreeMap<String, String>>,
     progress_bar: Option<ProgressBar>,
     mut cancel_rx: broadcast::Receiver<()>, // Receiver for cancellation signals
 ) -> RunStatus {
@@ -333,8 +348,13 @@ async fn manage_single_recipe_execution(
         _ = async {
             // Check cache for the recipe.
             if recipe_to_run.cache.is_some() {
-                match cache.get(&recipe_fqn, &recipe_fqn).await { // Assuming this returns CacheResult directly
-                    CacheResult::Hit(_) => {
+                // Get the action key (hash) for this recipe
+                let action_key = recipe_hashes
+                    .get(&recipe_fqn)
+                    .expect("Recipe hash should have been computed");
+
+                match cache.get(action_key, &recipe_fqn).await {
+                    Ok(CacheResult::Hit { stdout: _, stderr: _, exit_code: _ }) => {
                         if let Some(pb) = progress_bar.as_ref() {
                             pb.finish_with_message(format!(
                                 "Baking recipe {}... {} (cached)",
@@ -347,9 +367,13 @@ async fn manage_single_recipe_execution(
                         run_status.status = Status::Done;
                         return; // Return from the async block, not the whole function
                     }
-                    CacheResult::Miss => {
+                    Ok(CacheResult::Miss) => {
                         debug!("Cache miss for recipe: {recipe_fqn}. Proceeding with execution.");
                         // If it's a miss, we simply proceed to run the recipe normally.
+                    }
+                    Err(e) => {
+                        debug!("Cache check error for recipe {}: {}. Proceeding with execution.", recipe_fqn, e);
+                        // On cache error, proceed with execution
                     }
                 }
             }
@@ -364,10 +388,33 @@ async fn manage_single_recipe_execution(
                 project.get_recipe_log_path(&recipe_fqn),
                 &project.config
             ).await {
-                Ok(_) => {
+                Ok(result) => {
                     run_status.status = Status::Done;
                     if recipe_to_run.cache.is_some() { // Try to cache if successful run
-                        if let Err(e) = cache.put(&recipe_fqn).await {
+                        // Get the action key (hash) for this recipe
+                        let action_key = recipe_hashes
+                            .get(&recipe_fqn)
+                            .expect("Recipe hash should have been computed");
+
+                        // Collect output paths from recipe cache configuration
+                        let output_paths: Vec<PathBuf> = if let Some(ref cache_config) = recipe_to_run.cache {
+                            cache_config
+                                .outputs
+                                .iter()
+                                .map(|output| {
+                                    // Resolve output path relative to cookbook directory
+                                    recipe_to_run
+                                        .config_path
+                                        .parent()
+                                        .unwrap()
+                                        .join(output)
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+
+                        if let Err(e) = cache.put(action_key, &recipe_fqn, &output_paths, &result.stdout, &result.stderr, result.exit_code).await {
                             let err_msg = format!("Cache store error for {recipe_fqn}: {e}");
                             if let Some(pb) = progress_bar.as_ref() { pb.println(&err_msg); } else { println!("{err_msg}"); }
                         }
@@ -404,11 +451,18 @@ async fn manage_single_recipe_execution(
 /// * `log_file_path` - The `PathBuf` where the recipe's output log should be stored.
 /// * `config` - The `ToolConfig` containing settings like verbosity and environment cleaning.
 ///
+/// Result of running a recipe
+pub struct RecipeRunResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
 pub async fn run_recipe(
     recipe: &Recipe,
     log_file_path: PathBuf,
     config: &ToolConfig,
-) -> Result<(), String> {
+) -> Result<RecipeRunResult, String> {
     debug!("Running recipe: {}", recipe.full_name());
     let env_values: Vec<(String, String)> = recipe
         .environment
@@ -456,22 +510,44 @@ pub async fn run_recipe(
                 log_file_path,
                 config.verbose,
             ));
-            if let Ok(exit_code) = child.wait().await {
-                if !exit_code.success() {
-                    return Err(format!(
-                        "Recipe {} failed with exit code {}",
-                        recipe.full_name(),
-                        exit_code
-                    ));
-                }
-            }
-            if let Err(err) = process_handle.await {
-                return Err(format!(
+            let exit_status = child.wait().await.map_err(|e| {
+                format!(
+                    "Failed to wait for recipe '{}': {}",
+                    recipe.full_name(),
+                    e
+                )
+            })?;
+            let exit_code = exit_status.code().unwrap_or(-1);
+
+            let (stdout_str, stderr_str) = process_handle.await.map_err(|e| {
+                format!(
                     "Error processing output for recipe '{}': {}",
                     recipe.full_name(),
-                    err
+                    e
+                )
+            })??;
+
+            let elapsed = start_time.elapsed();
+            if config.verbose {
+                println_recipe(
+                    &format!("============== Finished baking recipe ({elapsed:.2?}) ============="),
+                    &recipe.full_name(),
+                )
+            }
+
+            if !exit_status.success() {
+                return Err(format!(
+                    "Recipe {} failed with exit code {}",
+                    recipe.full_name(),
+                    exit_code
                 ));
             }
+
+            Ok(RecipeRunResult {
+                stdout: stdout_str,
+                stderr: stderr_str,
+                exit_code,
+            })
         }
         Err(err) => {
             return Err(format!(
@@ -481,14 +557,6 @@ pub async fn run_recipe(
             ));
         }
     }
-    let elapsed = start_time.elapsed();
-    if config.verbose {
-        println_recipe(
-            &format!("============== Finished baking recipe ({elapsed:.2?}) ============="),
-            &recipe.full_name(),
-        )
-    }
-    Ok(())
 }
 
 /// Generates a terminal color based on a string hash.
@@ -515,8 +583,8 @@ fn name_to_term_color(string: &str) -> Color {
 
 /// Processes the output (stdout and stderr) of a spawned command.
 ///
-/// It collects all output lines, optionally prints them to the console if `verbose` is true,
-/// and writes the complete output to the specified `log_file_path`.
+/// It collects stdout and stderr separately, optionally prints them to the console if `verbose` is true,
+/// and writes the combined output to the specified `log_file_path`.
 ///
 /// # Arguments
 /// * `stdout` - The `ChildStdout` stream of the spawned process.
@@ -525,15 +593,19 @@ fn name_to_term_color(string: &str) -> Color {
 /// * `log_file_path` - The `PathBuf` where the combined output log will be written.
 /// * `verbose` - A boolean indicating whether to print each line of output to the console.
 ///
+/// # Returns
+/// A tuple of (stdout_string, stderr_string)
+///
 async fn process_output(
     stdout: ChildStdout,
     stderr: ChildStderr,
     recipe_name: String,
     log_file_path: PathBuf,
     verbose: bool,
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let mut join_set = JoinSet::new();
-    let output_str = Arc::new(Mutex::new(String::new()));
+    let stdout_str = Arc::new(Mutex::new(String::new()));
+    let stderr_str = Arc::new(Mutex::new(String::new()));
 
     /// Helper to read lines from a stream, print if verbose, and append to a shared string.
     async fn collect_output<T: AsyncRead + Unpin>(
@@ -556,27 +628,34 @@ async fn process_output(
     join_set.spawn(collect_output(
         stdout,
         recipe_name.clone(),
-        output_str.clone(),
+        stdout_str.clone(),
         verbose,
     ));
 
     join_set.spawn(collect_output(
         stderr,
         recipe_name.clone(),
-        output_str.clone(),
+        stderr_str.clone(),
         verbose,
     ));
 
     while (join_set.join_next().await).is_some() {}
 
+    // Get the collected strings
+    let stdout_string = stdout_str
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock on stdout string: {e}"))?
+        .clone();
+    let stderr_string = stderr_str
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock on stderr string: {e}"))?
+        .clone();
+
+    // Write combined output to log file
+    let combined_output = format!("{}{}", stdout_string, stderr_string);
     match tokio::fs::File::create(log_file_path.clone()).await {
         Ok(mut file) => {
-            let output_bytes = output_str
-                .lock()
-                .map_err(|e| format!("Failed to acquire lock on output string: {e}"))?
-                .as_bytes()
-                .to_vec();
-            if let Err(err) = file.write_all(&output_bytes).await {
+            if let Err(err) = file.write_all(combined_output.as_bytes()).await {
                 return Err(format!(
                     "Failed to write to log file for recipe '{}' at '{}': {}",
                     recipe_name,
@@ -595,7 +674,7 @@ async fn process_output(
         }
     }
 
-    Ok(())
+    Ok((stdout_string, stderr_string))
 }
 
 /// Prints a line to the console, prefixed with a colored recipe name.

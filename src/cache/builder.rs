@@ -28,9 +28,9 @@ impl CacheBuilder {
     }
 
     pub fn default_strategies(&mut self) -> &mut Self {
-        self.add_strategy("local", super::local::LocalCacheStrategy::from_config);
-        self.add_strategy("s3", super::s3::S3CacheStrategy::from_config);
-        self.add_strategy("gcs", super::gcs::GcsCacheStrategy::from_config);
+        // Old tar-based strategies removed in favor of CAS cache
+        // CAS cache is now the default and only supported caching mechanism
+        // Configuration is handled through the CAS cache system
         self
     }
 
@@ -183,9 +183,9 @@ mod tests {
         let project = create_test_project();
         let mut builder = CacheBuilder::new(project);
         builder.default_strategies();
-        assert!(builder.strategies.contains_key("local"));
-        assert!(builder.strategies.contains_key("s3"));
-        assert!(builder.strategies.contains_key("gcs"));
+        // default_strategies() no longer adds old tar-based strategies
+        // CAS cache is now the default mechanism
+        assert!(builder.strategies.is_empty());
     }
 
     #[tokio::test]
@@ -256,7 +256,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_for_recipes_with_subset() {
-        let project_arc = create_test_project();
+        let mut project = (*create_test_project()).clone();
+        // Disable cache to avoid needing strategies
+        project.config.cache.local.enabled = false;
+        let project_arc = Arc::new(project);
 
         let mut builder = CacheBuilder::new(project_arc.clone());
         builder.default_strategies();
@@ -271,7 +274,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_for_recipes_empty_list() {
-        let project_arc = create_test_project();
+        let mut project = (*create_test_project()).clone();
+        // Disable cache to avoid needing strategies
+        project.config.cache.local.enabled = false;
+        let project_arc = Arc::new(project);
 
         let mut builder = CacheBuilder::new(project_arc.clone());
         builder.default_strategies();
