@@ -198,7 +198,13 @@ impl BlobStore for LayeredBlobStore {
 
             match tier.get_many(&current_hashes).await {
                 Ok(contents) => {
-                    // Process successful retrievals
+                    // Ensure we got all requested blobs (positional correspondence)
+                    if contents.len() != current_hashes.len() {
+                        // Partial success - treat as failure and try next tier
+                        continue;
+                    }
+
+                    // Process successful retrievals (safe to use positional index)
                     for (i, content) in contents.into_iter().enumerate() {
                         let (orig_idx, hash) = &remaining[i];
                         results.push((*orig_idx, content.clone()));

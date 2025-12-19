@@ -171,12 +171,12 @@ impl BlobIndex {
     }
 
     /// Get LRU candidates for eviction
-    pub fn get_lru_candidates(&self, count: usize) -> Result<Vec<(BlobHash, u64)>> {
+    pub fn get_lru_candidates(&self, count: usize, offset: usize) -> Result<Vec<(BlobHash, u64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT digest, size FROM blobs ORDER BY last_accessed ASC LIMIT ?1")?;
+            conn.prepare("SELECT digest, size FROM blobs ORDER BY last_accessed ASC LIMIT ?1 OFFSET ?2")?;
 
-        let rows = stmt.query_map(params![count as i64], |row| {
+        let rows = stmt.query_map(params![count as i64, offset as i64], |row| {
             let digest: String = row.get(0)?;
             let size: i64 = row.get(1)?;
             Ok((digest, size as u64))
@@ -385,7 +385,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         index.insert(&hash3, 300).unwrap();
 
-        let lru = index.get_lru_candidates(2).unwrap();
+        let lru = index.get_lru_candidates(2, 0).unwrap();
         assert_eq!(lru.len(), 2);
 
         // First entry should be the oldest

@@ -10,15 +10,11 @@ use crate::template::VariableContext;
 /// Return type for a custom helper
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum HelperReturnType {
+    #[default]
     String,
     Array,
-}
-
-impl Default for HelperReturnType {
-    fn default() -> Self {
-        Self::String
-    }
 }
 
 /// Represents a parameter type for helper validation (reuse from recipe templates)

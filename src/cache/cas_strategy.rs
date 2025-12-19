@@ -266,7 +266,7 @@ impl Cache {
             // This leaves plenty of room for other file descriptors used by the system,
             // tokio runtime, network connections, etc.
             let safe_limit = limit / 4;
-            let safe_limit = safe_limit.max(50).min(500);
+            let safe_limit = safe_limit.clamp(50, 500);
 
             debug!(
                 "System file descriptor limit: {}, using chunk size: {}",
@@ -531,9 +531,17 @@ impl Cache {
                 "CAS GET: Hit - all outputs already present for '{}' (quick check)",
                 recipe_name
             );
+
+            // Load stdout/stderr from blob store
+            let stdout_content = self.blob_store().get(&action_result.stdout_digest).await?;
+            let stderr_content = self.blob_store().get(&action_result.stderr_digest).await?;
+
+            let stdout = String::from_utf8_lossy(&stdout_content).to_string();
+            let stderr = String::from_utf8_lossy(&stderr_content).to_string();
+
             return Ok(CacheResult::Hit {
-                stdout: String::new(), // Will be loaded if needed
-                stderr: String::new(),
+                stdout,
+                stderr,
                 exit_code: action_result.exit_code,
             });
         }
@@ -935,7 +943,7 @@ mod tests {
             .put(
                 "test_dir_key",
                 "test:recipe",
-                &[output_dir.clone()],
+                std::slice::from_ref(&output_dir),
                 "test stdout",
                 "test stderr",
                 0,

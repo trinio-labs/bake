@@ -253,12 +253,22 @@ impl BlobStore for GcsBlobStore {
 
             if let Some(items) = response.items {
                 for object in items {
-                    // Extract hash from object name: prefix/algorithm/shard/hash
-                    // We want the last component
-                    if let Some(hash_str) = object.name.split('/').next_back() {
-                        if let Ok(hash) = BlobHash::from_hex_string(hash_str) {
-                            hashes.push(hash);
-                        }
+                    // Extract hash from object name: [prefix/]algorithm/shard/hash
+                    // Need to reconstruct "algorithm:hash" format
+                    let components: Vec<&str> = object.name.split('/').collect();
+                    if components.len() < 3 {
+                        continue; // Invalid path structure
+                    }
+
+                    // Get algorithm (third from end) and hash (last component)
+                    let algorithm = components[components.len() - 3];
+                    let hash_hex = components[components.len() - 1];
+
+                    // Reconstruct the format expected by from_hex_string
+                    let hash_string = format!("{}:{}", algorithm, hash_hex);
+
+                    if let Ok(hash) = BlobHash::from_hex_string(&hash_string) {
+                        hashes.push(hash);
                     }
                 }
             }

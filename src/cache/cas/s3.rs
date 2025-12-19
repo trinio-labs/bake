@@ -159,17 +159,31 @@ impl BlobStore for S3BlobStore {
     }
 
     async fn contains_many(&self, hashes: &[BlobHash]) -> Result<Vec<bool>> {
-        // S3 doesn't have batch head operation, so we do them in parallel
+        // S3 doesn't have batch head operation, so we do them in parallel with bounded concurrency
+        const CONCURRENCY: usize = 20;
+        let sem = Arc::new(Semaphore::new(CONCURRENCY));
+
         let tasks: Vec<_> = hashes
             .iter()
             .map(|hash| {
                 let hash = hash.clone();
                 let store = self.clone();
-                async move { store.contains(&hash).await.unwrap_or(false) }
+                let sem = sem.clone();
+                async move {
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to acquire semaphore permit: {}", e))?;
+
+                    store.contains(&hash).await.or_else(|e| -> Result<bool> {
+                        log::warn!("Failed to check blob {} in S3: {}", hash, e);
+                        Ok(false) // Treat errors as misses
+                    })
+                }
             })
             .collect();
 
-        let results = futures_util::future::join_all(tasks).await;
+        let results: Vec<bool> = futures_util::future::try_join_all(tasks).await?;
         Ok(results)
     }
 

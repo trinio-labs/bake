@@ -550,11 +550,11 @@ pub async fn run_recipe(
             })
         }
         Err(err) => {
-            return Err(format!(
+            Err(format!(
                 "Failed to spawn command for recipe '{}': {}",
                 recipe.full_name(),
                 err
-            ));
+            ))
         }
     }
 }

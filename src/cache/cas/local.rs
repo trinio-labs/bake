@@ -234,7 +234,7 @@ impl LocalBlobStore {
         let mut offset = 0;
 
         while bytes_freed < bytes_to_free {
-            let candidates = index.get_lru_candidates(batch_size)?;
+            let candidates = index.get_lru_candidates(batch_size, offset)?;
 
             if candidates.is_empty() {
                 debug!("No more eviction candidates available");
@@ -295,7 +295,7 @@ impl LocalBlobStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Index required for eviction"))?;
 
-        let candidates = index.get_lru_candidates(count)?;
+        let candidates = index.get_lru_candidates(count, 0)?;
         let mut bytes_freed = 0u64;
 
         debug!("Evicting {} LRU blobs", candidates.len());
