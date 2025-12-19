@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -8,11 +9,14 @@ use crate::{
     template::{extract_variables_blocks, process_variable_blocks, VariableContext},
 };
 use anyhow::bail;
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use indexmap::IndexMap;
 use log::debug;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
+
+/// Type alias for parallel cookbook loading results
+type CookbookResults = Arc<Mutex<Vec<anyhow::Result<(String, Cookbook)>>>>;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Cookbook {
@@ -292,30 +296,53 @@ impl Cookbook {
     /// * `path` - Path to a directory
     ///
     pub fn map_from_minimal(path: &PathBuf) -> anyhow::Result<BTreeMap<String, Self>> {
-        let all_files = WalkBuilder::new(path)
+        let results: CookbookResults = Arc::new(Mutex::new(Vec::new()));
+        let root_path = Arc::new(path.clone());
+
+        WalkBuilder::new(path)
             .add_custom_ignore_filename(".bakeignore")
-            .build();
-        all_files
-            .filter_map(|x| match x {
-                Ok(file) => {
-                    let filename = match file.file_name().to_str() {
-                        Some(name) => name,
-                        None => return None, // Skip files with invalid UTF-8 names
-                    };
-                    if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::from_minimal(&file.into_path(), path) {
-                            Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
-                            Err(err) => Some(Err(err)),
+            .threads(0) // Auto-detect optimal thread count
+            .build_parallel()
+            .run(|| {
+                let root = Arc::clone(&root_path);
+                let results_ref = Arc::clone(&results);
+                Box::new(move |entry| {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(err) => {
+                            debug!("Ignored file: {}", err);
+                            return WalkState::Continue;
                         }
-                    } else {
-                        None
+                    };
+
+                    let filename = match entry.file_name().to_str() {
+                        Some(name) => name,
+                        None => return WalkState::Continue,
+                    };
+
+                    if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
+                        match Self::from_minimal(&entry.into_path(), &root) {
+                            Ok(cookbook) => {
+                                results_ref
+                                    .lock()
+                                    .unwrap()
+                                    .push(Ok((cookbook.name.clone(), cookbook)));
+                            }
+                            Err(err) => {
+                                results_ref.lock().unwrap().push(Err(err));
+                            }
+                        }
                     }
-                }
-                Err(_) => {
-                    debug!("Ignored file: {}", x.unwrap_err());
-                    None
-                }
-            })
+
+                    WalkState::Continue
+                })
+            });
+
+        Arc::try_unwrap(results)
+            .expect("All threads should have completed")
+            .into_inner()
+            .unwrap()
+            .into_iter()
             .collect()
     }
 

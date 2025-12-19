@@ -432,15 +432,34 @@ impl BakeProject {
         Ok(())
     }
 
-    /// Resolves template-based recipes in all cookbooks using the provided context.
-    fn resolve_template_recipes(&mut self, context: &VariableContext) -> anyhow::Result<()> {
-        // Process each cookbook
-        for cookbook in self.cookbooks.values_mut() {
+    /// Resolves template-based recipes in cookbooks using parallel processing.
+    /// If `filter_fqns` is provided, only resolves templates for those specific recipes.
+    fn resolve_template_recipes(
+        &mut self,
+        context: &VariableContext,
+        filter_fqns: Option<&HashSet<String>>,
+    ) -> anyhow::Result<()> {
+        use rayon::prelude::*;
+
+        // Collect all template recipes that need resolution
+        struct TemplateTask {
+            cookbook_name: String,
+            recipe_name: String,
+            template_name: String,
+            original_recipe: Recipe,
+            cookbook_context: VariableContext,
+            cookbook_config_path: PathBuf,
+        }
+
+        let mut tasks: Vec<TemplateTask> = Vec::new();
+
+        for cookbook in self.cookbooks.values() {
             // Skip cookbooks that aren't fully loaded
             if !cookbook.fully_loaded {
                 continue;
             }
-            // Create cookbook-specific context (already has project constants)
+
+            // Create cookbook-specific context
             let mut cookbook_context = context.clone();
 
             // Add cookbook constants
@@ -455,45 +474,71 @@ impl BakeProject {
                 cookbook_context.working_directory = Some(cookbook_dir.to_path_buf());
             }
 
-            // Process each recipe in the cookbook
-            for (recipe_name, recipe) in cookbook.recipes.iter_mut() {
+            for (recipe_name, recipe) in &cookbook.recipes {
                 // Skip recipes that don't use templates
                 if recipe.template.is_none() {
                     continue;
                 }
 
-                let template_name = recipe.template.as_ref().unwrap();
-
-                // Find the template in the registry
-                let template = match self.template_registry.get(template_name) {
-                    Some(template) => template,
-                    None => {
-                        bail!(
-                            "Template Resolution: Template '{}' used by recipe '{}:{}' was not found. Available templates: {}",
-                            template_name,
-                            cookbook.name,
-                            recipe_name,
-                            self.template_registry.keys().cloned().collect::<Vec<_>>().join(", ")
-                        );
+                // If filter is provided, skip recipes not in the filter
+                if let Some(fqns) = filter_fqns {
+                    let fqn = format!("{}:{}", cookbook.name, recipe_name);
+                    if !fqns.contains(&fqn) {
+                        continue;
                     }
-                };
+                }
+
+                tasks.push(TemplateTask {
+                    cookbook_name: cookbook.name.clone(),
+                    recipe_name: recipe_name.clone(),
+                    template_name: recipe.template.as_ref().unwrap().clone(),
+                    original_recipe: recipe.clone(),
+                    cookbook_context: cookbook_context.clone(),
+                    cookbook_config_path: cookbook.config_path.clone(),
+                });
+            }
+        }
+
+        // If no templates to resolve, return early
+        if tasks.is_empty() {
+            return Ok(());
+        }
+
+        // Clone template registry for parallel access (it's read-only)
+        let template_registry = &self.template_registry;
+        let root_path = &self.root_path;
+
+        // Process templates in parallel
+        let results: Vec<anyhow::Result<(String, String, Recipe)>> = tasks
+            .into_par_iter()
+            .map(|task| {
+                // Find the template in the registry
+                let template = template_registry.get(&task.template_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Template Resolution: Template '{}' used by recipe '{}:{}' was not found. Available templates: {}",
+                        task.template_name,
+                        task.cookbook_name,
+                        task.recipe_name,
+                        template_registry.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                })?;
 
                 // Instantiate the template into a new recipe
                 let instantiated_recipe = template
                     .instantiate(
-                        recipe_name.clone(),
-                        cookbook.name.clone(),
-                        cookbook.config_path.clone(),
-                        self.root_path.clone(),
-                        &recipe.parameters,
-                        &cookbook_context,
+                        task.recipe_name.clone(),
+                        task.cookbook_name.clone(),
+                        task.cookbook_config_path.clone(),
+                        root_path.clone(),
+                        &task.original_recipe.parameters,
+                        &task.cookbook_context,
                     )
                     .map_err(|e| {
                         anyhow::anyhow!(
                             "{} (used by recipe '{}:{}')",
                             e,
-                            cookbook.name,
-                            recipe_name
+                            task.cookbook_name,
+                            task.recipe_name
                         )
                     })?;
 
@@ -501,7 +546,7 @@ impl BakeProject {
                 let mut final_recipe = instantiated_recipe;
 
                 // Process recipe variables with environment context for template resolution
-                let mut recipe_var_context = cookbook_context.clone();
+                let mut recipe_var_context = task.cookbook_context.clone();
                 recipe_var_context
                     .variables
                     .extend(final_recipe.variables.clone());
@@ -517,49 +562,61 @@ impl BakeProject {
                 }
 
                 // Override with any explicitly set fields from the original recipe
-                if let Some(description) = &recipe.description {
+                if let Some(description) = &task.original_recipe.description {
                     final_recipe.description = Some(description.clone());
                 }
 
                 // Merge environment variables (template + recipe)
                 final_recipe
                     .environment
-                    .extend(recipe.environment.iter().cloned());
+                    .extend(task.original_recipe.environment.iter().cloned());
 
                 // Merge variables (template first, then recipe overrides)
-                final_recipe
-                    .variables
-                    .extend(recipe.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
+                final_recipe.variables.extend(
+                    task.original_recipe
+                        .variables
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                );
 
                 // Override dependencies if specified in recipe (and non-empty)
-                if recipe
+                if task
+                    .original_recipe
                     .dependencies
                     .as_ref()
                     .is_some_and(|deps| !deps.is_empty())
                 {
-                    final_recipe.dependencies = recipe.dependencies.clone();
+                    final_recipe.dependencies = task.original_recipe.dependencies.clone();
                 }
 
                 // Override cache config if specified in recipe
-                if recipe.cache.is_some() {
-                    final_recipe.cache = recipe.cache.clone();
+                if task.original_recipe.cache.is_some() {
+                    final_recipe.cache = task.original_recipe.cache.clone();
                 }
 
                 // Override run command if specified in recipe (non-empty)
-                if !recipe.run.is_empty() {
-                    final_recipe.run = recipe.run.clone();
+                if !task.original_recipe.run.is_empty() {
+                    final_recipe.run = task.original_recipe.run.clone();
                 }
 
-                // Replace the original recipe with the instantiated one
-                *recipe = final_recipe;
+                Ok((task.cookbook_name, task.recipe_name, final_recipe))
+            })
+            .collect();
+
+        // Apply results back to cookbooks (sequential to avoid concurrent mutation)
+        for result in results {
+            let (cookbook_name, recipe_name, final_recipe) = result?;
+            if let Some(cookbook) = self.cookbooks.get_mut(&cookbook_name) {
+                cookbook.recipes.insert(recipe_name, final_recipe);
             }
         }
 
         Ok(())
     }
 
-    /// Validates that all recipes have a run command defined.
-    fn validate_recipes(&self) -> anyhow::Result<()> {
+    /// Validates that recipes have a run command defined.
+    /// If `filter_fqns` is provided, only validates those specific recipes.
+    fn validate_recipes(&self, filter_fqns: Option<&HashSet<String>>) -> anyhow::Result<()> {
         for (cookbook_name, cookbook) in &self.cookbooks {
             // Skip validation for cookbooks that aren't fully loaded
             if !cookbook.fully_loaded {
@@ -567,6 +624,14 @@ impl BakeProject {
             }
 
             for (recipe_name, recipe) in &cookbook.recipes {
+                // If filter is provided, skip recipes not in the filter
+                if let Some(fqns) = filter_fqns {
+                    let fqn = format!("{}:{}", cookbook_name, recipe_name);
+                    if !fqns.contains(&fqn) {
+                        continue;
+                    }
+                }
+
                 if recipe.run.trim().is_empty() {
                     bail!(
                         "Recipe Validation: Recipe '{}:{}' has no run command defined. Either provide a 'run' field directly or use a 'template' that defines one.",
@@ -862,9 +927,9 @@ impl BakeProject {
 
         self.load_cookbooks_for_execution(&all_execution_fqns, environment, context)?;
 
-        // Now validate recipes and resolve templates (only for loaded cookbooks)
-        self.resolve_template_recipes(context)?;
-        self.validate_recipes()?;
+        // Resolve templates and validate (only for recipes in execution plan)
+        self.resolve_template_recipes(context, Some(&all_execution_fqns))?;
+        self.validate_recipes(Some(&all_execution_fqns))?;
 
         // Re-populate dependency graph after templates are resolved
         // This ensures template dependencies are included in the execution plan
@@ -878,9 +943,14 @@ impl BakeProject {
         // Load any additional cookbooks that might be needed due to template dependencies
         let new_execution_fqns: HashSet<String> = fqn_levels.iter().flatten().cloned().collect();
         if new_execution_fqns != all_execution_fqns {
-            self.load_cookbooks_for_execution(&new_execution_fqns, environment, context)?;
-            self.resolve_template_recipes(context)?;
-            self.validate_recipes()?;
+            // Only process the newly added FQNs (difference between new and old)
+            let additional_fqns: HashSet<String> = new_execution_fqns
+                .difference(&all_execution_fqns)
+                .cloned()
+                .collect();
+            self.load_cookbooks_for_execution(&additional_fqns, environment, context)?;
+            self.resolve_template_recipes(context, Some(&additional_fqns))?;
+            self.validate_recipes(Some(&additional_fqns))?;
         }
 
         let mut result_levels: Vec<Vec<Recipe>> = Vec::new();

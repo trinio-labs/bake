@@ -51,6 +51,7 @@ log = "0.4.27"
 num_cpus = "1.16.0"
 pathdiff = "0.2.3"
 petgraph = "0.8.2"
+rayon = "1.10"
 rand = "0.9.1"
 regex = "1.11.1"
 rusqlite = { version = "0.32.1", features = ["bundled"] }

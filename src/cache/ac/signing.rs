@@ -344,7 +344,10 @@ mod tests {
     #[test]
     fn test_from_env_succeeds_with_valid_secret() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("BAKE_CACHE_SECRET", "my-secure-secret-key-at-least-32-bytes!");
+        std::env::set_var(
+            "BAKE_CACHE_SECRET",
+            "my-secure-secret-key-at-least-32-bytes!",
+        );
 
         let result = ManifestSigner::from_env();
         assert!(result.is_ok());
