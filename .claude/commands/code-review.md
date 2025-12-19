@@ -4,9 +4,9 @@ This command runs a code review using CodeRabbit to analyze and provide a plan o
 
 ## Command
 
-Use CodeRabbit's CLI to run the tool to review the changes in this branch. Let the command run as long as it needs (run it in the background) and fix any issues.
+Use CodeRabbit's CLI to run the tool to review the changes in this branch. Let the command run as long as it needs (RUN IT IN THE BACKGROUND) and fix any issues. It can possibly run for over 10m or longer, depending on the size of the codebase and the number of changes.
 
-You need to run CodeRabbit with:
+You MUST run CodeRabbit with the `--prompt-only` flag to see only the AI agent prompts. If you only get a "Review completed ✔" message with no further information, it means the review is done and there are no issues found.
 
 ```bash
 coderabbit --prompt-only [options]
