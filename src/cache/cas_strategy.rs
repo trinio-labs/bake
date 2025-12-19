@@ -1,5 +1,7 @@
 use super::ac::{ActionCache, ActionResult, OutputFile};
-use super::cas::{BlobHash, BlobIndex, BlobStore, GcsBlobStore, LayeredBlobStore, LocalBlobStore, S3BlobStore};
+use super::cas::{
+    BlobHash, BlobIndex, BlobStore, GcsBlobStore, LayeredBlobStore, LocalBlobStore, S3BlobStore,
+};
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, warn};
@@ -175,7 +177,10 @@ impl Cache {
 
         // If no stores could be initialized, return error
         if stores.is_empty() {
-            anyhow::bail!("No cache stores could be initialized for strategy {:?}", cache_strategy);
+            anyhow::bail!(
+                "No cache stores could be initialized for strategy {:?}",
+                cache_strategy
+            );
         }
 
         // Create blob store (single or layered)
@@ -266,7 +271,7 @@ impl Cache {
             // This leaves plenty of room for other file descriptors used by the system,
             // tokio runtime, network connections, etc.
             let safe_limit = limit / 4;
-            let safe_limit = safe_limit.max(50).min(500);
+            let safe_limit = safe_limit.clamp(50, 500);
 
             debug!(
                 "System file descriptor limit: {}, using chunk size: {}",
@@ -751,9 +756,7 @@ mod tests {
         fs::create_dir_all(&project_root).await.unwrap();
 
         let config = CacheConfig::default();
-        let cache = Cache::new(cache_root, project_root, config)
-            .await
-            .unwrap();
+        let cache = Cache::new(cache_root, project_root, config).await.unwrap();
 
         (cache, temp_dir)
     }
@@ -935,7 +938,7 @@ mod tests {
             .put(
                 "test_dir_key",
                 "test:recipe",
-                &[output_dir.clone()],
+                std::slice::from_ref(&output_dir),
                 "test stdout",
                 "test stderr",
                 0,

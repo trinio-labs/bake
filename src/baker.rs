@@ -511,11 +511,7 @@ pub async fn run_recipe(
                 config.verbose,
             ));
             let exit_status = child.wait().await.map_err(|e| {
-                format!(
-                    "Failed to wait for recipe '{}': {}",
-                    recipe.full_name(),
-                    e
-                )
+                format!("Failed to wait for recipe '{}': {}", recipe.full_name(), e)
             })?;
             let exit_code = exit_status.code().unwrap_or(-1);
 
@@ -549,13 +545,11 @@ pub async fn run_recipe(
                 exit_code,
             })
         }
-        Err(err) => {
-            return Err(format!(
-                "Failed to spawn command for recipe '{}': {}",
-                recipe.full_name(),
-                err
-            ));
-        }
+        Err(err) => Err(format!(
+            "Failed to spawn command for recipe '{}': {}",
+            recipe.full_name(),
+            err
+        )),
     }
 }
 

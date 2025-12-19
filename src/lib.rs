@@ -96,7 +96,7 @@ pub struct Args {
 
     /// Filter recipes by tags (comma-separated). Multiple tags are OR-ed (matches ANY tag).
     /// Example: --tags frontend,backend or --tags frontend --tags backend
-    #[arg(long, value_delimiter = ',')]
+    #[arg(short, long, value_delimiter = ',')]
     pub tags: Vec<String>,
 
     /// Dry run mode - just show what would be done
