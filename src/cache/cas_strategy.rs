@@ -536,9 +536,17 @@ impl Cache {
                 "CAS GET: Hit - all outputs already present for '{}' (quick check)",
                 recipe_name
             );
+
+            // Load stdout/stderr from blob store
+            let stdout_content = self.blob_store().get(&action_result.stdout_digest).await?;
+            let stderr_content = self.blob_store().get(&action_result.stderr_digest).await?;
+
+            let stdout = String::from_utf8_lossy(&stdout_content).to_string();
+            let stderr = String::from_utf8_lossy(&stderr_content).to_string();
+
             return Ok(CacheResult::Hit {
-                stdout: String::new(), // Will be loaded if needed
-                stderr: String::new(),
+                stdout,
+                stderr,
                 exit_code: action_result.exit_code,
             });
         }

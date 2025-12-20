@@ -167,6 +167,10 @@ impl ExecutionMetadata {
     }
 
     /// Get execution duration
+    ///
+    /// Returns the duration between started_at and completed_at.
+    /// If completed_at is before started_at (e.g., due to system clock adjustments),
+    /// returns Duration::default() (zero) instead of panicking.
     pub fn duration(&self) -> std::time::Duration {
         self.completed_at
             .duration_since(self.started_at)

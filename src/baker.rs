@@ -403,11 +403,11 @@ async fn manage_single_recipe_execution(
                                 .iter()
                                 .map(|output| {
                                     // Resolve output path relative to cookbook directory
-                                    recipe_to_run
+                                    let base_dir = recipe_to_run
                                         .config_path
                                         .parent()
-                                        .unwrap()
-                                        .join(output)
+                                        .unwrap_or_else(|| std::path::Path::new("."));
+                                    base_dir.join(output)
                                 })
                                 .collect()
                         } else {

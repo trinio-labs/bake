@@ -95,10 +95,15 @@ impl BlobStore for S3BlobStore {
             Err(err) => {
                 // Check if it's a "not found" error
                 if err.to_string().contains("NotFound") || err.to_string().contains("404") {
+                    debug!("S3 blob not found: {}", key);
                     Ok(false)
                 } else {
-                    // Log but don't fail - treat as miss
-                    debug!("S3 head_object error for {}: {}", key, err);
+                    // Log unexpected errors for visibility in production (but treat as miss)
+                    log::warn!(
+                        "S3 head_object error for {} (treating as miss): {}",
+                        key,
+                        err
+                    );
                     Ok(false)
                 }
             }
@@ -159,17 +164,30 @@ impl BlobStore for S3BlobStore {
     }
 
     async fn contains_many(&self, hashes: &[BlobHash]) -> Result<Vec<bool>> {
-        // S3 doesn't have batch head operation, so we do them in parallel
+        // S3 doesn't have batch head operation, so we do them in parallel with bounded concurrency
+        const CONCURRENCY: usize = 20;
+        let sem = Arc::new(Semaphore::new(CONCURRENCY));
+
         let tasks: Vec<_> = hashes
             .iter()
             .map(|hash| {
                 let hash = hash.clone();
                 let store = self.clone();
-                async move { store.contains(&hash).await.unwrap_or(false) }
+                let sem = sem.clone();
+                async move {
+                    let _permit = sem.acquire().await.map_err(|e| {
+                        anyhow::anyhow!("Failed to acquire semaphore permit: {}", e)
+                    })?;
+
+                    store.contains(&hash).await.or_else(|e| -> Result<bool> {
+                        log::warn!("Failed to check blob {} in S3: {}", hash, e);
+                        Ok(false) // Treat errors as misses
+                    })
+                }
             })
             .collect();
 
-        let results = futures_util::future::join_all(tasks).await;
+        let results: Vec<bool> = futures_util::future::try_join_all(tasks).await?;
         Ok(results)
     }
 
@@ -254,10 +272,16 @@ impl BlobStore for S3BlobStore {
 
             for object in response.contents() {
                 if let Some(key) = object.key() {
-                    // Extract hash from key: prefix/algorithm/shard/hash
-                    // We want the last component
-                    if let Some(hash_str) = key.split('/').next_back() {
-                        if let Ok(hash) = BlobHash::from_hex_string(hash_str) {
+                    // Extract hash from key: [prefix/]algorithm/shard/hash
+                    let components: Vec<&str> = key.split('/').collect();
+                    if components.len() >= 3 {
+                        // Get algorithm (third from end) and hash (last component)
+                        let algorithm = components[components.len() - 3];
+                        let hash_hex = components[components.len() - 1];
+
+                        // Reconstruct the format expected by from_hex_string
+                        let hash_string = format!("{}:{}", algorithm, hash_hex);
+                        if let Ok(hash) = BlobHash::from_hex_string(&hash_string) {
                             hashes.push(hash);
                         }
                     }

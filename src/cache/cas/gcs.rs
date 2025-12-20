@@ -90,9 +90,9 @@ impl BlobStore for GcsBlobStore {
                 if err_str.contains("404") || err_str.contains("Not Found") {
                     Ok(false)
                 } else {
-                    // Log but don't fail - treat as miss
-                    debug!("GCS get_object error for {}: {}", object_name, err);
-                    Ok(false)
+                    // Propagate operational errors instead of treating as miss
+                    // This surfaces authentication, permission, and network issues
+                    Err(err).context(format!("GCS operational error for {}", object_name))
                 }
             }
         }
@@ -162,12 +162,13 @@ impl BlobStore for GcsBlobStore {
             .map(|hash| {
                 let hash = hash.clone();
                 let store = self.clone();
-                async move { store.contains(&hash).await.unwrap_or(false) }
+                async move { store.contains(&hash).await }
             })
             .collect();
 
         let results = futures_util::future::join_all(tasks).await;
-        Ok(results)
+        // Propagate any errors instead of silently treating them as misses
+        results.into_iter().collect()
     }
 
     async fn get_many(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
@@ -224,7 +225,16 @@ impl BlobStore for GcsBlobStore {
 
         match self.client.get_object(&request).await {
             Ok(object) => Ok(Some(object.size as u64)),
-            Err(_) => Ok(None),
+            Err(err) => {
+                // Check if it's a "not found" error
+                let err_str = err.to_string();
+                if err_str.contains("404") || err_str.contains("Not Found") {
+                    Ok(None)
+                } else {
+                    // Propagate operational errors
+                    Err(err).context(format!("GCS operational error for {}", object_name))
+                }
+            }
         }
     }
 
@@ -253,12 +263,22 @@ impl BlobStore for GcsBlobStore {
 
             if let Some(items) = response.items {
                 for object in items {
-                    // Extract hash from object name: prefix/algorithm/shard/hash
-                    // We want the last component
-                    if let Some(hash_str) = object.name.split('/').next_back() {
-                        if let Ok(hash) = BlobHash::from_hex_string(hash_str) {
-                            hashes.push(hash);
-                        }
+                    // Extract hash from object name: [prefix/]algorithm/shard/hash
+                    // Need to reconstruct "algorithm:hash" format
+                    let components: Vec<&str> = object.name.split('/').collect();
+                    if components.len() < 3 {
+                        continue; // Invalid path structure
+                    }
+
+                    // Get algorithm (third from end) and hash (last component)
+                    let algorithm = components[components.len() - 3];
+                    let hash_hex = components[components.len() - 1];
+
+                    // Reconstruct the format expected by from_hex_string
+                    let hash_string = format!("{}:{}", algorithm, hash_hex);
+
+                    if let Ok(hash) = BlobHash::from_hex_string(&hash_string) {
+                        hashes.push(hash);
                     }
                 }
             }

@@ -48,6 +48,19 @@ impl LocalBlobStore {
         }
     }
 
+    /// Create with both a specific hash algorithm and an index
+    pub fn with_algorithm_and_index(
+        root: PathBuf,
+        algorithm: HashAlgorithm,
+        index: Arc<BlobIndex>,
+    ) -> Self {
+        Self {
+            root,
+            algorithm,
+            index: Some(index),
+        }
+    }
+
     /// Get the blob directory path (with sharding)
     fn get_blob_path(&self, hash: &BlobHash) -> PathBuf {
         let shard = hash.shard_prefix();
@@ -71,7 +84,7 @@ impl LocalBlobStore {
         let mut stats = StorageStats::default();
         let blob_root = self.root.join(self.algorithm.to_string());
 
-        if !blob_root.exists() {
+        if !fs::try_exists(&blob_root).await.unwrap_or(false) {
             return Ok(stats);
         }
 
@@ -123,7 +136,7 @@ impl LocalBlobStore {
         let source_path = self.get_blob_path(hash);
         let target_path = target_path.as_ref();
 
-        if !source_path.exists() {
+        if !fs::try_exists(&source_path).await.unwrap_or(false) {
             anyhow::bail!("Source blob {} does not exist", hash);
         }
 
@@ -166,7 +179,7 @@ impl LocalBlobStore {
         Ok(0) // No deduplication savings on copy
     }
 
-    /// Create hard links for multiple blobs in parallel
+    /// Create hard links for multiple blobs
     ///
     /// # Arguments
     /// * `links` - Vec of (hash, target_path) tuples
@@ -174,7 +187,7 @@ impl LocalBlobStore {
     /// # Returns
     /// Total bytes saved through deduplication
     pub async fn hardlink_many(&self, links: Vec<(BlobHash, PathBuf)>) -> Result<u64> {
-        // Execute hardlink operations in parallel
+        // Execute hardlink operations sequentially (each is a fast filesystem operation)
         let mut total_saved = 0u64;
 
         for (hash, path) in links {
@@ -234,7 +247,7 @@ impl LocalBlobStore {
         let mut offset = 0;
 
         while bytes_freed < bytes_to_free {
-            let candidates = index.get_lru_candidates(batch_size)?;
+            let candidates = index.get_lru_candidates(batch_size, offset)?;
 
             if candidates.is_empty() {
                 debug!("No more eviction candidates available");
@@ -276,7 +289,11 @@ impl LocalBlobStore {
         debug!(
             "LRU eviction completed: freed {} bytes ({} blobs)",
             bytes_freed,
-            bytes_freed / (stats.total_size / stats.blob_count.max(1))
+            if stats.total_size > 0 && stats.blob_count > 0 {
+                bytes_freed / (stats.total_size / stats.blob_count)
+            } else {
+                0
+            }
         );
 
         Ok(bytes_freed)
@@ -295,7 +312,7 @@ impl LocalBlobStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Index required for eviction"))?;
 
-        let candidates = index.get_lru_candidates(count)?;
+        let candidates = index.get_lru_candidates(count, 0)?;
         let mut bytes_freed = 0u64;
 
         debug!("Evicting {} LRU blobs", candidates.len());
@@ -370,13 +387,13 @@ impl LocalBlobStore {
 impl BlobStore for LocalBlobStore {
     async fn contains(&self, hash: &BlobHash) -> Result<bool> {
         let path = self.get_blob_path(hash);
-        Ok(path.exists())
+        Ok(fs::try_exists(&path).await.unwrap_or(false))
     }
 
     async fn get(&self, hash: &BlobHash) -> Result<Bytes> {
         let path = self.get_blob_path(hash);
 
-        if !path.exists() {
+        if !fs::try_exists(&path).await.unwrap_or(false) {
             anyhow::bail!("Blob not found: {}", hash);
         }
 
@@ -401,7 +418,7 @@ impl BlobStore for LocalBlobStore {
         let size = content.len() as u64;
 
         // Check if blob already exists
-        if path.exists() {
+        if fs::try_exists(&path).await.unwrap_or(false) {
             debug!("Blob {} already exists, skipping write", hash);
             // Update access time in index if available
             if let Some(index) = &self.index {
@@ -436,7 +453,7 @@ impl BlobStore for LocalBlobStore {
         // Atomic rename - if it fails because target exists, that's OK (deduplication)
         if let Err(e) = fs::rename(&temp_path, &path).await {
             // Check if target now exists - another thread may have completed the write
-            if path.exists() {
+            if fs::try_exists(&path).await.unwrap_or(false) {
                 // Clean up temp file if it still exists
                 let _ = fs::remove_file(&temp_path).await;
                 debug!("Blob {} already exists (deduplicated)", hash);
@@ -465,7 +482,7 @@ impl BlobStore for LocalBlobStore {
     async fn delete(&self, hash: &BlobHash) -> Result<()> {
         let path = self.get_blob_path(hash);
 
-        if path.exists() {
+        if fs::try_exists(&path).await.unwrap_or(false) {
             fs::remove_file(&path).await?;
 
             // Remove from index if available
@@ -484,7 +501,7 @@ impl BlobStore for LocalBlobStore {
     async fn size(&self, hash: &BlobHash) -> Result<Option<u64>> {
         let path = self.get_blob_path(hash);
 
-        if !path.exists() {
+        if !fs::try_exists(&path).await.unwrap_or(false) {
             return Ok(None);
         }
 
@@ -496,7 +513,7 @@ impl BlobStore for LocalBlobStore {
         let mut hashes = Vec::new();
         let blob_root = self.root.join(self.algorithm.to_string());
 
-        if !blob_root.exists() {
+        if !fs::try_exists(&blob_root).await.unwrap_or(false) {
             return Ok(hashes);
         }
 
@@ -591,7 +608,7 @@ impl StorageStats {
         }
         // Each additional reference beyond the first saves one file's worth of space
         let extra_refs = self.hardlink_refs - self.hardlink_count;
-        if self.hardlink_count > 0 {
+        if self.hardlink_count > 0 && self.blob_count > 0 {
             (self.total_size / self.blob_count) * extra_refs
         } else {
             0
