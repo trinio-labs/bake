@@ -948,6 +948,13 @@ impl BakeProject {
                 .difference(&all_execution_fqns)
                 .cloned()
                 .collect();
+            if !additional_fqns.is_empty() {
+                log::debug!(
+                    "Template dependencies introduced {} additional recipes: {:?}",
+                    additional_fqns.len(),
+                    additional_fqns
+                );
+            }
             self.load_cookbooks_for_execution(&additional_fqns, environment, context)?;
             self.resolve_template_recipes(context, Some(&additional_fqns))?;
             self.validate_recipes(Some(&additional_fqns))?;

@@ -338,6 +338,8 @@ impl Cookbook {
                 })
             });
 
+        // Safe to unwrap: run() blocks until all parallel threads complete,
+        // ensuring exclusive Arc ownership and no concurrent Mutex access.
         Arc::try_unwrap(results)
             .expect("All threads should have completed")
             .into_inner()

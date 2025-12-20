@@ -3,28 +3,24 @@ use super::blob_store::BlobStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use google_cloud_storage::{
-    client::{Client, ClientConfig},
-    http::objects::{
-        delete::DeleteObjectRequest,
-        download::Range,
-        get::GetObjectRequest,
-        list::ListObjectsRequest,
-        upload::{Media, UploadObjectRequest, UploadType},
-    },
-};
+use google_cloud_storage::client::{Storage, StorageControl};
 use log::debug;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tokio_stream::StreamExt;
 
 /// GCS-backed blob store for remote caching
 pub struct GcsBlobStore {
-    /// GCS bucket name
-    bucket: String,
+    /// GCS bucket name (just the bucket id, not the full path)
+    bucket_id: String,
 
-    /// GCS client
-    client: Client,
+    /// Full bucket path for API calls (projects/_/buckets/{bucket_id})
+    bucket_path: String,
+
+    /// GCS Storage client (for read/write operations)
+    storage: Storage,
+
+    /// GCS StorageControl client (for metadata operations)
+    control: StorageControl,
 
     /// Optional key prefix for organizing blobs
     prefix: Option<String>,
@@ -37,24 +33,29 @@ pub struct GcsBlobStore {
 impl GcsBlobStore {
     /// Create a new GCS blob store
     pub async fn new(bucket: String, prefix: Option<String>) -> Result<Self> {
-        let config = ClientConfig::default()
-            .with_auth()
+        let storage = Storage::builder()
+            .build()
             .await
-            .context("Failed to configure GCS authentication")?;
+            .context("Failed to create GCS Storage client")?;
 
-        let client = Client::new(config);
+        let control = StorageControl::builder()
+            .build()
+            .await
+            .context("Failed to create GCS StorageControl client")?;
 
-        // Note: GCS client doesn't have a simple "check bucket exists" API
-        // We'll verify on first operation
+        // Format bucket path for API calls
+        let bucket_path = format!("projects/_/buckets/{}", bucket);
 
         debug!("GcsBlobStore initialized for bucket: {}", bucket);
 
         Ok(Self {
-            bucket,
-            client,
+            bucket_id: bucket,
+            bucket_path,
+            storage,
+            control,
             prefix,
-            upload_sem: Arc::new(Semaphore::new(8)), // Limit concurrent uploads
-            download_sem: Arc::new(Semaphore::new(16)), // Higher limit for downloads
+            upload_sem: Arc::new(Semaphore::new(8)),
+            download_sem: Arc::new(Semaphore::new(16)),
         })
     }
 
@@ -69,6 +70,15 @@ impl GcsBlobStore {
             None => key_path,
         }
     }
+
+    /// Check if an error indicates "not found"
+    fn is_not_found_error(err: &google_cloud_storage::Error) -> bool {
+        let err_str = err.to_string();
+        err_str.contains("404")
+            || err_str.contains("Not Found")
+            || err_str.contains("not found")
+            || err_str.contains("NoSuchKey")
+    }
 }
 
 #[async_trait]
@@ -76,23 +86,21 @@ impl BlobStore for GcsBlobStore {
     async fn contains(&self, hash: &BlobHash) -> Result<bool> {
         let object_name = self.get_object_name(hash);
 
-        let request = GetObjectRequest {
-            bucket: self.bucket.clone(),
-            object: object_name.clone(),
-            ..Default::default()
-        };
-
-        match self.client.get_object(&request).await {
+        match self
+            .control
+            .get_object()
+            .set_bucket(&self.bucket_path)
+            .set_object(&object_name)
+            .send()
+            .await
+        {
             Ok(_) => Ok(true),
             Err(err) => {
-                // Check if it's a "not found" error
-                let err_str = err.to_string();
-                if err_str.contains("404") || err_str.contains("Not Found") {
+                if Self::is_not_found_error(&err) {
                     Ok(false)
                 } else {
-                    // Propagate operational errors instead of treating as miss
-                    // This surfaces authentication, permission, and network issues
-                    Err(err).context(format!("GCS operational error for {}", object_name))
+                    Err(anyhow::anyhow!("{}", err))
+                        .context(format!("GCS operational error for {}", object_name))
                 }
             }
         }
@@ -102,22 +110,20 @@ impl BlobStore for GcsBlobStore {
         let _permit = self.download_sem.acquire().await?;
         let object_name = self.get_object_name(hash);
 
-        let request = GetObjectRequest {
-            bucket: self.bucket.clone(),
-            object: object_name.clone(),
-            ..Default::default()
-        };
-
-        // Download the entire object as bytes
-        let mut stream = self
-            .client
-            .download_streamed_object(&request, &Range::default())
+        let mut reader = self
+            .storage
+            .read_object(&self.bucket_path, &object_name)
+            .send()
             .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
             .context(format!("Failed to get blob {} from GCS", hash))?;
 
+        // Collect all chunks into a vector
         let mut data = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context(format!("Failed to read blob {} chunk from GCS", hash))?;
+        while let Some(chunk) = reader.next().await {
+            let chunk = chunk
+                .map_err(|e| anyhow::anyhow!("{}", e))
+                .context(format!("Failed to read blob {} chunk from GCS", hash))?;
             data.extend_from_slice(&chunk);
         }
 
@@ -140,15 +146,11 @@ impl BlobStore for GcsBlobStore {
 
         let object_name = self.get_object_name(&hash);
 
-        let upload_type = UploadType::Simple(Media::new(object_name.clone()));
-        let request = UploadObjectRequest {
-            bucket: self.bucket.clone(),
-            ..Default::default()
-        };
-
-        self.client
-            .upload_object(&request, content.to_vec(), &upload_type)
+        self.storage
+            .write_object(&self.bucket_path, &object_name, content.clone())
+            .send_buffered()
             .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
             .context(format!("Failed to upload blob {} to GCS", hash))?;
 
         debug!("Uploaded blob {} to GCS ({} bytes)", hash, content.len());
@@ -156,7 +158,6 @@ impl BlobStore for GcsBlobStore {
     }
 
     async fn contains_many(&self, hashes: &[BlobHash]) -> Result<Vec<bool>> {
-        // GCS doesn't have batch head operation, so we do them in parallel
         let tasks: Vec<_> = hashes
             .iter()
             .map(|hash| {
@@ -167,7 +168,6 @@ impl BlobStore for GcsBlobStore {
             .collect();
 
         let results = futures_util::future::join_all(tasks).await;
-        // Propagate any errors instead of silently treating them as misses
         results.into_iter().collect()
     }
 
@@ -199,15 +199,13 @@ impl BlobStore for GcsBlobStore {
     async fn delete(&self, hash: &BlobHash) -> Result<()> {
         let object_name = self.get_object_name(hash);
 
-        let request = DeleteObjectRequest {
-            bucket: self.bucket.clone(),
-            object: object_name.clone(),
-            ..Default::default()
-        };
-
-        self.client
-            .delete_object(&request)
+        self.control
+            .delete_object()
+            .set_bucket(&self.bucket_path)
+            .set_object(&object_name)
+            .send()
             .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
             .context(format!("Failed to delete blob {} from GCS", hash))?;
 
         debug!("Deleted blob {} from GCS", hash);
@@ -217,22 +215,21 @@ impl BlobStore for GcsBlobStore {
     async fn size(&self, hash: &BlobHash) -> Result<Option<u64>> {
         let object_name = self.get_object_name(hash);
 
-        let request = GetObjectRequest {
-            bucket: self.bucket.clone(),
-            object: object_name.clone(),
-            ..Default::default()
-        };
-
-        match self.client.get_object(&request).await {
+        match self
+            .control
+            .get_object()
+            .set_bucket(&self.bucket_path)
+            .set_object(&object_name)
+            .send()
+            .await
+        {
             Ok(object) => Ok(Some(object.size as u64)),
             Err(err) => {
-                // Check if it's a "not found" error
-                let err_str = err.to_string();
-                if err_str.contains("404") || err_str.contains("Not Found") {
+                if Self::is_not_found_error(&err) {
                     Ok(None)
                 } else {
-                    // Propagate operational errors
-                    Err(err).context(format!("GCS operational error for {}", object_name))
+                    Err(anyhow::anyhow!("{}", err))
+                        .context(format!("GCS operational error for {}", object_name))
                 }
             }
         }
@@ -247,47 +244,44 @@ impl BlobStore for GcsBlobStore {
         let mut hashes = Vec::new();
         let mut page_token: Option<String> = None;
 
+        // Manual pagination through list_objects
         loop {
-            let request = ListObjectsRequest {
-                bucket: self.bucket.clone(),
-                prefix: Some(prefix.clone()),
-                page_token: page_token.clone(),
-                ..Default::default()
-            };
+            let mut request = self
+                .control
+                .list_objects()
+                .set_parent(&self.bucket_path)
+                .set_prefix(&prefix);
 
-            let response = self
-                .client
-                .list_objects(&request)
+            if let Some(token) = &page_token {
+                request = request.set_page_token(token);
+            }
+
+            let response = request
+                .send()
                 .await
+                .map_err(|e| anyhow::anyhow!("{}", e))
                 .context("Failed to list GCS objects")?;
 
-            if let Some(items) = response.items {
-                for object in items {
-                    // Extract hash from object name: [prefix/]algorithm/shard/hash
-                    // Need to reconstruct "algorithm:hash" format
-                    let components: Vec<&str> = object.name.split('/').collect();
-                    if components.len() < 3 {
-                        continue; // Invalid path structure
-                    }
+            for object in response.objects {
+                // Extract hash from object name: [prefix/]algorithm/shard/hash
+                let components: Vec<&str> = object.name.split('/').collect();
+                if components.len() < 3 {
+                    continue;
+                }
 
-                    // Get algorithm (third from end) and hash (last component)
-                    let algorithm = components[components.len() - 3];
-                    let hash_hex = components[components.len() - 1];
+                let algorithm = components[components.len() - 3];
+                let hash_hex = components[components.len() - 1];
+                let hash_string = format!("{}:{}", algorithm, hash_hex);
 
-                    // Reconstruct the format expected by from_hex_string
-                    let hash_string = format!("{}:{}", algorithm, hash_hex);
-
-                    if let Ok(hash) = BlobHash::from_hex_string(&hash_string) {
-                        hashes.push(hash);
-                    }
+                if let Ok(hash) = BlobHash::from_hex_string(&hash_string) {
+                    hashes.push(hash);
                 }
             }
 
-            if let Some(token) = response.next_page_token {
-                page_token = Some(token);
-            } else {
+            if response.next_page_token.is_empty() {
                 break;
             }
+            page_token = Some(response.next_page_token);
         }
 
         debug!("Listed {} blobs from GCS", hashes.len());
@@ -295,12 +289,13 @@ impl BlobStore for GcsBlobStore {
     }
 }
 
-// Implement Clone manually to share client and semaphores
 impl Clone for GcsBlobStore {
     fn clone(&self) -> Self {
         Self {
-            bucket: self.bucket.clone(),
-            client: self.client.clone(),
+            bucket_id: self.bucket_id.clone(),
+            bucket_path: self.bucket_path.clone(),
+            storage: self.storage.clone(),
+            control: self.control.clone(),
             prefix: self.prefix.clone(),
             upload_sem: self.upload_sem.clone(),
             download_sem: self.download_sem.clone(),
@@ -311,10 +306,6 @@ impl Clone for GcsBlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Note: These tests require GCS credentials and a real GCS bucket
-    // They are ignored by default and should be run manually with:
-    // cargo test gcs_blob_store -- --ignored
 
     #[tokio::test]
     #[ignore = "requires GCS credentials and bucket"]
@@ -371,7 +362,6 @@ mod tests {
         let retrieved = store.get_many(&hashes).await.expect("Failed to get many");
         assert_eq!(contents, retrieved);
 
-        // Cleanup
         for hash in hashes {
             let _ = store.delete(&hash).await;
         }
