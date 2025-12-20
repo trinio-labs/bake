@@ -41,6 +41,7 @@ pub fn create_default_test_project() -> Arc<BakeProject> {
             local: LocalCacheConfig {
                 enabled: true,
                 path: None,
+                compression_level: 1,
             },
             remotes: None,
             order: vec!["local".to_string()],

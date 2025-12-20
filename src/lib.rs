@@ -13,7 +13,6 @@ pub mod update;
 pub mod test_utils;
 
 // Re-export commonly used types for convenience
-pub use cache::CacheBuilder;
 pub use project::BakeProject;
 pub use update::{check_for_updates, perform_self_update};
 
@@ -638,18 +637,13 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         );
 
         // Clean cache entries for all recipes
-        let all_recipes: Vec<String> = execution_plan
+        let _all_recipes: Vec<String> = execution_plan
             .iter()
             .flatten()
             .map(|recipe| format!("{}:{}", recipe.cookbook, recipe.name))
             .collect();
 
-        let _cache = CacheBuilder::new(Arc::new(project.clone()))
-            .default_strategies()
-            .build_for_recipes(&all_recipes)
-            .await?;
-
-        // Clean outputs and cache entries
+        // Clean outputs and cache directory
         for recipe in execution_plan.iter().flatten() {
             let recipe_fqn = format!("{}:{}", recipe.cookbook, recipe.name);
 
@@ -674,6 +668,15 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
             }
 
             println!("Cleaned cache for: {recipe_fqn}");
+        }
+
+        // Clean CAS cache directory
+        let cache_dir = project.get_project_bake_path().join("cache");
+        if cache_dir.exists() {
+            std::fs::remove_dir_all(&cache_dir).with_context(|| {
+                format!("Failed to remove cache directory {}", cache_dir.display())
+            })?;
+            println!("Cleaned CAS cache directory: {}", cache_dir.display());
         }
 
         return Ok(());
@@ -796,16 +799,58 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let project = Arc::new(project);
 
     // Build cache for recipes
-    let all_recipes: Vec<String> = execution_plan
+    let _all_recipes: Vec<String> = execution_plan
         .iter()
         .flatten()
         .map(|recipe| format!("{}:{}", recipe.cookbook, recipe.name))
         .collect();
 
-    let cache = CacheBuilder::new(project.clone())
-        .default_strategies()
-        .build_for_recipes(&all_recipes)
-        .await?;
+    // Create CAS cache based on configuration
+    let cache = if args.skip_cache || matches!(args.cache, Some(CacheStrategy::Disabled)) {
+        // Cache is explicitly disabled
+        cache::Cache::new_disabled()
+    } else {
+        // Determine cache strategy
+        let strategy = args.cache.unwrap_or_else(|| {
+            // Default strategy based on configuration
+            if project.config.cache.local.enabled {
+                if project.config.cache.remotes.is_some() {
+                    // Both local and remote - use local-first
+                    CacheStrategy::LocalFirst
+                } else {
+                    // Only local
+                    CacheStrategy::LocalOnly
+                }
+            } else {
+                CacheStrategy::Disabled
+            }
+        });
+
+        // Check for disabled again (from default strategy)
+        if matches!(strategy, CacheStrategy::Disabled) {
+            cache::Cache::new_disabled()
+        } else {
+            // Convert CLI CacheStrategy to cache::CacheStrategy
+            let cache_strategy = match strategy {
+                CacheStrategy::LocalOnly => cache::CacheStrategy::LocalOnly,
+                CacheStrategy::RemoteOnly => cache::CacheStrategy::RemoteOnly,
+                CacheStrategy::LocalFirst => cache::CacheStrategy::LocalFirst,
+                CacheStrategy::RemoteFirst => cache::CacheStrategy::RemoteFirst,
+                CacheStrategy::Disabled => unreachable!("Already handled above"),
+            };
+
+            // Create multi-tier cache
+            let cache_root = project.get_project_bake_path().join("cache");
+            cache::Cache::with_strategy(
+                cache_root,
+                project.root_path.clone(),
+                cache::CacheConfig::default(),
+                cache_strategy,
+                &project.config.cache,
+            )
+            .await?
+        }
+    };
 
     // Execute recipes
     baker::bake(project, cache, execution_plan, false).await

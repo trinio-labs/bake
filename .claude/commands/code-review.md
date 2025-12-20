@@ -1,31 +1,32 @@
-# Run a code review with $ARGUMENTS
+# Run a code review
 
-This command runs a code review using Gemini 2.5 Pro to analyze and provide a plan of action for the suggested fixes.
+This command runs a code review using CodeRabbit to analyze and provide a plan of action for the suggested fixes.
 
 ## Command
 
-You are managing a code review for this project. Follow the following steps to perform this task:
+Use CodeRabbit's CLI to run the tool to review the changes in this branch. Let the command run as long as it needs (RUN IT IN THE BACKGROUND) and fix any issues. It can possibly run for over 10m or longer, depending on the size of the codebase and the number of changes.
 
-### Step 1
+You MUST run CodeRabbit with the `--prompt-only` flag to see only the AI agent prompts. If you only get a "Review completed ✔" message with no further information, it means the review is done and there are no issues found.
 
-Use zen's codereview tool to ask Gemini 2.5 Pro to review using the following
-parameters:
+```bash
+coderabbit --prompt-only [options]
+```
 
-- **Arguments**: $ARGUMENTS
-- **Checks**: Unless stated otherwise in ARGUMENTS always run the following checks:
-  - Security checks looking for OWASP Top 10 vulnerabilities
-  - Code smells
-  - Architectural best practices
+Read the arguments below and decide what options to pass to CodeRabbit.
 
-### Step 2
+ARGUMENTS: $ARGUMENTS
 
-Use the output from the codereview tool to create a plan of action for the suggested fixes using zen's planner tool. Ask
-for confirmation about the plan before proceeding.
+## CodeRabbit CLI Options
 
-- If user confirms save the tasks with relevant context to a file in .claude/tasks/ with a descriptive name
-  so that another agent can act on it later.
-- If the user ask for changes update the plan and confirm again with Gemini.
-- Make sure to include a final task to run the codereview tool again after the fixes are applied to ensure that the
-  issues have been resolved.
-- Make sure to specify the branch to work on in the plan file based on the current task and using the
-  Conventional Commits pattern.
+```text
+-V, --version output the version number
+--plain Output in plain text format (non-interactive)
+--prompt-only Show only AI agent prompts (implies --plain)
+-t, --type <type> Review type: all, committed, uncommitted (default: "all")
+-c, --config <files...> Additional instructions for CodeRabbit AI (e.g., claude.md, coderabbit.yaml)
+--base <branch> Base branch for comparison
+--base-commit <commit> Base commit on current branch for comparison
+--cwd <path> Working directory path
+--no-color Disable colored output
+-h, --help display help for command
+```
