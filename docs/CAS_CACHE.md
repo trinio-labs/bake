@@ -18,7 +18,7 @@ The CAS cache system is a complete reimagining of bake's caching layer, inspired
 
 Files are stored by their content hash (Blake3), enabling automatic deduplication:
 
-```
+```text
 Input files → Blake3 hash → Store as blob → Reference in manifest
 ```
 
@@ -28,7 +28,7 @@ When a file appears in multiple recipes, it's only stored once.
 
 Action manifests track recipe execution results:
 
-```
+```text
 Recipe inputs + command → Action hash → Manifest → Output file hashes
 ```
 
@@ -46,7 +46,7 @@ Three blob store types with identical async interfaces:
 
 LayeredBlobStore implements multi-tier caching with automatic promotion:
 
-```
+```text
 GET: Local → S3 → GCS (stops at first hit, promotes backward)
 PUT: Write to all tiers in parallel
 ```
@@ -114,7 +114,7 @@ Per-blob compression with format detection:
 
 On Unix systems, identical blobs are hard-linked:
 
-```
+```text
 .bake/cache/blobs/ab/cdef.../data
 ├─> project1/dist/bundle.js
 └─> project2/dist/bundle.js
@@ -369,6 +369,6 @@ Potential improvements for v1.2+:
 ## References
 
 - FastCDC Paper: "FastCDC: a Fast and Efficient Content-Defined Chunking Approach for Data Deduplication" (Xia et al., 2016)
-- Blake3: https://github.com/BLAKE3-team/BLAKE3
-- Bazel Remote Caching: https://bazel.build/remote/caching
-- Turborepo Remote Cache: https://turbo.build/repo/docs/core-concepts/remote-caching
+- Blake3: <https://github.com/BLAKE3-team/BLAKE3>
+- Bazel Remote Caching: <https://bazel.build/remote/caching>
+- Turborepo Remote Cache: <https://turbo.build/repo/docs/core-concepts/remote-caching>

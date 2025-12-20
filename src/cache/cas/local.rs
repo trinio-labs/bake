@@ -166,7 +166,7 @@ impl LocalBlobStore {
         Ok(0) // No deduplication savings on copy
     }
 
-    /// Create hard links for multiple blobs in parallel
+    /// Create hard links for multiple blobs
     ///
     /// # Arguments
     /// * `links` - Vec of (hash, target_path) tuples
@@ -174,7 +174,7 @@ impl LocalBlobStore {
     /// # Returns
     /// Total bytes saved through deduplication
     pub async fn hardlink_many(&self, links: Vec<(BlobHash, PathBuf)>) -> Result<u64> {
-        // Execute hardlink operations in parallel
+        // Execute hardlink operations sequentially (each is a fast filesystem operation)
         let mut total_saved = 0u64;
 
         for (hash, path) in links {
