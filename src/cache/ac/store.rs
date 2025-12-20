@@ -1,5 +1,6 @@
 use super::manifest::ActionResult;
 use anyhow::Result;
+use hex;
 use log::debug;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -24,9 +25,18 @@ impl ActionCache {
 
     /// Get manifest path for an action key
     fn get_manifest_path(&self, action_key: &str) -> PathBuf {
-        // Use safe filename (replace special chars)
-        let safe_key = action_key.replace([':', '/', '\\'], "_");
+        // Use hex encoding of the key to ensure unique, safe filenames
+        // This is reversible, avoiding collisions (e.g., "foo:bar" vs "foo_bar")
+        let safe_key = hex::encode(action_key);
         self.root.join(format!("{}.json", safe_key))
+    }
+
+    /// Decode a hex-encoded filename back to the original action key
+    fn decode_filename(&self, filename: &str) -> Option<String> {
+        let hex_str = filename.trim_end_matches(".json");
+        hex::decode(hex_str)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
     }
 
     /// Store an action result
@@ -88,7 +98,7 @@ impl ActionCache {
     pub async fn list(&self) -> Result<Vec<String>> {
         let mut keys = Vec::new();
 
-        if !self.root.exists() {
+        if !fs::try_exists(&self.root).await.unwrap_or(false) {
             return Ok(keys);
         }
 
@@ -99,8 +109,10 @@ impl ActionCache {
                 let file_name_str = file_name.to_string_lossy();
 
                 if file_name_str.ends_with(".json") {
-                    let key = file_name_str.trim_end_matches(".json").to_string();
-                    keys.push(key);
+                    // Decode hex-encoded filename back to original key
+                    if let Some(key) = self.decode_filename(&file_name_str) {
+                        keys.push(key);
+                    }
                 }
             }
         }
@@ -112,7 +124,7 @@ impl ActionCache {
     pub async fn stats(&self) -> Result<ActionCacheStats> {
         let mut stats = ActionCacheStats::default();
 
-        if !self.root.exists() {
+        if !fs::try_exists(&self.root).await.unwrap_or(false) {
             return Ok(stats);
         }
 

@@ -73,7 +73,7 @@ pub fn is_likely_compressed(data: &[u8]) -> bool {
     // Check for WebP
     data.get(8..12) == Some(b"WEBP") ||
     // Check for video formats
-    data.starts_with(b"ftyp") || // MP4/MOV
+    data.get(4..8) == Some(b"ftyp") || // MP4/MOV (ftyp is at offset 4)
     data.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) // Matroska/WebM
 }
 

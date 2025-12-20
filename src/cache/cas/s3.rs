@@ -99,7 +99,11 @@ impl BlobStore for S3BlobStore {
                     Ok(false)
                 } else {
                     // Log unexpected errors for visibility in production (but treat as miss)
-                    log::warn!("S3 head_object error for {} (treating as miss): {}", key, err);
+                    log::warn!(
+                        "S3 head_object error for {} (treating as miss): {}",
+                        key,
+                        err
+                    );
                     Ok(false)
                 }
             }
@@ -171,10 +175,9 @@ impl BlobStore for S3BlobStore {
                 let store = self.clone();
                 let sem = sem.clone();
                 async move {
-                    let _permit = sem
-                        .acquire()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to acquire semaphore permit: {}", e))?;
+                    let _permit = sem.acquire().await.map_err(|e| {
+                        anyhow::anyhow!("Failed to acquire semaphore permit: {}", e)
+                    })?;
 
                     store.contains(&hash).await.or_else(|e| -> Result<bool> {
                         log::warn!("Failed to check blob {} in S3: {}", hash, e);
@@ -269,10 +272,16 @@ impl BlobStore for S3BlobStore {
 
             for object in response.contents() {
                 if let Some(key) = object.key() {
-                    // Extract hash from key: prefix/algorithm/shard/hash
-                    // We want the last component
-                    if let Some(hash_str) = key.split('/').next_back() {
-                        if let Ok(hash) = BlobHash::from_hex_string(hash_str) {
+                    // Extract hash from key: [prefix/]algorithm/shard/hash
+                    let components: Vec<&str> = key.split('/').collect();
+                    if components.len() >= 3 {
+                        // Get algorithm (third from end) and hash (last component)
+                        let algorithm = components[components.len() - 3];
+                        let hash_hex = components[components.len() - 1];
+
+                        // Reconstruct the format expected by from_hex_string
+                        let hash_string = format!("{}:{}", algorithm, hash_hex);
+                        if let Ok(hash) = BlobHash::from_hex_string(&hash_string) {
                             hashes.push(hash);
                         }
                     }

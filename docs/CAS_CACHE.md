@@ -258,7 +258,11 @@ Since cache misses just result in re-execution (not failures), you can roll out 
 
 ## Environment Variables
 
-- `BAKE_CACHE_SECRET`: **Required for shared caches**. Signing secret for manifest verification (minimum 16 bytes, recommend 32+). Generate with: `openssl rand -base64 32`
+- `BAKE_CACHE_SECRET`: Signing secret for manifest verification.
+  - **Behavior**: Optional with insecure fallback. When not set, bake uses a development-only default secret and logs a warning on startup. This allows local development without configuration but is **NOT secure for shared/remote caches**.
+  - **When required**: Always set this for team CI/CD environments or when using S3/GCS remote caches. Without it, anyone could craft valid manifests and inject malicious cached outputs.
+  - **Requirements**: Minimum 16 bytes, recommended 32+ bytes for production use.
+  - **Generate with**: `openssl rand -base64 32`
 - `BAKE_CACHE_DIR`: Override default cache location
 - `AWS_*`: AWS credentials for S3BlobStore
 - `GOOGLE_APPLICATION_CREDENTIALS`: GCP credentials for GcsBlobStore

@@ -173,8 +173,9 @@ impl BlobIndex {
     /// Get LRU candidates for eviction
     pub fn get_lru_candidates(&self, count: usize, offset: usize) -> Result<Vec<(BlobHash, u64)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT digest, size FROM blobs ORDER BY last_accessed ASC LIMIT ?1 OFFSET ?2")?;
+        let mut stmt = conn.prepare(
+            "SELECT digest, size FROM blobs ORDER BY last_accessed ASC LIMIT ?1 OFFSET ?2",
+        )?;
 
         let rows = stmt.query_map(params![count as i64, offset as i64], |row| {
             let digest: String = row.get(0)?;

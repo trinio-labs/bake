@@ -90,9 +90,9 @@ impl BlobStore for GcsBlobStore {
                 if err_str.contains("404") || err_str.contains("Not Found") {
                     Ok(false)
                 } else {
-                    // Log but don't fail - treat as miss
-                    debug!("GCS get_object error for {}: {}", object_name, err);
-                    Ok(false)
+                    // Propagate operational errors instead of treating as miss
+                    // This surfaces authentication, permission, and network issues
+                    Err(err).context(format!("GCS operational error for {}", object_name))
                 }
             }
         }
@@ -162,17 +162,13 @@ impl BlobStore for GcsBlobStore {
             .map(|hash| {
                 let hash = hash.clone();
                 let store = self.clone();
-                async move {
-                    store.contains(&hash).await.unwrap_or_else(|e| {
-                        log::warn!("Failed to check blob {} in GCS: {}", hash, e);
-                        false
-                    })
-                }
+                async move { store.contains(&hash).await }
             })
             .collect();
 
         let results = futures_util::future::join_all(tasks).await;
-        Ok(results)
+        // Propagate any errors instead of silently treating them as misses
+        results.into_iter().collect()
     }
 
     async fn get_many(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
@@ -229,7 +225,16 @@ impl BlobStore for GcsBlobStore {
 
         match self.client.get_object(&request).await {
             Ok(object) => Ok(Some(object.size as u64)),
-            Err(_) => Ok(None),
+            Err(err) => {
+                // Check if it's a "not found" error
+                let err_str = err.to_string();
+                if err_str.contains("404") || err_str.contains("Not Found") {
+                    Ok(None)
+                } else {
+                    // Propagate operational errors
+                    Err(err).context(format!("GCS operational error for {}", object_name))
+                }
+            }
         }
     }
 
