@@ -48,6 +48,19 @@ impl LocalBlobStore {
         }
     }
 
+    /// Create with both a specific hash algorithm and an index
+    pub fn with_algorithm_and_index(
+        root: PathBuf,
+        algorithm: HashAlgorithm,
+        index: Arc<BlobIndex>,
+    ) -> Self {
+        Self {
+            root,
+            algorithm,
+            index: Some(index),
+        }
+    }
+
     /// Get the blob directory path (with sharding)
     fn get_blob_path(&self, hash: &BlobHash) -> PathBuf {
         let shard = hash.shard_prefix();

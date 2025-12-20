@@ -54,7 +54,8 @@ impl ActionCache {
     pub async fn get(&self, action_key: &str) -> Result<Option<ActionResult>> {
         let path = self.get_manifest_path(action_key);
 
-        if !path.exists() {
+        // Use async exists check to avoid blocking the runtime
+        if !fs::try_exists(&path).await.unwrap_or(false) {
             return Ok(None);
         }
 
@@ -68,14 +69,14 @@ impl ActionCache {
     /// Check if an action result exists
     pub async fn contains(&self, action_key: &str) -> bool {
         let path = self.get_manifest_path(action_key);
-        path.exists()
+        fs::try_exists(&path).await.unwrap_or(false)
     }
 
     /// Delete an action result
     pub async fn delete(&self, action_key: &str) -> Result<()> {
         let path = self.get_manifest_path(action_key);
 
-        if path.exists() {
+        if fs::try_exists(&path).await.unwrap_or(false) {
             fs::remove_file(&path).await?;
             debug!("Deleted action result for key: {}", action_key);
         }

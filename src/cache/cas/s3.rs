@@ -95,10 +95,11 @@ impl BlobStore for S3BlobStore {
             Err(err) => {
                 // Check if it's a "not found" error
                 if err.to_string().contains("NotFound") || err.to_string().contains("404") {
+                    debug!("S3 blob not found: {}", key);
                     Ok(false)
                 } else {
-                    // Log but don't fail - treat as miss
-                    debug!("S3 head_object error for {}: {}", key, err);
+                    // Log unexpected errors for visibility in production (but treat as miss)
+                    log::warn!("S3 head_object error for {} (treating as miss): {}", key, err);
                     Ok(false)
                 }
             }

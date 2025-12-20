@@ -162,7 +162,12 @@ impl BlobStore for GcsBlobStore {
             .map(|hash| {
                 let hash = hash.clone();
                 let store = self.clone();
-                async move { store.contains(&hash).await.unwrap_or(false) }
+                async move {
+                    store.contains(&hash).await.unwrap_or_else(|e| {
+                        log::warn!("Failed to check blob {} in GCS: {}", hash, e);
+                        false
+                    })
+                }
             })
             .collect();
 
