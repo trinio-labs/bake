@@ -402,11 +402,10 @@ impl BlobStore for LocalBlobStore {
         file.read_to_end(&mut buffer).await?;
 
         // Update access time in index if available (for LRU tracking)
-        if let Some(index) = &self.index {
-            if let Err(e) = index.touch(hash) {
+        if let Some(index) = &self.index
+            && let Err(e) = index.touch(hash) {
                 warn!("Failed to update access time for {}: {}", hash, e);
             }
-        }
 
         debug!("Retrieved blob {} ({} bytes)", hash, buffer.len());
         Ok(Bytes::from(buffer))
@@ -469,11 +468,10 @@ impl BlobStore for LocalBlobStore {
         }
 
         // Update index if available
-        if let Some(index) = &self.index {
-            if let Err(e) = index.insert(&hash, size) {
+        if let Some(index) = &self.index
+            && let Err(e) = index.insert(&hash, size) {
                 warn!("Failed to update index for {}: {}", hash, e);
             }
-        }
 
         debug!("Stored blob {} ({} bytes)", hash, content.len());
         Ok(hash)
@@ -486,11 +484,10 @@ impl BlobStore for LocalBlobStore {
             fs::remove_file(&path).await?;
 
             // Remove from index if available
-            if let Some(index) = &self.index {
-                if let Err(e) = index.remove(hash) {
+            if let Some(index) = &self.index
+                && let Err(e) = index.remove(hash) {
                     warn!("Failed to remove {} from index: {}", hash, e);
                 }
-            }
 
             debug!("Deleted blob {}", hash);
         }

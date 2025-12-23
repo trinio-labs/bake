@@ -286,11 +286,10 @@ impl BakeProject {
         context: &VariableContext,
     ) -> anyhow::Result<()> {
         // Check if cookbook is already fully loaded
-        if let Some(cookbook) = self.cookbooks.get(cookbook_name) {
-            if cookbook.fully_loaded {
+        if let Some(cookbook) = self.cookbooks.get(cookbook_name)
+            && cookbook.fully_loaded {
                 return Ok(()); // Already fully loaded
             }
-        }
 
         // Get the path from minimal cookbook
         let config_path = self
@@ -766,10 +765,14 @@ impl BakeProject {
         // Load custom helpers for the project.
         project.load_project_helpers()?;
 
-        // CHANGE: Load cookbooks minimally (no Handlebars rendering).
-        // This only parses YAML and extracts names, dependencies, and tags.
-        // Full loading with template rendering happens later when we know which recipes to execute.
-        project.cookbooks = Cookbook::discover_all(&project.root_path)?;
+        // Build context for cookbook discovery (includes project vars, env, helpers)
+        let discovery_context = project.build_variable_context(&override_variables);
+
+        // Discover cookbooks with Handlebars rendering for structural templates.
+        // This correctly handles {{#if}} blocks around recipes while only parsing
+        // essential fields (name, dependencies, tags) for faster loading.
+        // Full loading with complete template rendering happens later for execution.
+        project.cookbooks = Cookbook::discover_all(&project.root_path, &discovery_context)?;
 
         // Populate the recipe dependency graph from minimal cookbook data.
         project.populate_dependency_graph()?;
@@ -841,12 +844,11 @@ impl BakeProject {
             let parent = dir.parent();
 
             // Stop search if we are at the filesystem root or a git repository root.
-            if let Some(parent_dir) = parent {
-                if !dir.join(".git").is_dir() {
+            if let Some(parent_dir) = parent
+                && !dir.join(".git").is_dir() {
                     // Continue searching in the parent directory.
                     return Self::find_config_file_in_dir(parent_dir);
                 }
-            }
             // If no config file is found after checking all relevant directories.
             bail!(
                 "Project Load: bake.yml or bake.yaml not found in '{}' or any parent directory. Ensure a configuration file exists at the project root.",
