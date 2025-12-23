@@ -318,7 +318,11 @@ impl Cookbook {
                     let entry = match entry {
                         Ok(e) => e,
                         Err(err) => {
-                            debug!("Ignored file: {}", err);
+                            // Record the error so discover_all() fails instead of silently succeeding.
+                            results_ref.lock().unwrap().push(Err(anyhow::anyhow!(
+                                "Cookbook discovery error under '{}': {err}",
+                                root.display()
+                            )));
                             return WalkState::Continue;
                         }
                     };

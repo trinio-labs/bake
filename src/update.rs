@@ -341,7 +341,11 @@ fn can_update_binary() -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Mutex to serialize tests that modify environment variables
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_update_config_default() {
@@ -354,19 +358,21 @@ mod tests {
 
     #[test]
     fn test_should_skip_update_check_in_ci() {
-        // SAFETY: Test code - setting test environment variable
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::set_var("CI", "true") };
         assert!(should_skip_update_check());
-        // SAFETY: Test code - cleaning up test environment variable
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::remove_var("CI") };
     }
 
     #[test]
     fn test_should_skip_update_check_in_cargo() {
-        // SAFETY: Test code - setting test environment variable
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::set_var("CARGO", "true") };
         assert!(should_skip_update_check());
-        // SAFETY: Test code - cleaning up test environment variable
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::remove_var("CARGO") };
     }
 
@@ -601,19 +607,21 @@ mod tests {
 
     #[test]
     fn test_should_skip_update_check_github_actions() {
-        // SAFETY: Test code - setting test environment variable
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::set_var("GITHUB_ACTIONS", "true") };
         assert!(should_skip_update_check());
-        // SAFETY: Test code - cleaning up test environment variable
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::remove_var("GITHUB_ACTIONS") };
     }
 
     #[test]
     fn test_should_skip_update_check_continuous_integration() {
-        // SAFETY: Test code - setting test environment variable
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::set_var("CONTINUOUS_INTEGRATION", "true") };
         assert!(should_skip_update_check());
-        // SAFETY: Test code - cleaning up test environment variable
+        // SAFETY: Test code running in single-threaded test context with mutex lock
         unsafe { env::remove_var("CONTINUOUS_INTEGRATION") };
     }
 
