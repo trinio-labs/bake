@@ -405,7 +405,8 @@ mod tests {
             parameters: std::collections::BTreeMap::new(),
             run_status: RunStatus::default(),
         };
-        std::env::set_var("FOO", "bar");
+        // SAFETY: Test code - environment variable used only in this test
+        unsafe { std::env::set_var("FOO", "bar") };
         let hash1 = recipe.get_self_hash().unwrap();
 
         recipe.run = "test2".to_owned();
@@ -424,7 +425,8 @@ mod tests {
         )]);
         let hash5 = recipe.get_self_hash().unwrap();
 
-        std::env::set_var("FOO", "not_bar");
+        // SAFETY: Test code - environment variable used only in this test
+        unsafe { std::env::set_var("FOO", "not_bar") };
         let hash6 = recipe.get_self_hash().unwrap();
 
         // All hashes should be unique

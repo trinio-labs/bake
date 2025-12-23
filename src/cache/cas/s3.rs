@@ -2,10 +2,10 @@ use super::blob_hash::BlobHash;
 use super::blob_store::BlobStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
+use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
+use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::ObjectCannedAcl;
-use aws_sdk_s3::Client;
 use bytes::Bytes;
 use log::debug;
 use std::sync::Arc;
@@ -340,10 +340,12 @@ mod tests {
         assert_eq!(content, retrieved);
 
         store.delete(&hash).await.expect("Failed to delete");
-        assert!(!store
-            .contains(&hash)
-            .await
-            .expect("Failed to check after delete"));
+        assert!(
+            !store
+                .contains(&hash)
+                .await
+                .expect("Failed to check after delete")
+        );
     }
 
     #[tokio::test]

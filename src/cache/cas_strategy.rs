@@ -73,8 +73,8 @@ impl Default for CacheConfig {
 }
 
 impl Cache {
-    /// Create a new CAS cache with local-only storage (for backward compatibility)
-    pub async fn new(
+    /// Create a CAS cache with local-only storage
+    pub async fn local(
         cache_root: PathBuf,
         project_root: PathBuf,
         config: CacheConfig,
@@ -219,7 +219,7 @@ impl Cache {
     }
 
     /// Create a disabled cache that always returns Miss and ignores Put operations
-    pub fn new_disabled() -> Self {
+    pub fn disabled() -> Self {
         Self {
             blob_store: None,
             blob_index: None,
@@ -764,7 +764,9 @@ mod tests {
         fs::create_dir_all(&project_root).await.unwrap();
 
         let config = CacheConfig::default();
-        let cache = Cache::new(cache_root, project_root, config).await.unwrap();
+        let cache = Cache::local(cache_root, project_root, config)
+            .await
+            .unwrap();
 
         (cache, temp_dir)
     }

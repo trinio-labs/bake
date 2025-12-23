@@ -326,10 +326,12 @@ mod tests {
         assert_eq!(content, retrieved);
 
         store.delete(&hash).await.expect("Failed to delete");
-        assert!(!store
-            .contains(&hash)
-            .await
-            .expect("Failed to check after delete"));
+        assert!(
+            !store
+                .contains(&hash)
+                .await
+                .expect("Failed to check after delete")
+        );
     }
 
     #[tokio::test]

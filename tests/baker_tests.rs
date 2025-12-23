@@ -7,7 +7,7 @@ mod common;
 
 async fn build_cache(project: &Arc<bake::project::BakeProject>) -> Cache {
     let cache_root = project.get_project_bake_path().join("cache");
-    Cache::new(
+    Cache::local(
         cache_root,
         project.root_path.clone(),
         bake::cache::CacheConfig::default(),

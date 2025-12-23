@@ -25,9 +25,9 @@ use std::{
 use serde::Deserialize;
 
 use crate::template::{
-    extract_environment_block, extract_variables_blocks, process_variable_blocks, VariableContext,
+    VariableContext, extract_environment_block, extract_variables_blocks, process_variable_blocks,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use self::config::ToolConfig;
 
@@ -232,7 +232,11 @@ impl BakeProject {
         match serde_yaml::from_str::<Self>(&rendered_yaml) {
             Ok(mut parsed) => {
                 if let Err(err) = parsed.validate() {
-                    bail!("Project Load: Configuration file '{}' validation failed: {}", file_path.display(), err);
+                    bail!(
+                        "Project Load: Configuration file '{}' validation failed: {}",
+                        file_path.display(),
+                        err
+                    );
                 }
                 parsed.root_path = project_root;
                 Ok((parsed, processed_variables))
@@ -297,7 +301,7 @@ impl BakeProject {
             .clone();
 
         // Fully load with Handlebars
-        let fully_loaded = Cookbook::from(&config_path, &self.root_path, environment, context)?;
+        let fully_loaded = Cookbook::load(&config_path, &self.root_path, environment, context)?;
 
         // Replace minimal cookbook with fully loaded one
         self.cookbooks
@@ -365,7 +369,7 @@ impl BakeProject {
 
                     // Look for .yml or .yaml template files
                     if filename.ends_with(".yml") || filename.ends_with(".yaml") {
-                        match RecipeTemplate::from_file(&path.to_path_buf()) {
+                        match RecipeTemplate::load(&path.to_path_buf()) {
                             Ok(template) => Some(Ok((template.name.clone(), template))),
                             Err(err) => Some(Err(err)),
                         }
@@ -414,7 +418,7 @@ impl BakeProject {
 
                     // Look for .yml or .yaml helper files
                     if filename.ends_with(".yml") || filename.ends_with(".yaml") {
-                        match Helper::from_file(&path.to_path_buf()) {
+                        match Helper::load(&path.to_path_buf()) {
                             Ok(helper) => Some(Ok((helper.name.clone(), helper))),
                             Err(err) => Some(Err(err)),
                         }
@@ -677,7 +681,8 @@ impl BakeProject {
                     if !force_version_override {
                         anyhow::bail!(
                             "❌ This project requires bake v{} but you're running v{}.\n   Please upgrade your bake installation to match or exceed the project version, or use --force-version-override to bypass this check.",
-                            project_version, current_version
+                            project_version,
+                            current_version
                         );
                     } else {
                         eprintln!(
@@ -716,7 +721,9 @@ impl BakeProject {
 
         // Show warnings if any deprecated features are found
         if !warnings.is_empty() {
-            eprintln!("⚠️  Deprecated configuration detected in project (v{project_version} → v{current_version}):");
+            eprintln!(
+                "⚠️  Deprecated configuration detected in project (v{project_version} → v{current_version}):"
+            );
             for warning in warnings {
                 eprintln!("   • {warning}");
             }
@@ -726,7 +733,11 @@ impl BakeProject {
         }
     }
 
-    pub fn from(
+    /// Loads a BakeProject from a path
+    ///
+    /// Finds and parses the bake.yml configuration file, loads all cookbooks,
+    /// templates, and helpers, and builds the dependency graph.
+    pub fn load(
         path: &Path,
         environment: Option<&str>,
         override_variables: IndexMap<String, String>,
@@ -758,7 +769,7 @@ impl BakeProject {
         // CHANGE: Load cookbooks minimally (no Handlebars rendering).
         // This only parses YAML and extracts names, dependencies, and tags.
         // Full loading with template rendering happens later when we know which recipes to execute.
-        project.cookbooks = Cookbook::map_from_minimal(&project.root_path)?;
+        project.cookbooks = Cookbook::discover_all(&project.root_path)?;
 
         // Populate the recipe dependency graph from minimal cookbook data.
         project.populate_dependency_graph()?;
@@ -1250,8 +1261,9 @@ mod tests {
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid config")]
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
-        std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(&PathBuf::from(path_str), None, IndexMap::new(), false)
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
+        super::BakeProject::load(&PathBuf::from(path_str), None, IndexMap::new(), false)
     }
 
     #[test]
@@ -1261,7 +1273,7 @@ mod tests {
         let mode = perms.mode();
         perms.set_mode(0o200);
         std::fs::set_permissions(&path, perms.clone()).unwrap();
-        let project = super::BakeProject::from(
+        let project = super::BakeProject::load(
             &PathBuf::from(config_path("/invalid/permission")),
             None,
             IndexMap::new(),
@@ -1275,8 +1287,9 @@ mod tests {
     // Filesystem-dependent project loading tests have been moved to tests/integration/project_tests.rs
 
     fn get_test_project() -> super::BakeProject {
-        std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
+        super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             None,
             IndexMap::new(),
@@ -1476,10 +1489,11 @@ mod tests {
 
     #[test]
     fn test_project_file_template_rendering() {
-        std::env::set_var("TEST_BAKE_VAR", "test");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
 
         // Test with default environment (should be "dev")
-        let project = super::BakeProject::from(
+        let project = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("default"),
             IndexMap::new(),
@@ -1504,7 +1518,7 @@ mod tests {
         );
 
         // Test with "test" environment
-        let project_test = super::BakeProject::from(
+        let project_test = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("test"),
             IndexMap::new(),
@@ -1528,7 +1542,7 @@ mod tests {
         );
 
         // Test with "prod" environment
-        let project_prod = super::BakeProject::from(
+        let project_prod = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("prod"),
             IndexMap::new(),
@@ -1554,10 +1568,11 @@ mod tests {
 
     #[test]
     fn test_environment_overrides() {
-        std::env::set_var("TEST_BAKE_VAR", "test");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
 
         // Test with "test" environment - should have envName: test and bake_project_var: bar
-        let project_test = super::BakeProject::from(
+        let project_test = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("test"),
             IndexMap::new(),
@@ -1579,7 +1594,7 @@ mod tests {
         );
 
         // Test with "prod" environment - should have envName: prod and bake_project_var: prod_bar
-        let project_prod = super::BakeProject::from(
+        let project_prod = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("prod"),
             IndexMap::new(),

@@ -16,7 +16,7 @@ pub mod test_utils;
 pub use project::BakeProject;
 pub use update::{check_for_updates, perform_self_update};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
 use console::Term;
 use env_logger::Env;
@@ -203,7 +203,7 @@ pub async fn load_project_with_feedback(
         term.write_line(&loading_message)?;
     }
 
-    let mut project = match BakeProject::from(
+    let mut project = match BakeProject::load(
         bake_path,
         config.environment.as_deref(),
         config.variables,
@@ -808,7 +808,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     // Create CAS cache based on configuration
     let cache = if args.skip_cache || matches!(args.cache, Some(CacheStrategy::Disabled)) {
         // Cache is explicitly disabled
-        cache::Cache::new_disabled()
+        cache::Cache::disabled()
     } else {
         // Determine cache strategy
         let strategy = args.cache.unwrap_or_else(|| {
@@ -828,7 +828,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
 
         // Check for disabled again (from default strategy)
         if matches!(strategy, CacheStrategy::Disabled) {
-            cache::Cache::new_disabled()
+            cache::Cache::disabled()
         } else {
             // Convert CLI CacheStrategy to cache::CacheStrategy
             let cache_strategy = match strategy {
@@ -920,10 +920,12 @@ mod tests {
     fn test_parse_key_val_invalid_no_equals() {
         let result = parse_key_val("keyvalue");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid key=value pair"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid key=value pair")
+        );
     }
 
     #[test]

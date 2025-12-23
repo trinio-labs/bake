@@ -4,9 +4,9 @@ use indexmap::IndexMap;
 use tempfile::TempDir;
 
 use crate::project::{
+    BakeProject, Cookbook, Recipe, RecipeCacheConfig,
     config::{CacheConfig, LocalCacheConfig, ToolConfig},
     graph::RecipeDependencyGraph,
-    BakeProject, Cookbook, Recipe, RecipeCacheConfig,
 };
 use rand::distr::{Alphanumeric, SampleString};
 

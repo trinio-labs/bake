@@ -9,7 +9,7 @@ use std::{
 use anyhow::bail;
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
 use indexmap::IndexMap;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 /// Extracts a specific indented block from YAML content
 /// Returns (remaining_lines, extracted_block_content)
@@ -450,7 +450,7 @@ impl VariableContext {
                             "Helper '{}' parameter error: {}",
                             helper_def.name, e
                         )),
-                    ))
+                    ));
                 }
             };
 
@@ -466,7 +466,7 @@ impl VariableContext {
                             "Helper '{}' script rendering failed: {}",
                             helper_def.name, e
                         )),
-                    ))
+                    ));
                 }
             };
 
@@ -510,7 +510,7 @@ impl VariableContext {
                             "Helper '{}' execution failed: {}",
                             helper_def.name, e
                         )),
-                    ))
+                    ));
                 }
             };
 
@@ -893,7 +893,8 @@ mod test {
             serde_yaml::Value::String("bar".to_owned()),
         )]);
         let environment = vec!["TEST_PARSE_TEMPLATE".to_owned()];
-        env::set_var("TEST_PARSE_TEMPLATE", "env_var");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("TEST_PARSE_TEMPLATE", "env_var") };
 
         // Use with_project_constants to inject a constant
         let mut context = VariableContext::with_project_constants(Path::new("/project/root"));
@@ -918,7 +919,8 @@ mod test {
     #[test]
     fn test_parse_variable_list() {
         let environment = vec!["TEST_PARSE_VARIABLE_LIST".to_owned()];
-        env::set_var("TEST_PARSE_VARIABLE_LIST", "bar");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("TEST_PARSE_VARIABLE_LIST", "bar") };
 
         let overrides = IndexMap::from([("bar".to_owned(), "override".to_owned())]);
 
@@ -1295,7 +1297,8 @@ prod:
 
     #[test]
     fn test_shell_helper_with_env_variables() {
-        env::set_var("TEST_SHELL_VAR", "test_value");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("TEST_SHELL_VAR", "test_value") };
         let mut context = VariableContext::empty();
         context.environment.push("TEST_SHELL_VAR".to_owned());
         let template = "{{shell 'echo $TEST_SHELL_VAR'}}";
@@ -1367,10 +1370,12 @@ prod:
         let template = "{{shell 'exit 1'}}";
         let result = context.render_raw_template(template);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("shell command failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("shell command failed")
+        );
     }
 
     #[test]
@@ -1622,7 +1627,8 @@ items: {{shell-lines 'printf "item1\nitem2\nitem3"'}}
     fn test_custom_helper_with_environment() {
         use crate::project::helper::{Helper, HelperParameter, HelperReturnType, ParameterType};
 
-        env::set_var("TEST_CUSTOM_HELPER_ENV", "test_value");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("TEST_CUSTOM_HELPER_ENV", "test_value") };
 
         let mut context = VariableContext::empty();
 

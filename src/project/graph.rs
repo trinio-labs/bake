@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use anyhow::bail;
 use petgraph::{
+    Direction, // Added for explicit use of Direction::Incoming
     algo::{is_cyclic_directed, tarjan_scc},
     graph::{Graph, NodeIndex},
     visit::Dfs,
-    Direction, // Added for explicit use of Direction::Incoming
 };
 
 use crate::project::Cookbook;
@@ -170,7 +170,9 @@ impl RecipeDependencyGraph {
             if cycles_messages.is_empty() {
                 // This case should ideally not be reached if is_cyclic_directed is true
                 // and tarjan_scc is working correctly, but it's a safeguard.
-                bail!("Dependency Graph: Circular dependencies detected during graph population. (SCC analysis did not pinpoint specific cycle paths, but the graph is cyclic. This might indicate a complex cycle structure or an issue with the cycle detection algorithm under certain graph conditions.)");
+                bail!(
+                    "Dependency Graph: Circular dependencies detected during graph population. (SCC analysis did not pinpoint specific cycle paths, but the graph is cyclic. This might indicate a complex cycle structure or an issue with the cycle detection algorithm under certain graph conditions.)"
+                );
             } else {
                 bail!(
                     "Dependency Graph: Circular dependencies detected during graph population:\n{}",
@@ -995,11 +997,13 @@ mod tests {
             .collect();
         let result = graph.get_execution_order_for_targets(&targets);
         assert!(result.is_err());
-        assert!(result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("Recipe FQN 'non_existent' targeted for execution not found"));
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Recipe FQN 'non_existent' targeted for execution not found")
+        );
     }
 
     #[test]
@@ -1242,11 +1246,13 @@ mod tests {
         let initial_targets = ["non_existent".to_string()].iter().cloned().collect();
         let result = graph.get_execution_plan_for_initial_targets(&initial_targets);
         assert!(result.is_err());
-        assert!(result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("Initial target recipe FQN 'non_existent' not found"));
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Initial target recipe FQN 'non_existent' not found")
+        );
     }
 
     #[test]

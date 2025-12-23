@@ -1,7 +1,7 @@
 use super::blob_hash::BlobHash;
 use anyhow::Result;
 use log::debug;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 

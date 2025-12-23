@@ -1,7 +1,7 @@
 [package]
 name = "bake-cli"
 version = "1.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Theo Ribeiro <repitilian.intern@proton.me>"]
 license = "Apache-2.0"
 description = "Task runner built to be tastier than `make`"
@@ -10,7 +10,7 @@ repository = "https://github.com/trinio-labs/bake"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 keywords = ["bake", "task-runner", "make", "build-tool"]
-rust-version = "1.87.0"
+rust-version = "1.92.0"
 
 [lib]
 name = "bake"

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use console::style;
 use self_update::{backends::github::Update, cargo_crate_version};
 use std::env;
@@ -354,16 +354,20 @@ mod tests {
 
     #[test]
     fn test_should_skip_update_check_in_ci() {
-        env::set_var("CI", "true");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("CI", "true") };
         assert!(should_skip_update_check());
-        env::remove_var("CI");
+        // SAFETY: Test code - cleaning up test environment variable
+        unsafe { env::remove_var("CI") };
     }
 
     #[test]
     fn test_should_skip_update_check_in_cargo() {
-        env::set_var("CARGO", "true");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("CARGO", "true") };
         assert!(should_skip_update_check());
-        env::remove_var("CARGO");
+        // SAFETY: Test code - cleaning up test environment variable
+        unsafe { env::remove_var("CARGO") };
     }
 
     #[test]
@@ -597,16 +601,20 @@ mod tests {
 
     #[test]
     fn test_should_skip_update_check_github_actions() {
-        env::set_var("GITHUB_ACTIONS", "true");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("GITHUB_ACTIONS", "true") };
         assert!(should_skip_update_check());
-        env::remove_var("GITHUB_ACTIONS");
+        // SAFETY: Test code - cleaning up test environment variable
+        unsafe { env::remove_var("GITHUB_ACTIONS") };
     }
 
     #[test]
     fn test_should_skip_update_check_continuous_integration() {
-        env::set_var("CONTINUOUS_INTEGRATION", "true");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { env::set_var("CONTINUOUS_INTEGRATION", "true") };
         assert!(should_skip_update_check());
-        env::remove_var("CONTINUOUS_INTEGRATION");
+        // SAFETY: Test code - cleaning up test environment variable
+        unsafe { env::remove_var("CONTINUOUS_INTEGRATION") };
     }
 
     #[test]
