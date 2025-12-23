@@ -22,18 +22,26 @@ The root `bake.yml` file defines project-wide settings and variables for your pr
 name: "My Application"
 description: "Example Bake project"
 
-# Define project-wide variables  
+# Define project-wide variables
 variables:
   environment: development
   version: "1.0.0"
   node_version: "18"
 
+# Environment-specific overrides
+overrides:
+  production:
+    environment: production
+    version: "2.0.0"
+  staging:
+    environment: staging
+
 # Global configuration
 config:
-  max_parallel: 4
-  fast_fail: true
+  maxParallel: 4
+  fastFail: true
   verbose: false
-  clean_environment: false
+  cleanEnvironment: false
   minVersion: "0.11.0"
   
   # Cache configuration
@@ -82,18 +90,18 @@ my-project/
 
 #### Tool Configuration
 
-- **`max_parallel`** - Maximum recipes to run simultaneously (default: CPU cores - 1)
-- **`fast_fail`** - Stop all execution on first failure (default: `true`)  
+- **`maxParallel`** - Maximum recipes to run simultaneously (default: CPU cores - 1)
+- **`fastFail`** - Stop all execution on first failure (default: `true`)
 - **`verbose`** - Enable detailed output (default: `false`)
-- **`clean_environment`** - Run recipes with clean environment variables (default: `false`)
+- **`cleanEnvironment`** - Run recipes with clean environment variables (default: `false`)
 - **`minVersion`** - Minimum Bake version required (default: none)
 
 ```yaml
 config:
-  max_parallel: 8           # Run up to 8 recipes in parallel
-  fast_fail: false         # Continue execution despite failures
+  maxParallel: 8           # Run up to 8 recipes in parallel
+  fastFail: false          # Continue execution despite failures
   verbose: true            # Show detailed output
-  clean_environment: true  # Clean env vars for all recipes
+  cleanEnvironment: true   # Clean env vars for all recipes
   minVersion: "0.11.0"     # Require Bake v0.11.0 or later
 ```
 
@@ -102,6 +110,37 @@ config:
 Define project-wide variables available to all cookbooks and recipes.
 
 **See the [Variables Guide](variables.md) for complete documentation.**
+
+#### Environment Overrides
+
+Define environment-specific variable overrides that apply based on the environment context. This is useful for managing different configurations across development, staging, and production environments.
+
+```yaml
+variables:
+  api_url: "http://localhost:3000"
+  debug: true
+  max_connections: 10
+
+overrides:
+  staging:
+    api_url: "https://staging-api.example.com"
+    debug: false
+  production:
+    api_url: "https://api.example.com"
+    debug: false
+    max_connections: 100
+```
+
+Environment overrides can be specified at three levels:
+- **Project level** - Applies to all cookbooks and recipes
+- **Cookbook level** - Applies to all recipes in the cookbook
+- **Recipe level** - Applies only to that specific recipe
+
+To activate an environment, use the `--env` flag:
+
+```bash
+bake --env production build
+```
 
 #### Cache Configuration
 
@@ -128,9 +167,20 @@ description: "React frontend application"
 
 # Cookbook-level variables
 variables:
-  app_name: "frontend-app"  
+  app_name: "frontend-app"
   build_env: "{{var.environment}}"
   output_dir: "dist-{{var.build_env}}"
+
+# Environment-specific overrides
+overrides:
+  production:
+    build_env: "production"
+    output_dir: "dist-prod"
+
+# Cookbook tags for filtering
+tags:
+  - frontend
+  - web
 
 # Environment variables to expose to recipes
 environment:
@@ -176,6 +226,31 @@ recipes:
 - **`name`** (required) - Cookbook identifier used in dependencies (`cookbook:recipe`)
 - **`description`** (optional) - Human-readable description
 
+#### Tags
+
+Tags enable filtering and organization of recipes:
+
+- **`tags`** (optional) - Array of strings for categorizing the cookbook (e.g., "frontend", "backend", "api")
+- Recipes without their own tags inherit these cookbook tags
+- Use tags with `--tags` flag to filter recipe execution
+
+```yaml
+tags:
+  - frontend
+  - web
+  - react
+
+recipes:
+  build:
+    # Inherits cookbook tags: frontend, web, react
+    run: npm run build
+
+  deploy:
+    # Has its own tags, overrides cookbook tags
+    tags: [deployment, production]
+    run: ./deploy.sh
+```
+
 #### Variables
 
 Cookbook-level variables inherit from project variables and can be overridden at the recipe level.
@@ -218,21 +293,29 @@ Recipes are individual tasks defined within cookbooks. Each recipe specifies its
 recipes:
   recipe-name:
     description: "Human-readable description"  # Optional but recommended
+    tags:              # Tags for filtering (optional)
+      - build
+      - frontend
     inputs:             # Files that affect this recipe
       - "src/**/*.ts"
       - "package.json"
-    outputs:           # Files produced by this recipe  
+    outputs:           # Files produced by this recipe
       - "dist/**/*"
     dependencies:      # Other recipes that must run first
       - install
       - shared:build
     environment:       # Environment variables for this recipe
       - NODE_ENV
-      - BUILD_TARGET  
+      - BUILD_TARGET
     variables:         # Recipe-specific variables
-      BUILD_TARGET: production
+      BUILD_TARGET: development
+      OPTIMIZE: false
+    overrides:         # Environment-specific overrides
+      production:
+        BUILD_TARGET: production
+        OPTIMIZE: true
     run: |             # Command to execute (required)
-      echo "Building..."
+      echo "Building for {{var.BUILD_TARGET}}..."
       npm run build
 ```
 
@@ -245,11 +328,13 @@ recipes:
 #### Optional Properties
 
 - **`description`** - Human-readable description
+- **`tags`** - Array of strings for categorizing this recipe (overrides cookbook tags if specified)
 - **`inputs`** - Glob patterns for input files (affects caching)
-- **`outputs`** - Glob patterns for output files (affects caching)  
+- **`outputs`** - Glob patterns for output files (affects caching)
 - **`dependencies`** - List of recipes that must run first
 - **`environment`** - Environment variables to include
 - **`variables`** - Recipe-specific variable definitions
+- **`overrides`** - Environment-specific variable overrides for this recipe
 - **`template`** - Use a recipe template instead of `run` command
 
 ### Dependencies
@@ -397,7 +482,7 @@ recipes:
 name: "Simple App"
 
 config:
-  max_parallel: 2
+  maxParallel: 2
 ```
 
 ```yaml
@@ -425,8 +510,8 @@ variables:
   api_base: "https://api-{{var.environment}}.shop.com"
 
 config:
-  max_parallel: 6
-  fast_fail: true
+  maxParallel: 6
+  fastFail: true
   cache:
     local:
       enabled: true

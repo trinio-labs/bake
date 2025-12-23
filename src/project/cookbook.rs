@@ -1,18 +1,22 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use crate::{
     project::Recipe,
-    template::{extract_variables_blocks, process_variable_blocks, VariableContext},
+    template::{VariableContext, extract_variables_blocks, process_variable_blocks},
 };
 use anyhow::bail;
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use indexmap::IndexMap;
 use log::debug;
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
+
+/// Type alias for parallel cookbook loading results
+type CookbookResults = Arc<Mutex<Vec<anyhow::Result<(String, Cookbook)>>>>;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Cookbook {
@@ -66,18 +70,23 @@ impl Cookbook {
         )]))
     }
 
-    /// Creates a minimally loaded cookbook (no Handlebars rendering)
-    /// Only loads essential fields: name, recipe names, dependencies, and tags
-    /// Used for building the dependency graph before determining which recipes to execute
+    /// Loads a cookbook minimally without Handlebars rendering
+    ///
+    /// Only loads essential fields: name, recipe names, dependencies, and tags.
+    /// Used for building the dependency graph before determining which recipes to execute.
+    /// Use `Cookbook::load()` for full loading with template rendering.
     ///
     /// # Arguments
     /// * `path` - Path to a cookbook file
     /// * `project_root` - Path to the project root
     ///
-    pub fn from_minimal(path: &PathBuf, project_root: &Path) -> anyhow::Result<Self> {
+    pub fn load_minimal(path: &PathBuf, project_root: &Path) -> anyhow::Result<Self> {
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
+            Err(_) => bail!(
+                "Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.",
+                path.display()
+            ),
         };
 
         // Parse as serde_yaml::Value first to handle template expressions in non-essential fields
@@ -152,8 +161,7 @@ impl Cookbook {
         Ok(parsed)
     }
 
-    /// Creates a cookbook config from a path to a cookbook file
-    /// Fully loads with complete Handlebars rendering
+    /// Loads a cookbook from a path with full Handlebars template rendering
     ///
     /// # Arguments
     /// * `path` - Path to a cookbook file
@@ -161,7 +169,7 @@ impl Cookbook {
     /// * `environment` - Environment name for variable loading (e.g., "dev", "prod", "default")
     /// * `context` - Variable context containing environment, variables, and overrides
     ///
-    pub fn from(
+    pub fn load(
         path: &PathBuf,
         project_root: &Path,
         environment: Option<&str>,
@@ -169,7 +177,10 @@ impl Cookbook {
     ) -> anyhow::Result<Self> {
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(_) => bail!("Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.", path.display()),
+            Err(_) => bail!(
+                "Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.",
+                path.display()
+            ),
         };
 
         // Build hierarchical context for cookbook processing
@@ -283,81 +294,69 @@ impl Cookbook {
         Ok(parsed)
     }
 
-    /// Gets all cookbooks recursively in a directory with minimal loading (no Handlebars)
+    /// Discovers all cookbooks recursively in a directory with minimal loading (no Handlebars)
     ///
     /// Recursively searches for all cookbooks in a directory respecting `.gitignore` and
     /// `.bakeignore` files, but only performs minimal parsing without template rendering.
+    /// Use `Cookbook::load()` to fully load individual cookbooks with Handlebars rendering.
     ///
     /// # Arguments
     /// * `path` - Path to a directory
     ///
-    pub fn map_from_minimal(path: &PathBuf) -> anyhow::Result<BTreeMap<String, Self>> {
-        let all_files = WalkBuilder::new(path)
-            .add_custom_ignore_filename(".bakeignore")
-            .build();
-        all_files
-            .filter_map(|x| match x {
-                Ok(file) => {
-                    let filename = match file.file_name().to_str() {
-                        Some(name) => name,
-                        None => return None, // Skip files with invalid UTF-8 names
-                    };
-                    if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::from_minimal(&file.into_path(), path) {
-                            Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
-                            Err(err) => Some(Err(err)),
-                        }
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => {
-                    debug!("Ignored file: {}", x.unwrap_err());
-                    None
-                }
-            })
-            .collect()
-    }
+    pub fn discover_all(path: &PathBuf) -> anyhow::Result<BTreeMap<String, Self>> {
+        let results: CookbookResults = Arc::new(Mutex::new(Vec::new()));
+        let root_path = Arc::new(path.clone());
 
-    /// Gets all cookbooks recursively in a directory with full Handlebars rendering
-    ///
-    /// map_from recursively searches for all cookbooks in a directory respecting `.gitignore` and
-    /// `.bakeignore` files
-    ///
-    /// # Arguments
-    /// * `path` - Path to a directory
-    /// * `environment` - Environment name for variable loading (e.g., "dev", "prod", "default")
-    /// * `context` - Variable context containing environment, variables, and overrides
-    ///
-    pub fn map_from(
-        path: &PathBuf,
-        environment: Option<&str>,
-        context: &VariableContext,
-    ) -> anyhow::Result<BTreeMap<String, Self>> {
-        let all_files = WalkBuilder::new(path)
+        WalkBuilder::new(path)
             .add_custom_ignore_filename(".bakeignore")
-            .build();
-        all_files
-            .filter_map(|x| match x {
-                Ok(file) => {
-                    let filename = match file.file_name().to_str() {
-                        Some(name) => name,
-                        None => return None, // Skip files with invalid UTF-8 names
-                    };
-                    if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::from(&file.into_path(), path, environment, context) {
-                            Ok(cookbook) => Some(Ok((cookbook.name.clone(), cookbook))),
-                            Err(err) => Some(Err(err)),
+            .threads(0) // Auto-detect optimal thread count
+            .build_parallel()
+            .run(|| {
+                let root = Arc::clone(&root_path);
+                let results_ref = Arc::clone(&results);
+                Box::new(move |entry| {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(err) => {
+                            // Record the error so discover_all() fails instead of silently succeeding.
+                            results_ref.lock().unwrap().push(Err(anyhow::anyhow!(
+                                "Cookbook discovery error under '{}': {err}",
+                                root.display()
+                            )));
+                            return WalkState::Continue;
                         }
-                    } else {
-                        None
+                    };
+
+                    let filename = match entry.file_name().to_str() {
+                        Some(name) => name,
+                        None => return WalkState::Continue,
+                    };
+
+                    if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
+                        match Self::load_minimal(&entry.into_path(), &root) {
+                            Ok(cookbook) => {
+                                results_ref
+                                    .lock()
+                                    .unwrap()
+                                    .push(Ok((cookbook.name.clone(), cookbook)));
+                            }
+                            Err(err) => {
+                                results_ref.lock().unwrap().push(Err(err));
+                            }
+                        }
                     }
-                }
-                Err(_) => {
-                    debug!("Ignored file: {}", x.unwrap_err());
-                    None
-                }
-            })
+
+                    WalkState::Continue
+                })
+            });
+
+        // Safe to unwrap: run() blocks until all parallel threads complete,
+        // ensuring exclusive Arc ownership and no concurrent Mutex access.
+        Arc::try_unwrap(results)
+            .expect("All threads should have completed")
+            .into_inner()
+            .unwrap()
+            .into_iter()
             .collect()
     }
 }
@@ -389,7 +388,7 @@ mod test {
                 let entry = entry.ok()?;
                 let path = entry.path();
                 if path.is_file() && (path.extension()? == "yml" || path.extension()? == "yaml") {
-                    Helper::from_file(&path).ok()
+                    Helper::load(&path).ok()
                 } else {
                     None
                 }
@@ -411,7 +410,7 @@ mod test {
     fn read_cookbook(project_root: String, path_str: String) -> anyhow::Result<super::Cookbook> {
         let helpers = load_test_helpers(&project_root);
 
-        super::Cookbook::from(
+        super::Cookbook::load(
             &PathBuf::from(path_str),
             &PathBuf::from(project_root),
             Some("default"),
@@ -427,18 +426,28 @@ mod test {
     #[test_case(config_path("/valid/") => using validate_cookbook_vec; "Root dir")]
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid dir")]
     fn read_all_cookbooks(path_str: String) -> anyhow::Result<BTreeMap<String, super::Cookbook>> {
+        let path = PathBuf::from(&path_str);
         let helpers = load_test_helpers(&path_str);
 
-        super::Cookbook::map_from(
-            &PathBuf::from(path_str),
-            Some("default"),
-            &VariableContext::builder()
-                .environment(vec![])
-                .variables(IndexMap::new())
-                .overrides(IndexMap::new())
-                .helpers(helpers)
-                .build(),
-        )
+        // Use minimal loading first (like production code does)
+        let minimal_cookbooks = super::Cookbook::discover_all(&path)?;
+
+        // Then fully load each cookbook
+        let context = VariableContext::builder()
+            .environment(vec![])
+            .variables(IndexMap::new())
+            .overrides(IndexMap::new())
+            .helpers(helpers)
+            .build();
+
+        minimal_cookbooks
+            .into_iter()
+            .map(|(name, minimal)| {
+                let full =
+                    super::Cookbook::load(&minimal.config_path, &path, Some("default"), &context)?;
+                Ok((name, full))
+            })
+            .collect()
     }
 
     #[test]
@@ -547,7 +556,7 @@ recipes:
             .build();
 
         let result =
-            super::Cookbook::from(&cookbook_path, temp_dir.path(), Some("default"), &context);
+            super::Cookbook::load(&cookbook_path, temp_dir.path(), Some("default"), &context);
 
         match result {
             Ok(cookbook) => {
@@ -598,7 +607,7 @@ recipes:
             .build();
 
         let result =
-            super::Cookbook::from(&cookbook_path, temp_dir.path(), Some("default"), &context);
+            super::Cookbook::load(&cookbook_path, temp_dir.path(), Some("default"), &context);
 
         match result {
             Ok(cookbook) => {

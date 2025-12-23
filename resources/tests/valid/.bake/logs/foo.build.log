@@ -1,0 +1,2 @@
+touch: ./target/foo.txt: No such file or directory
+./build.sh: line 2: ./target/foo.txt: No such file or directory

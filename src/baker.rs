@@ -4,10 +4,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tokio::sync::{broadcast, Semaphore};
+use tokio::sync::{Semaphore, broadcast};
 
 use anyhow::bail;
-use console::{style, Color};
+use console::{Color, style};
 use indicatif::{MultiProgress, ProgressBar};
 use log::debug;
 use tokio::{
@@ -19,7 +19,7 @@ use tokio::{
 use crate::{
     cache::{Cache, CacheResult},
     execution_plan,
-    project::{config::ToolConfig, hashing::RecipeHasher, BakeProject, Recipe, RunStatus, Status},
+    project::{BakeProject, Recipe, RunStatus, Status, config::ToolConfig, hashing::RecipeHasher},
 };
 
 /// Bakes a project by running all recipes and their dependencies.
@@ -202,7 +202,7 @@ pub async fn bake(
                         if project.config.fast_fail {
                             cancel_tx.send(()).ok(); // Signal other tasks.
                             level_join_set.abort_all(); // Abort remaining tasks in this level.
-                                                        // No immediate bail here; drain and then bail after the loop.
+                            // No immediate bail here; drain and then bail after the loop.
                         }
                     }
                 }

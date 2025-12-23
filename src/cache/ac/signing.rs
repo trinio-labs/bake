@@ -221,10 +221,12 @@ mod tests {
 
         let result = signer.verify(data, &future_version_signature);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported signature version"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unsupported signature version")
+        );
     }
 
     #[test]
@@ -316,38 +318,48 @@ mod tests {
     fn test_from_env_fails_when_not_set() {
         let _lock = ENV_MUTEX.lock().unwrap();
         // Ensure BAKE_CACHE_SECRET is not set
-        std::env::remove_var("BAKE_CACHE_SECRET");
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe { std::env::remove_var("BAKE_CACHE_SECRET") };
 
         let result = ManifestSigner::from_env();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("BAKE_CACHE_SECRET environment variable not set"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("BAKE_CACHE_SECRET environment variable not set")
+        );
     }
 
     #[test]
     fn test_from_env_fails_when_empty() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("BAKE_CACHE_SECRET", "");
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe { std::env::set_var("BAKE_CACHE_SECRET", "") };
 
         let result = ManifestSigner::from_env();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("BAKE_CACHE_SECRET cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("BAKE_CACHE_SECRET cannot be empty")
+        );
 
-        std::env::remove_var("BAKE_CACHE_SECRET");
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe { std::env::remove_var("BAKE_CACHE_SECRET") };
     }
 
     #[test]
     fn test_from_env_succeeds_with_valid_secret() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var(
-            "BAKE_CACHE_SECRET",
-            "my-secure-secret-key-at-least-32-bytes!",
-        );
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe {
+            std::env::set_var(
+                "BAKE_CACHE_SECRET",
+                "my-secure-secret-key-at-least-32-bytes!",
+            )
+        };
 
         let result = ManifestSigner::from_env();
         assert!(result.is_ok());
@@ -357,18 +369,21 @@ mod tests {
         let signature = signer.sign(data).unwrap();
         assert!(signer.verify(data, &signature).is_ok());
 
-        std::env::remove_var("BAKE_CACHE_SECRET");
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe { std::env::remove_var("BAKE_CACHE_SECRET") };
     }
 
     #[test]
     fn test_from_env_warns_on_short_secret() {
         let _lock = ENV_MUTEX.lock().unwrap();
         // This test just verifies it works with short secrets but logs a warning
-        std::env::set_var("BAKE_CACHE_SECRET", "short");
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe { std::env::set_var("BAKE_CACHE_SECRET", "short") };
 
         let result = ManifestSigner::from_env();
         assert!(result.is_ok()); // Should succeed but log warning
 
-        std::env::remove_var("BAKE_CACHE_SECRET");
+        // SAFETY: Test code running in single-threaded test context with mutex lock
+        unsafe { std::env::remove_var("BAKE_CACHE_SECRET") };
     }
 }

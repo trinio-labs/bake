@@ -26,6 +26,7 @@ config:
     local:
       enabled: true
       path: .bake/cache         # Cache directory (default)
+      compressionLevel: 1       # 0-19, default: 1 (optimized for speed)
 
     # Remote cache providers
     remotes:
@@ -36,11 +37,13 @@ config:
         bucket: my-bake-cache
         region: us-west-2
         prefix: "project/{{var.environment}}"  # Optional key prefix
+        compressionLevel: 3     # 0-19, default: 3 (balanced for network)
 
       # Google Cloud Storage cache
       gcs:
         bucket: my-bake-cache
         prefix: "builds/{{var.version}}"
+        compressionLevel: 3     # 0-19, default: 3 (balanced for network)
 
     # Cache strategy order (first hit wins)
     order: ["local", "s3", "gcs"]
@@ -222,9 +225,19 @@ config:
     local:
       enabled: true
       path: .bake/cache           # Default cache directory
-      max_size: "10GB"           # Optional size limit
-      retention_days: 30         # Optional cleanup policy
+      compressionLevel: 1         # Compression level (0-19)
+                                 # 0 = no compression
+                                 # 1 = fastest (default for local)
+                                 # 19 = best compression
 ```
+
+The `compressionLevel` setting controls the zstd compression level:
+- **0** - No compression (fastest, largest)
+- **1** - Fast compression (default for local cache, optimized for speed)
+- **3** - Balanced compression (default for remote caches)
+- **19** - Maximum compression (slowest, smallest)
+
+For local caches, level 1 is recommended to minimize CPU overhead. For remote caches, higher levels (3-6) can reduce network transfer time.
 
 ### Cache Directory Structure
 
@@ -272,10 +285,11 @@ config:
         bucket: my-build-cache
         region: us-west-2
         prefix: "{{var.project}}/{{var.branch}}"
-        
+        compressionLevel: 3         # Default: 3 (balanced for network)
+
         # Optional: Custom endpoint (for S3-compatible services)
         endpoint: "https://s3.example.com"
-        
+
         # Optional: Server-side encryption
         encryption: AES256
 ```
@@ -320,7 +334,8 @@ config:
       gcs:
         bucket: my-build-cache
         prefix: "{{var.team}}/{{var.environment}}"
-        
+        compressionLevel: 3         # Default: 3 (balanced for network)
+
         # Optional: Custom endpoint
         endpoint: "https://storage.googleapis.com"
 ```
@@ -573,7 +588,7 @@ Enable parallel cache uploads/downloads:
 
 ```yaml
 config:
-  max_parallel: 8              # Allow parallel recipe execution
+  maxParallel: 8              # Allow parallel recipe execution
   cache:
     parallel_operations: 4     # Parallel cache transfers
 ```

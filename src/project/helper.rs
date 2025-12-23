@@ -81,7 +81,7 @@ pub struct Helper {
 
 impl Helper {
     /// Loads a helper from a file path
-    pub fn from_file(path: &PathBuf) -> anyhow::Result<Self> {
+    pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(err) => bail!(
@@ -194,10 +194,12 @@ impl Helper {
         // Add params as a constant (similar to recipe templates)
         context.constants.insert(
             "params".to_owned(),
-            json!(resolved_params
-                .iter()
-                .map(|(k, v)| (k.clone(), VariableContext::yaml_to_json(v)))
-                .collect::<BTreeMap<String, serde_json::Value>>()),
+            json!(
+                resolved_params
+                    .iter()
+                    .map(|(k, v)| (k.clone(), VariableContext::yaml_to_json(v)))
+                    .collect::<BTreeMap<String, serde_json::Value>>()
+            ),
         );
 
         // Add helper-specific variables
@@ -224,7 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_helper_from_file() {
+    fn test_helper_load() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -246,7 +248,7 @@ run: |
 "#;
         std::fs::write(&file_path, helper_yaml).unwrap();
 
-        let helper = Helper::from_file(&file_path).unwrap();
+        let helper = Helper::load(&file_path).unwrap();
 
         assert_eq!(helper.name, "test-helper");
         assert_eq!(helper.description, Some("A test helper".to_string()));
@@ -277,7 +279,7 @@ run: echo "test"
 "#;
         std::fs::write(&file_path, helper_yaml).unwrap();
 
-        let helper = Helper::from_file(&file_path).unwrap();
+        let helper = Helper::load(&file_path).unwrap();
 
         let provided = BTreeMap::from([(
             "required_param".to_string(),
@@ -314,16 +316,18 @@ run: echo "test"
 "#;
         std::fs::write(&file_path, helper_yaml).unwrap();
 
-        let helper = Helper::from_file(&file_path).unwrap();
+        let helper = Helper::load(&file_path).unwrap();
 
         let provided = BTreeMap::new();
         let result = helper.resolve_parameters(&provided);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Required parameter 'required_param' is missing"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Required parameter 'required_param' is missing")
+        );
     }
 
     #[test]
@@ -345,7 +349,7 @@ run: echo "test"
 "#;
         std::fs::write(&file_path, helper_yaml).unwrap();
 
-        let helper = Helper::from_file(&file_path).unwrap();
+        let helper = Helper::load(&file_path).unwrap();
 
         // Valid types
         let valid_params = BTreeMap::from([
@@ -367,10 +371,12 @@ run: echo "test"
         )]);
         let result = helper.resolve_parameters(&invalid_params);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("expected type Number"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expected type Number")
+        );
     }
 
     #[test]
@@ -387,7 +393,7 @@ run: echo "line1\nline2"
 "#;
         std::fs::write(&file_path, helper_yaml).unwrap();
 
-        let helper = Helper::from_file(&file_path).unwrap();
+        let helper = Helper::load(&file_path).unwrap();
 
         assert_eq!(helper.returns, HelperReturnType::Array);
     }

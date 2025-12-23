@@ -4,7 +4,7 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-use crate::template::{extract_yaml_block, VariableContext};
+use crate::template::{VariableContext, extract_yaml_block};
 
 /// Represents a parameter type for template validation
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -74,7 +74,7 @@ pub struct RecipeTemplate {
 
 impl RecipeTemplate {
     /// Loads a template from a file path
-    pub fn from_file(path: &PathBuf) -> anyhow::Result<Self> {
+    pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
         let config_str = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(err) => bail!(
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_template_from_file() {
+    fn test_template_load() {
         let temp_dir = tempdir().unwrap();
         let template_path = temp_dir.path().join("test-template.yml");
 
@@ -366,7 +366,7 @@ template:
 
         std::fs::write(&template_path, template_content).unwrap();
 
-        let template = RecipeTemplate::from_file(&template_path).unwrap();
+        let template = RecipeTemplate::load(&template_path).unwrap();
         assert_eq!(template.name, "test-template");
         assert_eq!(template.parameters.len(), 2);
         assert!(template.parameters.contains_key("service_name"));

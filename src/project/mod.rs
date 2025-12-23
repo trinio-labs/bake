@@ -25,9 +25,9 @@ use std::{
 use serde::Deserialize;
 
 use crate::template::{
-    extract_environment_block, extract_variables_blocks, process_variable_blocks, VariableContext,
+    VariableContext, extract_environment_block, extract_variables_blocks, process_variable_blocks,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use self::config::ToolConfig;
 
@@ -232,7 +232,11 @@ impl BakeProject {
         match serde_yaml::from_str::<Self>(&rendered_yaml) {
             Ok(mut parsed) => {
                 if let Err(err) = parsed.validate() {
-                    bail!("Project Load: Configuration file '{}' validation failed: {}", file_path.display(), err);
+                    bail!(
+                        "Project Load: Configuration file '{}' validation failed: {}",
+                        file_path.display(),
+                        err
+                    );
                 }
                 parsed.root_path = project_root;
                 Ok((parsed, processed_variables))
@@ -297,7 +301,7 @@ impl BakeProject {
             .clone();
 
         // Fully load with Handlebars
-        let fully_loaded = Cookbook::from(&config_path, &self.root_path, environment, context)?;
+        let fully_loaded = Cookbook::load(&config_path, &self.root_path, environment, context)?;
 
         // Replace minimal cookbook with fully loaded one
         self.cookbooks
@@ -365,7 +369,7 @@ impl BakeProject {
 
                     // Look for .yml or .yaml template files
                     if filename.ends_with(".yml") || filename.ends_with(".yaml") {
-                        match RecipeTemplate::from_file(&path.to_path_buf()) {
+                        match RecipeTemplate::load(&path.to_path_buf()) {
                             Ok(template) => Some(Ok((template.name.clone(), template))),
                             Err(err) => Some(Err(err)),
                         }
@@ -414,7 +418,7 @@ impl BakeProject {
 
                     // Look for .yml or .yaml helper files
                     if filename.ends_with(".yml") || filename.ends_with(".yaml") {
-                        match Helper::from_file(&path.to_path_buf()) {
+                        match Helper::load(&path.to_path_buf()) {
                             Ok(helper) => Some(Ok((helper.name.clone(), helper))),
                             Err(err) => Some(Err(err)),
                         }
@@ -432,15 +436,34 @@ impl BakeProject {
         Ok(())
     }
 
-    /// Resolves template-based recipes in all cookbooks using the provided context.
-    fn resolve_template_recipes(&mut self, context: &VariableContext) -> anyhow::Result<()> {
-        // Process each cookbook
-        for cookbook in self.cookbooks.values_mut() {
+    /// Resolves template-based recipes in cookbooks using parallel processing.
+    /// If `filter_fqns` is provided, only resolves templates for those specific recipes.
+    fn resolve_template_recipes(
+        &mut self,
+        context: &VariableContext,
+        filter_fqns: Option<&HashSet<String>>,
+    ) -> anyhow::Result<()> {
+        use rayon::prelude::*;
+
+        // Collect all template recipes that need resolution
+        struct TemplateTask {
+            cookbook_name: String,
+            recipe_name: String,
+            template_name: String,
+            original_recipe: Recipe,
+            cookbook_context: VariableContext,
+            cookbook_config_path: PathBuf,
+        }
+
+        let mut tasks: Vec<TemplateTask> = Vec::new();
+
+        for cookbook in self.cookbooks.values() {
             // Skip cookbooks that aren't fully loaded
             if !cookbook.fully_loaded {
                 continue;
             }
-            // Create cookbook-specific context (already has project constants)
+
+            // Create cookbook-specific context
             let mut cookbook_context = context.clone();
 
             // Add cookbook constants
@@ -455,45 +478,71 @@ impl BakeProject {
                 cookbook_context.working_directory = Some(cookbook_dir.to_path_buf());
             }
 
-            // Process each recipe in the cookbook
-            for (recipe_name, recipe) in cookbook.recipes.iter_mut() {
+            for (recipe_name, recipe) in &cookbook.recipes {
                 // Skip recipes that don't use templates
                 if recipe.template.is_none() {
                     continue;
                 }
 
-                let template_name = recipe.template.as_ref().unwrap();
-
-                // Find the template in the registry
-                let template = match self.template_registry.get(template_name) {
-                    Some(template) => template,
-                    None => {
-                        bail!(
-                            "Template Resolution: Template '{}' used by recipe '{}:{}' was not found. Available templates: {}",
-                            template_name,
-                            cookbook.name,
-                            recipe_name,
-                            self.template_registry.keys().cloned().collect::<Vec<_>>().join(", ")
-                        );
+                // If filter is provided, skip recipes not in the filter
+                if let Some(fqns) = filter_fqns {
+                    let fqn = format!("{}:{}", cookbook.name, recipe_name);
+                    if !fqns.contains(&fqn) {
+                        continue;
                     }
-                };
+                }
+
+                tasks.push(TemplateTask {
+                    cookbook_name: cookbook.name.clone(),
+                    recipe_name: recipe_name.clone(),
+                    template_name: recipe.template.as_ref().unwrap().clone(),
+                    original_recipe: recipe.clone(),
+                    cookbook_context: cookbook_context.clone(),
+                    cookbook_config_path: cookbook.config_path.clone(),
+                });
+            }
+        }
+
+        // If no templates to resolve, return early
+        if tasks.is_empty() {
+            return Ok(());
+        }
+
+        // Clone template registry for parallel access (it's read-only)
+        let template_registry = &self.template_registry;
+        let root_path = &self.root_path;
+
+        // Process templates in parallel
+        let results: Vec<anyhow::Result<(String, String, Recipe)>> = tasks
+            .into_par_iter()
+            .map(|task| {
+                // Find the template in the registry
+                let template = template_registry.get(&task.template_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Template Resolution: Template '{}' used by recipe '{}:{}' was not found. Available templates: {}",
+                        task.template_name,
+                        task.cookbook_name,
+                        task.recipe_name,
+                        template_registry.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                })?;
 
                 // Instantiate the template into a new recipe
                 let instantiated_recipe = template
                     .instantiate(
-                        recipe_name.clone(),
-                        cookbook.name.clone(),
-                        cookbook.config_path.clone(),
-                        self.root_path.clone(),
-                        &recipe.parameters,
-                        &cookbook_context,
+                        task.recipe_name.clone(),
+                        task.cookbook_name.clone(),
+                        task.cookbook_config_path.clone(),
+                        root_path.clone(),
+                        &task.original_recipe.parameters,
+                        &task.cookbook_context,
                     )
                     .map_err(|e| {
                         anyhow::anyhow!(
                             "{} (used by recipe '{}:{}')",
                             e,
-                            cookbook.name,
-                            recipe_name
+                            task.cookbook_name,
+                            task.recipe_name
                         )
                     })?;
 
@@ -501,7 +550,7 @@ impl BakeProject {
                 let mut final_recipe = instantiated_recipe;
 
                 // Process recipe variables with environment context for template resolution
-                let mut recipe_var_context = cookbook_context.clone();
+                let mut recipe_var_context = task.cookbook_context.clone();
                 recipe_var_context
                     .variables
                     .extend(final_recipe.variables.clone());
@@ -517,49 +566,61 @@ impl BakeProject {
                 }
 
                 // Override with any explicitly set fields from the original recipe
-                if let Some(description) = &recipe.description {
+                if let Some(description) = &task.original_recipe.description {
                     final_recipe.description = Some(description.clone());
                 }
 
                 // Merge environment variables (template + recipe)
                 final_recipe
                     .environment
-                    .extend(recipe.environment.iter().cloned());
+                    .extend(task.original_recipe.environment.iter().cloned());
 
                 // Merge variables (template first, then recipe overrides)
-                final_recipe
-                    .variables
-                    .extend(recipe.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
+                final_recipe.variables.extend(
+                    task.original_recipe
+                        .variables
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                );
 
                 // Override dependencies if specified in recipe (and non-empty)
-                if recipe
+                if task
+                    .original_recipe
                     .dependencies
                     .as_ref()
                     .is_some_and(|deps| !deps.is_empty())
                 {
-                    final_recipe.dependencies = recipe.dependencies.clone();
+                    final_recipe.dependencies = task.original_recipe.dependencies.clone();
                 }
 
                 // Override cache config if specified in recipe
-                if recipe.cache.is_some() {
-                    final_recipe.cache = recipe.cache.clone();
+                if task.original_recipe.cache.is_some() {
+                    final_recipe.cache = task.original_recipe.cache.clone();
                 }
 
                 // Override run command if specified in recipe (non-empty)
-                if !recipe.run.is_empty() {
-                    final_recipe.run = recipe.run.clone();
+                if !task.original_recipe.run.is_empty() {
+                    final_recipe.run = task.original_recipe.run.clone();
                 }
 
-                // Replace the original recipe with the instantiated one
-                *recipe = final_recipe;
+                Ok((task.cookbook_name, task.recipe_name, final_recipe))
+            })
+            .collect();
+
+        // Apply results back to cookbooks (sequential to avoid concurrent mutation)
+        for result in results {
+            let (cookbook_name, recipe_name, final_recipe) = result?;
+            if let Some(cookbook) = self.cookbooks.get_mut(&cookbook_name) {
+                cookbook.recipes.insert(recipe_name, final_recipe);
             }
         }
 
         Ok(())
     }
 
-    /// Validates that all recipes have a run command defined.
-    fn validate_recipes(&self) -> anyhow::Result<()> {
+    /// Validates that recipes have a run command defined.
+    /// If `filter_fqns` is provided, only validates those specific recipes.
+    fn validate_recipes(&self, filter_fqns: Option<&HashSet<String>>) -> anyhow::Result<()> {
         for (cookbook_name, cookbook) in &self.cookbooks {
             // Skip validation for cookbooks that aren't fully loaded
             if !cookbook.fully_loaded {
@@ -567,6 +628,14 @@ impl BakeProject {
             }
 
             for (recipe_name, recipe) in &cookbook.recipes {
+                // If filter is provided, skip recipes not in the filter
+                if let Some(fqns) = filter_fqns {
+                    let fqn = format!("{}:{}", cookbook_name, recipe_name);
+                    if !fqns.contains(&fqn) {
+                        continue;
+                    }
+                }
+
                 if recipe.run.trim().is_empty() {
                     bail!(
                         "Recipe Validation: Recipe '{}:{}' has no run command defined. Either provide a 'run' field directly or use a 'template' that defines one.",
@@ -612,7 +681,8 @@ impl BakeProject {
                     if !force_version_override {
                         anyhow::bail!(
                             "❌ This project requires bake v{} but you're running v{}.\n   Please upgrade your bake installation to match or exceed the project version, or use --force-version-override to bypass this check.",
-                            project_version, current_version
+                            project_version,
+                            current_version
                         );
                     } else {
                         eprintln!(
@@ -651,7 +721,9 @@ impl BakeProject {
 
         // Show warnings if any deprecated features are found
         if !warnings.is_empty() {
-            eprintln!("⚠️  Deprecated configuration detected in project (v{project_version} → v{current_version}):");
+            eprintln!(
+                "⚠️  Deprecated configuration detected in project (v{project_version} → v{current_version}):"
+            );
             for warning in warnings {
                 eprintln!("   • {warning}");
             }
@@ -661,7 +733,11 @@ impl BakeProject {
         }
     }
 
-    pub fn from(
+    /// Loads a BakeProject from a path
+    ///
+    /// Finds and parses the bake.yml configuration file, loads all cookbooks,
+    /// templates, and helpers, and builds the dependency graph.
+    pub fn load(
         path: &Path,
         environment: Option<&str>,
         override_variables: IndexMap<String, String>,
@@ -693,7 +769,7 @@ impl BakeProject {
         // CHANGE: Load cookbooks minimally (no Handlebars rendering).
         // This only parses YAML and extracts names, dependencies, and tags.
         // Full loading with template rendering happens later when we know which recipes to execute.
-        project.cookbooks = Cookbook::map_from_minimal(&project.root_path)?;
+        project.cookbooks = Cookbook::discover_all(&project.root_path)?;
 
         // Populate the recipe dependency graph from minimal cookbook data.
         project.populate_dependency_graph()?;
@@ -862,9 +938,9 @@ impl BakeProject {
 
         self.load_cookbooks_for_execution(&all_execution_fqns, environment, context)?;
 
-        // Now validate recipes and resolve templates (only for loaded cookbooks)
-        self.resolve_template_recipes(context)?;
-        self.validate_recipes()?;
+        // Resolve templates and validate (only for recipes in execution plan)
+        self.resolve_template_recipes(context, Some(&all_execution_fqns))?;
+        self.validate_recipes(Some(&all_execution_fqns))?;
 
         // Re-populate dependency graph after templates are resolved
         // This ensures template dependencies are included in the execution plan
@@ -878,9 +954,21 @@ impl BakeProject {
         // Load any additional cookbooks that might be needed due to template dependencies
         let new_execution_fqns: HashSet<String> = fqn_levels.iter().flatten().cloned().collect();
         if new_execution_fqns != all_execution_fqns {
-            self.load_cookbooks_for_execution(&new_execution_fqns, environment, context)?;
-            self.resolve_template_recipes(context)?;
-            self.validate_recipes()?;
+            // Only process the newly added FQNs (difference between new and old)
+            let additional_fqns: HashSet<String> = new_execution_fqns
+                .difference(&all_execution_fqns)
+                .cloned()
+                .collect();
+            if !additional_fqns.is_empty() {
+                log::debug!(
+                    "Template dependencies introduced {} additional recipes: {:?}",
+                    additional_fqns.len(),
+                    additional_fqns
+                );
+            }
+            self.load_cookbooks_for_execution(&additional_fqns, environment, context)?;
+            self.resolve_template_recipes(context, Some(&additional_fqns))?;
+            self.validate_recipes(Some(&additional_fqns))?;
         }
 
         let mut result_levels: Vec<Vec<Recipe>> = Vec::new();
@@ -1173,8 +1261,9 @@ mod tests {
     #[test_case(config_path("/invalid/config") => matches Err(_); "Invalid config")]
     #[test_case(config_path("/invalid/nobake/internal") => matches Err(_); "No bake file with .git root")]
     fn read_config(path_str: String) -> anyhow::Result<super::BakeProject> {
-        std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(&PathBuf::from(path_str), None, IndexMap::new(), false)
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
+        super::BakeProject::load(&PathBuf::from(path_str), None, IndexMap::new(), false)
     }
 
     #[test]
@@ -1184,7 +1273,7 @@ mod tests {
         let mode = perms.mode();
         perms.set_mode(0o200);
         std::fs::set_permissions(&path, perms.clone()).unwrap();
-        let project = super::BakeProject::from(
+        let project = super::BakeProject::load(
             &PathBuf::from(config_path("/invalid/permission")),
             None,
             IndexMap::new(),
@@ -1198,8 +1287,9 @@ mod tests {
     // Filesystem-dependent project loading tests have been moved to tests/integration/project_tests.rs
 
     fn get_test_project() -> super::BakeProject {
-        std::env::set_var("TEST_BAKE_VAR", "test");
-        super::BakeProject::from(
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
+        super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             None,
             IndexMap::new(),
@@ -1399,10 +1489,11 @@ mod tests {
 
     #[test]
     fn test_project_file_template_rendering() {
-        std::env::set_var("TEST_BAKE_VAR", "test");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
 
         // Test with default environment (should be "dev")
-        let project = super::BakeProject::from(
+        let project = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("default"),
             IndexMap::new(),
@@ -1427,7 +1518,7 @@ mod tests {
         );
 
         // Test with "test" environment
-        let project_test = super::BakeProject::from(
+        let project_test = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("test"),
             IndexMap::new(),
@@ -1451,7 +1542,7 @@ mod tests {
         );
 
         // Test with "prod" environment
-        let project_prod = super::BakeProject::from(
+        let project_prod = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("prod"),
             IndexMap::new(),
@@ -1477,10 +1568,11 @@ mod tests {
 
     #[test]
     fn test_environment_overrides() {
-        std::env::set_var("TEST_BAKE_VAR", "test");
+        // SAFETY: Test code - setting test environment variable
+        unsafe { std::env::set_var("TEST_BAKE_VAR", "test") };
 
         // Test with "test" environment - should have envName: test and bake_project_var: bar
-        let project_test = super::BakeProject::from(
+        let project_test = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("test"),
             IndexMap::new(),
@@ -1502,7 +1594,7 @@ mod tests {
         );
 
         // Test with "prod" environment - should have envName: prod and bake_project_var: prod_bar
-        let project_prod = super::BakeProject::from(
+        let project_prod = super::BakeProject::load(
             &PathBuf::from(config_path("/valid")),
             Some("prod"),
             IndexMap::new(),

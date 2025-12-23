@@ -23,7 +23,7 @@ fn validate_project(project_result: anyhow::Result<BakeProject>) {
 
 #[test_case("/valid/"; "valid project")]
 fn test_project_loading(path: &str) {
-    let result = BakeProject::from(
+    let result = BakeProject::load(
         &PathBuf::from(config_path(path)),
         None,
         IndexMap::new(),
@@ -40,7 +40,7 @@ fn test_invalid_permission_handling() {
     perms.set_mode(0o200);
     std::fs::set_permissions(&path, perms.clone()).unwrap();
 
-    let project = BakeProject::from(
+    let project = BakeProject::load(
         &PathBuf::from(config_path("/invalid/permission")),
         None,
         IndexMap::new(),
@@ -73,7 +73,7 @@ variables:
     fs::write(&config_path, config_content).unwrap();
 
     // Test that version validation works
-    let result = BakeProject::from(temp_dir.path(), None, IndexMap::new(), false);
+    let result = BakeProject::load(temp_dir.path(), None, IndexMap::new(), false);
     assert!(result.is_ok());
 
     let project = result.unwrap();
@@ -99,7 +99,7 @@ variables:
     let mut override_vars = IndexMap::new();
     override_vars.insert("custom_var".to_string(), "overridden_value".to_string());
 
-    let result = BakeProject::from(temp_dir.path(), None, override_vars, false);
+    let result = BakeProject::load(temp_dir.path(), None, override_vars, false);
     assert!(result.is_ok());
 
     let project = result.unwrap();
@@ -167,7 +167,7 @@ recipes:
     )
     .unwrap();
 
-    let result = BakeProject::from(temp_dir.path(), None, IndexMap::new(), false);
+    let result = BakeProject::load(temp_dir.path(), None, IndexMap::new(), false);
     assert!(result.is_ok());
 
     let project = result.unwrap();
@@ -190,7 +190,7 @@ recipes:
 #[test_case("/invalid/recipes"; "invalid recipes")]
 #[test_case("/invalid/nobake"; "no bake file")]
 fn test_invalid_project_configurations(path: &str) {
-    let result = BakeProject::from(
+    let result = BakeProject::load(
         &PathBuf::from(config_path(path)),
         None,
         IndexMap::new(),
@@ -230,7 +230,7 @@ content: |
 "#;
     std::fs::write(templates_dir.join("test-template.yml"), template_config).unwrap();
 
-    let result = BakeProject::from(temp_dir.path(), None, IndexMap::new(), false);
+    let result = BakeProject::load(temp_dir.path(), None, IndexMap::new(), false);
     assert!(result.is_ok());
 
     let project = result.unwrap();

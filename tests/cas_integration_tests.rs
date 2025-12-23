@@ -369,12 +369,14 @@ async fn test_executable_preservation() -> Result<()> {
     let (_temp, cache) = create_test_action_cache().await?;
 
     // Executable file
-    let outputs = vec![OutputFile::new(
-        PathBuf::from("bin/script.sh"),
-        BlobHash::from_content(b"#!/bin/bash"),
-        11,
-    )
-    .with_executable(true)];
+    let outputs = vec![
+        OutputFile::new(
+            PathBuf::from("bin/script.sh"),
+            BlobHash::from_content(b"#!/bin/bash"),
+            11,
+        )
+        .with_executable(true),
+    ];
 
     let result = create_test_action_result("test-executable", outputs);
 
