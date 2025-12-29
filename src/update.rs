@@ -154,39 +154,35 @@ pub fn perform_self_update(prerelease: bool) -> Result<()> {
     let current_version = cargo_crate_version!();
 
     // Check if this is a package-managed installation
-    if let Ok(current_exe) = env::current_exe() {
-        if is_package_managed_installation(&current_exe) {
-            println!(
-                "{}",
-                style("Cannot update: bake is installed via a package manager.").yellow()
-            );
-            println!(
-                "{}",
-                style("Please use your package manager to update:").dim()
-            );
+    if let Ok(current_exe) = env::current_exe()
+        && is_package_managed_installation(&current_exe)
+    {
+        println!(
+            "{}",
+            style("Cannot update: bake is installed via a package manager.").yellow()
+        );
+        println!(
+            "{}",
+            style("Please use your package manager to update:").dim()
+        );
 
-            let exe_path = current_exe.to_string_lossy();
-            if exe_path.contains("/opt/homebrew/") || exe_path.contains("/home/linuxbrew/") {
-                println!("  {}", style("brew upgrade bake").cyan());
-            } else if exe_path.contains("/usr/bin/")
-                && std::path::Path::new("/usr/bin/apt").exists()
-            {
-                println!(
-                    "  {}",
-                    style("sudo apt update && sudo apt upgrade bake").cyan()
-                );
-            } else if exe_path.contains("/usr/bin/")
-                && std::path::Path::new("/usr/bin/yum").exists()
-            {
-                println!("  {}", style("sudo yum update bake").cyan());
-            } else if exe_path.contains("/snap/") {
-                println!("  {}", style("sudo snap refresh bake").cyan());
-            } else {
-                println!("  {}", style("Use your system's package manager").cyan());
-            }
-
-            return Ok(());
+        let exe_path = current_exe.to_string_lossy();
+        if exe_path.contains("/opt/homebrew/") || exe_path.contains("/home/linuxbrew/") {
+            println!("  {}", style("brew upgrade bake").cyan());
+        } else if exe_path.contains("/usr/bin/") && std::path::Path::new("/usr/bin/apt").exists() {
+            println!(
+                "  {}",
+                style("sudo apt update && sudo apt upgrade bake").cyan()
+            );
+        } else if exe_path.contains("/usr/bin/") && std::path::Path::new("/usr/bin/yum").exists() {
+            println!("  {}", style("sudo yum update bake").cyan());
+        } else if exe_path.contains("/snap/") {
+            println!("  {}", style("sudo snap refresh bake").cyan());
+        } else {
+            println!("  {}", style("Use your system's package manager").cyan());
         }
+
+        return Ok(());
     }
 
     // Check if we have write permissions

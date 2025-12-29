@@ -100,17 +100,15 @@ impl Helper {
         })?;
 
         // Validate that filename matches helper name
-        if let Some(file_stem) = path.file_stem() {
-            if let Some(file_name) = file_stem.to_str() {
-                if file_name != helper.name {
+        if let Some(file_stem) = path.file_stem()
+            && let Some(file_name) = file_stem.to_str()
+                && file_name != helper.name {
                     bail!(
                         "Helper Load: Helper name '{}' doesn't match filename '{}'. They must be identical.",
                         helper.name,
                         file_name
                     );
                 }
-            }
-        }
 
         helper.helper_path = path.clone();
         Ok(helper)

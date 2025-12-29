@@ -6,12 +6,14 @@ use std::{
 
 use crate::{
     project::Recipe,
-    template::{VariableContext, extract_variables_blocks, process_variable_blocks},
+    template::{
+        VariableContext, extract_environment_block, extract_variables_blocks,
+        process_variable_blocks,
+    },
 };
 use anyhow::bail;
 use ignore::{WalkBuilder, WalkState};
 use indexmap::IndexMap;
-use log::debug;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
@@ -70,45 +72,78 @@ impl Cookbook {
         )]))
     }
 
-    /// Loads a cookbook minimally without Handlebars rendering
+    /// Loads a cookbook for dependency graph discovery with Handlebars rendering
     ///
-    /// Only loads essential fields: name, recipe names, dependencies, and tags.
-    /// Used for building the dependency graph before determining which recipes to execute.
-    /// Use `Cookbook::load()` for full loading with template rendering.
+    /// This method extracts variables from raw YAML, processes them with the project context,
+    /// renders the full YAML with Handlebars, then parses only essential fields:
+    /// name, recipe names, dependencies, and tags.
+    ///
+    /// This approach correctly handles structural Handlebars (e.g., `{{#if}}` blocks around recipes)
+    /// while still being faster than full loading since it skips recipe run command processing.
+    ///
+    /// Use `Cookbook::load()` for full loading with complete template rendering.
     ///
     /// # Arguments
     /// * `path` - Path to a cookbook file
     /// * `project_root` - Path to the project root
+    /// * `context` - Variable context containing project variables, environment, and helpers
     ///
-    pub fn load_minimal(path: &PathBuf, project_root: &Path) -> anyhow::Result<Self> {
-        let config_str = match std::fs::read_to_string(path) {
-            Ok(contents) => contents,
-            Err(_) => bail!(
-                "Cookbook: Failed to read cookbook configuration file at '{}': Check file existence and permissions.",
-                path.display()
-            ),
-        };
-
-        // Parse as serde_yaml::Value first to handle template expressions in non-essential fields
-        let mut yaml_value: serde_yaml::Value = serde_yaml::from_str(&config_str).map_err(|e| {
+    pub fn load_for_discovery(
+        path: &PathBuf,
+        project_root: &Path,
+        context: &VariableContext,
+    ) -> anyhow::Result<Self> {
+        let config_str = std::fs::read_to_string(path).map_err(|e| {
             anyhow::anyhow!(
-                "Cookbook: Failed to parse YAML at '{}': {}. Check YAML syntax.",
+                "Cookbook: Failed to read cookbook configuration file at '{}': {}",
                 path.display(),
                 e
             )
         })?;
 
-        // Extract only the fields we need for minimal loading: name, tags, recipes (with just names, tags, and dependencies)
+        // Build cookbook context with constants
+        let mut cookbook_context = context.clone();
+        let cookbook_constants = Self::generate_cookbook_constants(path)?;
+        cookbook_context.constants.extend(cookbook_constants);
+
+        if let Some(cookbook_dir) = path.parent() {
+            cookbook_context.working_directory = Some(cookbook_dir.to_path_buf());
+        }
+
+        // Extract and process cookbook variables from raw YAML
+        let cookbook_environment = extract_environment_block(&config_str);
+        cookbook_context.environment.extend(cookbook_environment);
+
+        let (cb_vars_block, cb_overrides_block) = extract_variables_blocks(&config_str);
+        let cookbook_vars = process_variable_blocks(
+            cb_vars_block.as_deref(),
+            cb_overrides_block.as_deref(),
+            &cookbook_context,
+            None, // No environment override during discovery
+        )?;
+        cookbook_context.variables.extend(cookbook_vars);
+
+        // Render entire YAML with complete context (handles structural Handlebars)
+        let rendered_yaml = cookbook_context.render_raw_template(&config_str)?;
+
+        // Parse as serde_yaml::Value to strip non-essential fields
+        let mut yaml_value: serde_yaml::Value =
+            serde_yaml::from_str(&rendered_yaml).map_err(|e| {
+                anyhow::anyhow!(
+                    "Cookbook: Failed to parse YAML at '{}': {}. Check YAML syntax.",
+                    path.display(),
+                    e
+                )
+            })?;
+
+        // Strip non-essential fields for faster deserialization
         if let serde_yaml::Value::Mapping(ref mut map) = yaml_value {
-            // Keep only essential top-level fields
             let essential_keys: Vec<&str> = vec!["name", "tags", "environment", "recipes"];
             map.retain(|k, _| k.as_str().is_some_and(|key| essential_keys.contains(&key)));
 
-            // For each recipe, keep only essential fields
             if let Some(serde_yaml::Value::Mapping(recipes_map)) = map.get_mut("recipes") {
                 for (_, recipe_value) in recipes_map.iter_mut() {
                     if let serde_yaml::Value::Mapping(recipe_map) = recipe_value {
-                        // Keep only: dependencies, tags, description (for debugging)
                         let essential_recipe_keys: Vec<&str> =
                             vec!["dependencies", "tags", "description"];
                         recipe_map.retain(|k, _| {
@@ -120,32 +155,29 @@ impl Cookbook {
             }
         }
 
-        // Now deserialize the filtered YAML into our struct
+        // Deserialize and set metadata
         let mut parsed: Self = serde_yaml::from_value(yaml_value).map_err(|e| {
             anyhow::anyhow!(
-                "Cookbook: Failed to deserialize minimal YAML at '{}': {}.",
+                "Cookbook: Failed to deserialize discovery YAML at '{}': {}.",
                 path.display(),
                 e
             )
         })?;
 
-        // Set cookbook metadata
         parsed.config_path = path.to_path_buf();
-        parsed.fully_loaded = false; // Mark as minimally loaded
+        parsed.fully_loaded = false;
 
-        // Process each recipe with minimal data
+        // Process recipe metadata
         for (name, recipe) in parsed.recipes.iter_mut() {
             recipe.name = name.clone();
             recipe.cookbook = parsed.name.clone();
             recipe.config_path = path.to_path_buf();
             recipe.project_root = project_root.to_path_buf();
 
-            // Inherit tags from cookbook if recipe has no tags
             if recipe.tags.is_empty() {
                 recipe.tags = parsed.tags.clone();
             }
 
-            // Process dependencies (add cookbook prefix if needed)
             if let Some(dependencies) = recipe.dependencies.as_ref() {
                 let new_deps = dependencies.iter().map(|dep| {
                     if !dep.contains(':') {
@@ -262,11 +294,10 @@ impl Cookbook {
                     combined.extend(recipe.variables.clone());
 
                     // Apply environment overrides if specified
-                    if let Some(env) = environment {
-                        if let Some(env_overrides) = recipe.overrides.get(env) {
+                    if let Some(env) = environment
+                        && let Some(env_overrides) = recipe.overrides.get(env) {
                             combined.extend(env_overrides.clone());
                         }
-                    }
 
                     combined
                 };
@@ -294,18 +325,26 @@ impl Cookbook {
         Ok(parsed)
     }
 
-    /// Discovers all cookbooks recursively in a directory with minimal loading (no Handlebars)
+    /// Discovers all cookbooks recursively in a directory with discovery loading
     ///
     /// Recursively searches for all cookbooks in a directory respecting `.gitignore` and
-    /// `.bakeignore` files, but only performs minimal parsing without template rendering.
-    /// Use `Cookbook::load()` to fully load individual cookbooks with Handlebars rendering.
+    /// `.bakeignore` files. Uses `load_for_discovery` which renders Handlebars templates
+    /// to correctly handle structural templating, but only parses essential fields
+    /// (name, dependencies, tags) for faster loading.
+    ///
+    /// Use `Cookbook::load()` to fully load individual cookbooks with complete template rendering.
     ///
     /// # Arguments
     /// * `path` - Path to a directory
+    /// * `context` - Variable context containing project variables, environment, and helpers
     ///
-    pub fn discover_all(path: &PathBuf) -> anyhow::Result<BTreeMap<String, Self>> {
+    pub fn discover_all(
+        path: &PathBuf,
+        context: &VariableContext,
+    ) -> anyhow::Result<BTreeMap<String, Self>> {
         let results: CookbookResults = Arc::new(Mutex::new(Vec::new()));
         let root_path = Arc::new(path.clone());
+        let context_arc = Arc::new(context.clone());
 
         WalkBuilder::new(path)
             .add_custom_ignore_filename(".bakeignore")
@@ -314,6 +353,7 @@ impl Cookbook {
             .run(|| {
                 let root = Arc::clone(&root_path);
                 let results_ref = Arc::clone(&results);
+                let ctx = Arc::clone(&context_arc);
                 Box::new(move |entry| {
                     let entry = match entry {
                         Ok(e) => e,
@@ -333,7 +373,7 @@ impl Cookbook {
                     };
 
                     if filename.contains("cookbook.yaml") || filename.contains("cookbook.yml") {
-                        match Self::load_minimal(&entry.into_path(), &root) {
+                        match Self::load_for_discovery(&entry.into_path(), &root, &ctx) {
                             Ok(cookbook) => {
                                 results_ref
                                     .lock()
@@ -429,10 +469,7 @@ mod test {
         let path = PathBuf::from(&path_str);
         let helpers = load_test_helpers(&path_str);
 
-        // Use minimal loading first (like production code does)
-        let minimal_cookbooks = super::Cookbook::discover_all(&path)?;
-
-        // Then fully load each cookbook
+        // Build context for discovery and full loading
         let context = VariableContext::builder()
             .environment(vec![])
             .variables(IndexMap::new())
@@ -440,11 +477,19 @@ mod test {
             .helpers(helpers)
             .build();
 
-        minimal_cookbooks
+        // Use discovery loading first (like production code does)
+        let discovery_cookbooks = super::Cookbook::discover_all(&path, &context)?;
+
+        // Then fully load each cookbook
+        discovery_cookbooks
             .into_iter()
-            .map(|(name, minimal)| {
-                let full =
-                    super::Cookbook::load(&minimal.config_path, &path, Some("default"), &context)?;
+            .map(|(name, discovery)| {
+                let full = super::Cookbook::load(
+                    &discovery.config_path,
+                    &path,
+                    Some("default"),
+                    &context,
+                )?;
                 Ok((name, full))
             })
             .collect()
@@ -493,9 +538,9 @@ recipes:
         VariableContext::process_template_in_value(&mut yaml_value, &context, true).unwrap();
 
         // Check that the processed values have the correct types
-        if let Value::Mapping(map) = &yaml_value {
-            if let Some(Value::Mapping(recipes)) = map.get("recipes") {
-                if let Some(Value::Mapping(build_recipe)) = recipes.get("build") {
+        if let Value::Mapping(map) = &yaml_value
+            && let Some(Value::Mapping(recipes)) = map.get("recipes")
+                && let Some(Value::Mapping(build_recipe)) = recipes.get("build") {
                     // These should be converted back to their original types
                     assert!(matches!(
                         build_recipe.get("force_build"),
@@ -506,8 +551,6 @@ recipes:
                     );
                     assert!(matches!(build_recipe.get("debug"), Some(Value::Bool(true))));
                 }
-            }
-        }
     }
 
     #[test]
