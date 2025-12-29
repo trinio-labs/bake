@@ -1,5 +1,56 @@
 # Bake
 
+## v2.0.0 - 2025-12-29
+
+This is a major release introducing a new Content-Addressable Storage (CAS) cache system, significant performance improvements, and the migration to Rust 2024 edition.
+
+### Breaking Changes
+
+- **New CAS cache system** - Complete replacement of the legacy tar-based cache with a modern Content-Addressable Storage architecture
+  - **Existing caches are incompatible** - All local and remote caches will need to be rebuilt after upgrading
+  - Old `.bake/cache` directories can be safely deleted
+  - Remote caches (S3/GCS) will start fresh with the new format
+
+### Added
+
+- **Content-Addressable Storage (CAS) cache** - Modern cache architecture with significant improvements
+  - Multi-tier storage with local, S3, and GCS backends
+  - Content deduplication via content-addressable blob storage - identical files are stored only once
+  - Action Cache (AC) for efficient mapping of task inputs to outputs
+  - Incremental chunking with content-defined boundaries for better deduplication
+  - Zstd compression for reduced storage and faster transfers
+  - Cryptographic manifest signing (HMAC-SHA256) for cache integrity verification
+  - Layered cache with automatic promotion from remote to local
+  - See `docs/CAS_CACHE.md` for detailed architecture documentation
+
+- **CAS configuration options** - New configuration fields for fine-tuning cache behavior
+  - `cas.signing_secret_env` - Environment variable name for manifest signing secret
+  - `cas.local.max_size` - Maximum size for local CAS storage with LRU eviction
+  - `cas.local.algorithm` - Hash algorithm selection (blake3 or sha256)
+  - `cas.compression_level` - Zstd compression level (1-22)
+
+### Changed
+
+- **Rust 2024 edition** - Migrated to the latest Rust edition
+  - Requires Rust 1.92.0 or later
+  - Benefits include improved async ergonomics and faster doctest compilation
+
+- **Project loading performance** - Significant startup time improvements
+  - Parallelized helper execution during template rendering
+  - Optimized cookbook discovery with lazy loading
+  - Reduced memory footprint for large monorepo projects
+
+- **Updated google-cloud-storage** - Migrated to v1.5.0 with new API
+  - Uses new googleapis API structure with builder patterns
+  - Improved reliability and error handling
+
+### Fixed
+
+- **Structural Handlebars in cookbook discovery** - Fixed parsing of cookbooks that use structural Handlebars
+  - Cookbooks with `{{#if}}` blocks around recipe definitions now load correctly
+  - New `load_for_discovery` approach properly renders templates before YAML parsing
+  - Resolves chicken-and-egg problem with conditional recipe definitions
+
 ## v1.1.0 - 2025-10-14
 
 ### Added
