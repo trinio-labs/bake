@@ -1,5 +1,19 @@
 # Bake
 
+## v2.0.1 - 2026-01-06
+
+### Fixed
+
+- **S3 cache compatibility with ACL-disabled buckets** - Fixed S3 cache save failing on buckets with ACLs disabled
+  - Removed `ObjectCannedAcl::BucketOwnerFullControl` from put operations
+  - S3 buckets using `ObjectOwnership: BucketOwnerEnforced` (ACLs disabled) now work correctly
+  - This is the default setting for new S3 buckets created after April 2023
+
+- **S3 "not found" detection** - Improved detection of missing blobs in S3 cache
+  - Now uses AWS SDK's `is_not_found()` method instead of string matching
+  - Eliminates spurious "S3 head_object error... (treating as miss)" warnings
+  - More reliable cache miss detection across different AWS SDK versions
+
 ## v2.0.0 - 2025-12-29
 
 This is a major release introducing a new Content-Addressable Storage (CAS) cache system, significant performance improvements, and the migration to Rust 2024 edition.

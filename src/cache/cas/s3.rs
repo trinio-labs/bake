@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::ObjectCannedAcl;
 use bytes::Bytes;
 use log::debug;
 use std::sync::Arc;
@@ -93,8 +92,13 @@ impl BlobStore for S3BlobStore {
         {
             Ok(_) => Ok(true),
             Err(err) => {
-                // Check if it's a "not found" error
-                if err.to_string().contains("NotFound") || err.to_string().contains("404") {
+                // Check if it's a "not found" error by examining the service error
+                let is_not_found = err
+                    .as_service_error()
+                    .map(|e| e.is_not_found())
+                    .unwrap_or(false);
+
+                if is_not_found {
                     debug!("S3 blob not found: {}", key);
                     Ok(false)
                 } else {
@@ -154,7 +158,6 @@ impl BlobStore for S3BlobStore {
             .bucket(&self.bucket)
             .key(&key)
             .body(body)
-            .acl(ObjectCannedAcl::BucketOwnerFullControl)
             .send()
             .await
             .context(format!("Failed to upload blob {} to S3", hash))?;
