@@ -11,42 +11,42 @@ use std::sync::Arc;
 /// Features:
 /// - Automatic cache promotion: When a blob is found in a slower tier,
 ///   it's automatically promoted to faster tiers
-/// - Write-through: Writes go to all tiers to ensure consistency
+/// - Write-through: Writes always go to all tiers to ensure consistency
 /// - Read prioritization: Always reads from fastest available tier
 ///
 /// Example tier order: Local → S3 → GCS
 pub struct LayeredBlobStore {
-    /// Ordered list of blob stores (fastest first)
-    tiers: Vec<Arc<Box<dyn BlobStore>>>,
+    /// Ordered list of blob stores (fastest first), guaranteed non-empty
+    tiers: Vec<Arc<dyn BlobStore>>,
 
     /// Enable automatic promotion of cache hits to faster tiers
     auto_promote: bool,
-
-    /// Enable write-through to all tiers (false = write to first tier only)
-    write_through: bool,
 }
 
 impl LayeredBlobStore {
     /// Create a new layered blob store
-    pub fn new(tiers: Vec<Arc<Box<dyn BlobStore>>>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns an error if `tiers` is empty
+    pub fn new(tiers: Vec<Arc<dyn BlobStore>>) -> Result<Self> {
+        if tiers.is_empty() {
+            anyhow::bail!("LayeredBlobStore requires at least one tier");
+        }
+        Ok(Self {
             tiers,
             auto_promote: true,
-            write_through: false, // Default: write to first tier only for speed
-        }
+        })
     }
 
     /// Create with custom options
-    pub fn with_options(
-        tiers: Vec<Arc<Box<dyn BlobStore>>>,
-        auto_promote: bool,
-        write_through: bool,
-    ) -> Self {
-        Self {
-            tiers,
-            auto_promote,
-            write_through,
+    ///
+    /// # Errors
+    /// Returns an error if `tiers` is empty
+    pub fn with_options(tiers: Vec<Arc<dyn BlobStore>>, auto_promote: bool) -> Result<Self> {
+        if tiers.is_empty() {
+            anyhow::bail!("LayeredBlobStore requires at least one tier");
         }
+        Ok(Self { tiers, auto_promote })
     }
 
     /// Promote a blob from a slower tier to faster tiers
@@ -99,59 +99,56 @@ impl BlobStore for LayeredBlobStore {
         for (tier_idx, tier) in self.tiers.iter().enumerate() {
             match tier.get(hash).await {
                 Ok(content) => {
+                    debug!(
+                        "Blob {} found in tier {} ({} bytes)",
+                        hash,
+                        tier_idx,
+                        content.len()
+                    );
                     // Promote to faster tiers if not from fastest
                     if let Err(e) = self.promote(hash, &content, tier_idx).await {
                         warn!("Failed to promote blob after cache hit: {}", e);
                     }
                     return Ok(content);
                 }
-                Err(_) => {
+                Err(e) => {
+                    debug!("Blob {} not in tier {}: {}", hash, tier_idx, e);
                     // Try next tier
                     continue;
                 }
             }
         }
 
+        debug!("Blob {} not found in any of {} tiers", hash, self.tiers.len());
         anyhow::bail!("Blob {} not found in any tier", hash)
     }
 
     async fn put(&self, content: Bytes) -> Result<BlobHash> {
         let hash = BlobHash::from_content(&content);
 
-        if self.write_through {
-            // Write to all tiers
-            let write_tasks: Vec<_> = self
-                .tiers
-                .iter()
-                .map(|tier| {
-                    let tier = Arc::clone(tier);
-                    let content = content.clone();
-                    async move { tier.put(content).await }
-                })
-                .collect();
+        // Always write to all tiers for consistency
+        let write_tasks: Vec<_> = self
+            .tiers
+            .iter()
+            .map(|tier| {
+                let tier = Arc::clone(tier);
+                let content = content.clone();
+                async move { tier.put(content).await }
+            })
+            .collect();
 
-            // Wait for all writes to complete
-            let results = futures_util::future::join_all(write_tasks).await;
+        let results = futures_util::future::join_all(write_tasks).await;
 
-            // Check if at least one succeeded
-            let mut any_success = false;
-            for (idx, result) in results.iter().enumerate() {
-                match result {
-                    Ok(_) => any_success = true,
-                    Err(e) => warn!("Failed to write to tier {}: {}", idx, e),
-                }
+        // Log failures and check if at least one succeeded
+        let any_success = results.iter().enumerate().fold(false, |acc, (idx, result)| {
+            if let Err(e) = result {
+                warn!("Failed to write to tier {}: {}", idx, e);
             }
+            acc || result.is_ok()
+        });
 
-            if !any_success {
-                anyhow::bail!("All tier writes failed for blob {}", hash);
-            }
-        } else {
-            // Write to first tier only (fastest)
-            if let Some(first_tier) = self.tiers.first() {
-                first_tier.put(content).await?;
-            } else {
-                anyhow::bail!("No tiers configured");
-            }
+        if !any_success {
+            anyhow::bail!("All tier writes failed for blob {}", hash);
         }
 
         Ok(hash)
@@ -181,6 +178,7 @@ impl BlobStore for LayeredBlobStore {
     }
 
     async fn get_many(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
+        debug!("get_many: retrieving {} blobs", hashes.len());
         let mut results = Vec::with_capacity(hashes.len());
         let mut remaining: Vec<(usize, BlobHash)> = hashes
             .iter()
@@ -200,9 +198,21 @@ impl BlobStore for LayeredBlobStore {
                 Ok(contents) => {
                     // Ensure we got all requested blobs (positional correspondence)
                     if contents.len() != current_hashes.len() {
+                        debug!(
+                            "get_many: tier {} returned {} blobs but expected {}, trying next tier",
+                            tier_idx,
+                            contents.len(),
+                            current_hashes.len()
+                        );
                         // Partial success - treat as failure and try next tier
                         continue;
                     }
+
+                    debug!(
+                        "get_many: found {} blobs in tier {}",
+                        contents.len(),
+                        tier_idx
+                    );
 
                     // Process successful retrievals (safe to use positional index)
                     for (i, content) in contents.into_iter().enumerate() {
@@ -218,7 +228,8 @@ impl BlobStore for LayeredBlobStore {
                     // All found in this tier
                     remaining.clear();
                 }
-                Err(_) => {
+                Err(e) => {
+                    debug!("get_many: tier {} failed: {}", tier_idx, e);
                     // Try next tier with all remaining
                     continue;
                 }
@@ -226,43 +237,45 @@ impl BlobStore for LayeredBlobStore {
         }
 
         if !remaining.is_empty() {
+            debug!(
+                "get_many: {} blobs not found in any of {} tiers",
+                remaining.len(),
+                self.tiers.len()
+            );
             anyhow::bail!("Some blobs not found in any tier");
         }
 
+        debug!("get_many: successfully retrieved {} blobs", results.len());
         // Sort by original index
         results.sort_by_key(|(idx, _)| *idx);
         Ok(results.into_iter().map(|(_, content)| content).collect())
     }
 
     async fn put_many(&self, contents: Vec<Bytes>) -> Result<Vec<BlobHash>> {
-        if self.write_through {
-            // Write to all tiers in parallel
-            let write_tasks: Vec<_> = self
-                .tiers
-                .iter()
-                .map(|tier| {
-                    let tier = Arc::clone(tier);
-                    let contents = contents.clone();
-                    async move { tier.put_many(contents).await }
-                })
-                .collect();
+        // Always write to all tiers for consistency
+        let write_tasks: Vec<_> = self
+            .tiers
+            .iter()
+            .map(|tier| {
+                let tier = Arc::clone(tier);
+                let contents = contents.clone();
+                async move { tier.put_many(contents).await }
+            })
+            .collect();
 
-            let results = futures_util::future::join_all(write_tasks).await;
+        let results = futures_util::future::join_all(write_tasks).await;
 
-            // Return first successful result
-            if let Some(hashes) = results.into_iter().flatten().next() {
-                return Ok(hashes);
-            }
-
-            anyhow::bail!("All tier writes failed for batch");
-        } else {
-            // Write to first tier only
-            if let Some(first_tier) = self.tiers.first() {
-                first_tier.put_many(contents).await
-            } else {
-                anyhow::bail!("No tiers configured");
+        // Log failures and return first successful result
+        let mut first_success = None;
+        for (idx, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(hashes) if first_success.is_none() => first_success = Some(hashes),
+                Ok(_) => {} // Already have a success
+                Err(e) => warn!("Failed to write batch to tier {}: {}", idx, e),
             }
         }
+
+        first_success.ok_or_else(|| anyhow::anyhow!("All tier writes failed for batch"))
     }
 
     async fn delete(&self, hash: &BlobHash) -> Result<()> {
@@ -277,16 +290,15 @@ impl BlobStore for LayeredBlobStore {
             })
             .collect();
 
-        // Wait for all deletes
         let results = futures_util::future::join_all(delete_tasks).await;
 
-        // Check if at least one succeeded
-        let mut any_success = false;
-        for result in results {
-            if result.is_ok() {
-                any_success = true;
+        // Log failures and check if at least one succeeded
+        let any_success = results.iter().enumerate().fold(false, |acc, (idx, result)| {
+            if let Err(e) = result {
+                warn!("Failed to delete from tier {}: {}", idx, e);
             }
-        }
+            acc || result.is_ok()
+        });
 
         if any_success {
             Ok(())
@@ -339,14 +351,13 @@ impl BlobStore for LayeredBlobStore {
 
         let results = futures_util::future::join_all(write_tasks).await;
 
-        // Check if at least one succeeded
-        let mut any_success = false;
-        for (idx, result) in results.iter().enumerate() {
-            match result {
-                Ok(_) => any_success = true,
-                Err(e) => warn!("Failed to write manifest to tier {}: {}", idx, e),
+        // Log failures and check if at least one succeeded
+        let any_success = results.iter().enumerate().fold(false, |acc, (idx, result)| {
+            if let Err(e) = result {
+                warn!("Failed to write manifest to tier {}: {}", idx, e);
             }
-        }
+            acc || result.is_ok()
+        });
 
         if any_success {
             Ok(())
@@ -399,25 +410,84 @@ impl BlobStore for LayeredBlobStore {
 mod tests {
     use super::*;
     use crate::cache::cas::LocalBlobStore;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Test store that wraps LocalBlobStore but adds manifest support
+    struct TestBlobStore {
+        inner: LocalBlobStore,
+        manifests: Mutex<HashMap<String, Bytes>>,
+    }
+
+    impl TestBlobStore {
+        fn new(path: std::path::PathBuf) -> Self {
+            Self {
+                inner: LocalBlobStore::new(path),
+                manifests: Mutex::new(HashMap::new()),
+            }
+        }
+
+        async fn init(&self) -> Result<()> {
+            self.inner.init().await
+        }
+    }
+
+    #[async_trait]
+    impl BlobStore for TestBlobStore {
+        async fn contains(&self, hash: &BlobHash) -> Result<bool> {
+            self.inner.contains(hash).await
+        }
+
+        async fn get(&self, hash: &BlobHash) -> Result<Bytes> {
+            self.inner.get(hash).await
+        }
+
+        async fn put(&self, content: Bytes) -> Result<BlobHash> {
+            self.inner.put(content).await
+        }
+
+        async fn delete(&self, hash: &BlobHash) -> Result<()> {
+            self.inner.delete(hash).await
+        }
+
+        async fn size(&self, hash: &BlobHash) -> Result<Option<u64>> {
+            self.inner.size(hash).await
+        }
+
+        async fn list(&self) -> Result<Vec<BlobHash>> {
+            self.inner.list().await
+        }
+
+        async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
+            let mut manifests = self.manifests.lock().unwrap();
+            manifests.insert(key.to_string(), content);
+            Ok(())
+        }
+
+        async fn get_manifest(&self, key: &str) -> Result<Option<Bytes>> {
+            let manifests = self.manifests.lock().unwrap();
+            Ok(manifests.get(key).cloned())
+        }
+    }
 
     async fn create_test_stores() -> (
         TempDir,
         TempDir,
-        Arc<Box<dyn BlobStore>>,
-        Arc<Box<dyn BlobStore>>,
+        Arc<dyn BlobStore>,
+        Arc<dyn BlobStore>,
     ) {
         let temp1 = TempDir::new().unwrap();
         let temp2 = TempDir::new().unwrap();
 
-        let store1 = LocalBlobStore::new(temp1.path().to_path_buf());
+        let store1 = TestBlobStore::new(temp1.path().to_path_buf());
         store1.init().await.unwrap();
 
-        let store2 = LocalBlobStore::new(temp2.path().to_path_buf());
+        let store2 = TestBlobStore::new(temp2.path().to_path_buf());
         store2.init().await.unwrap();
 
-        let store1: Arc<Box<dyn BlobStore>> = Arc::new(Box::new(store1));
-        let store2: Arc<Box<dyn BlobStore>> = Arc::new(Box::new(store2));
+        let store1: Arc<dyn BlobStore> = Arc::new(store1);
+        let store2: Arc<dyn BlobStore> = Arc::new(store2);
 
         (temp1, temp2, store1, store2)
     }
@@ -425,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn test_layered_basic_operations() {
         let (_temp1, _temp2, store1, store2) = create_test_stores().await;
-        let layered = LayeredBlobStore::new(vec![store1, store2]);
+        let layered = LayeredBlobStore::new(vec![store1, store2]).unwrap();
 
         let content = Bytes::from("test content");
         let hash = layered.put(content.clone()).await.unwrap();
@@ -445,7 +515,7 @@ mod tests {
         let hash = store2.put(content.clone()).await.unwrap();
 
         // Create layered store with auto-promotion
-        let layered = LayeredBlobStore::with_options(vec![store1.clone(), store2], true, false);
+        let layered = LayeredBlobStore::with_options(vec![store1.clone(), store2], true).unwrap();
 
         // First get should trigger promotion
         let retrieved = layered.get(&hash).await.unwrap();
@@ -456,12 +526,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_layered_write_through() {
+    async fn test_layered_write_to_all_tiers() {
         let (_temp1, _temp2, store1, store2) = create_test_stores().await;
 
-        // Create layered store with write-through
-        let layered =
-            LayeredBlobStore::with_options(vec![store1.clone(), store2.clone()], false, true);
+        // Create layered store - writes always go to all tiers
+        let layered = LayeredBlobStore::new(vec![store1.clone(), store2.clone()]).unwrap();
 
         let content = Bytes::from("test content");
         let hash = layered.put(content).await.unwrap();
@@ -479,10 +548,75 @@ mod tests {
         let content = Bytes::from("test content");
         let hash = store2.put(content.clone()).await.unwrap();
 
-        let layered = LayeredBlobStore::new(vec![store1, store2]);
+        let layered = LayeredBlobStore::new(vec![store1, store2]).unwrap();
 
         // Should find it via fallback
         let retrieved = layered.get(&hash).await.unwrap();
         assert_eq!(content, retrieved);
+    }
+
+    #[tokio::test]
+    async fn test_empty_tiers_fails() {
+        let result = LayeredBlobStore::new(vec![]);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("at least one tier"));
+    }
+
+    #[tokio::test]
+    async fn test_put_manifest_writes_to_all_tiers() {
+        let (_temp1, _temp2, store1, store2) = create_test_stores().await;
+
+        let layered = LayeredBlobStore::new(vec![store1.clone(), store2.clone()]).unwrap();
+
+        let manifest_key = "test/manifest";
+        let manifest_content = Bytes::from(r#"{"recipe":"test","exit_code":0}"#);
+
+        // PUT manifest should write to all tiers
+        layered
+            .put_manifest(manifest_key, manifest_content.clone())
+            .await
+            .unwrap();
+
+        // Verify in both tiers
+        let in_store1 = store1.get_manifest(manifest_key).await.unwrap();
+        let in_store2 = store2.get_manifest(manifest_key).await.unwrap();
+
+        assert_eq!(in_store1, Some(manifest_content.clone()));
+        assert_eq!(in_store2, Some(manifest_content));
+    }
+
+    #[tokio::test]
+    async fn test_get_manifest_with_promotion() {
+        let (_temp1, _temp2, store1, store2) = create_test_stores().await;
+
+        // Put manifest only in second tier
+        let manifest_key = "test/manifest";
+        let manifest_content = Bytes::from(r#"{"recipe":"test","exit_code":0}"#);
+        store2
+            .put_manifest(manifest_key, manifest_content.clone())
+            .await
+            .unwrap();
+
+        // Create layered store with auto-promotion
+        let layered = LayeredBlobStore::with_options(vec![store1.clone(), store2], true).unwrap();
+
+        // GET manifest should find it in second tier and promote to first
+        let retrieved = layered.get_manifest(manifest_key).await.unwrap();
+        assert_eq!(retrieved, Some(manifest_content.clone()));
+
+        // Verify it's now promoted to first tier
+        let in_store1 = store1.get_manifest(manifest_key).await.unwrap();
+        assert_eq!(in_store1, Some(manifest_content));
+    }
+
+    #[tokio::test]
+    async fn test_get_manifest_returns_none_when_not_found() {
+        let (_temp1, _temp2, store1, store2) = create_test_stores().await;
+
+        let layered = LayeredBlobStore::new(vec![store1, store2]).unwrap();
+
+        let result = layered.get_manifest("nonexistent/manifest").await.unwrap();
+        assert!(result.is_none());
     }
 }

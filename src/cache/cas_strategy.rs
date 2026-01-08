@@ -31,7 +31,7 @@ pub enum CacheStrategy {
 /// Uses Blake3 hashing, FastCDC chunking, and multi-tier blob storage.
 pub struct Cache {
     /// Blob storage backend (None if disabled)
-    blob_store: Option<Arc<Box<dyn BlobStore>>>,
+    blob_store: Option<Arc<dyn BlobStore>>,
 
     /// Blob index for fast lookups (None if disabled)
     blob_index: Option<Arc<BlobIndex>>,
@@ -94,7 +94,7 @@ impl Cache {
         action_cache.init().await?;
 
         Ok(Self {
-            blob_store: Some(Arc::new(Box::new(blob_store))),
+            blob_store: Some(Arc::new(blob_store)),
             blob_index: Some(Arc::new(blob_index)),
             action_cache: Some(Arc::new(action_cache)),
             project_root,
@@ -114,7 +114,7 @@ impl Cache {
         use CacheStrategy::*;
 
         // Build list of blob stores based on strategy
-        let mut stores: Vec<Arc<Box<dyn BlobStore>>> = Vec::new();
+        let mut stores: Vec<Arc<dyn BlobStore>> = Vec::new();
 
         // Determine the order of stores based on strategy
         let use_local = matches!(cache_strategy, LocalOnly | LocalFirst | RemoteFirst);
@@ -127,7 +127,7 @@ impl Cache {
             let blob_root = cache_root.join("cas/blobs");
             let local_store = LocalBlobStore::new(blob_root);
             local_store.init().await?;
-            stores.push(Arc::new(Box::new(local_store)));
+            stores.push(Arc::new(local_store));
         }
 
         if use_remote {
@@ -143,7 +143,7 @@ impl Cache {
                     .await
                     {
                         Ok(s3_store) => {
-                            stores.push(Arc::new(Box::new(s3_store)));
+                            stores.push(Arc::new(s3_store));
                             debug!("S3 cache enabled: bucket={}", s3_config.bucket);
                         }
                         Err(e) => {
@@ -156,7 +156,7 @@ impl Cache {
                 if let Some(gcs_config) = &remotes.gcs {
                     match GcsBlobStore::new(gcs_config.bucket.clone(), None).await {
                         Ok(gcs_store) => {
-                            stores.push(Arc::new(Box::new(gcs_store)));
+                            stores.push(Arc::new(gcs_store));
                             debug!("GCS cache enabled: bucket={}", gcs_config.bucket);
                         }
                         Err(e) => {
@@ -172,7 +172,7 @@ impl Cache {
             let blob_root = cache_root.join("cas/blobs");
             let local_store = LocalBlobStore::new(blob_root);
             local_store.init().await?;
-            stores.push(Arc::new(Box::new(local_store)));
+            stores.push(Arc::new(local_store));
         }
 
         // If no stores could be initialized, return error
@@ -184,19 +184,16 @@ impl Cache {
         }
 
         // Create blob store (single or layered)
-        let blob_store: Arc<Box<dyn BlobStore>> = if stores.len() == 1 {
+        let blob_store: Arc<dyn BlobStore> = if stores.len() == 1 {
             // Single store - use it directly
             stores.into_iter().next().unwrap()
         } else {
-            // Multiple stores - create layered store
-            // For remote-first, we want writes to go to all stores (write-through)
-            // For local-first, we want writes to go only to local (fast)
-            let write_through = matches!(cache_strategy, RemoteFirst);
-            Arc::new(Box::new(LayeredBlobStore::with_options(
+            // Multiple stores - create layered store with auto-promotion enabled
+            // Writes always go to all tiers for consistency (blobs + manifests)
+            Arc::new(LayeredBlobStore::with_options(
                 stores,
                 true, // Enable auto-promotion
-                write_through,
-            )))
+            )?)
         };
 
         // Initialize blob index
@@ -231,7 +228,7 @@ impl Cache {
     }
 
     // Helper methods to get references (panic if cache is disabled but these are called)
-    fn blob_store(&self) -> &Arc<Box<dyn BlobStore>> {
+    fn blob_store(&self) -> &Arc<dyn BlobStore> {
         self.blob_store
             .as_ref()
             .expect("blob_store should exist when cache is enabled")

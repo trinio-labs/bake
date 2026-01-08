@@ -290,10 +290,10 @@ async fn test_layered_store_promotion() -> Result<()> {
 
     // Create wrapped stores - wrap in Arc
     use std::sync::Arc;
-    let local_store_arc = Arc::new(Box::new(local_store) as Box<dyn BlobStore>);
-    let remote_store_arc = Arc::new(Box::new(remote_store) as Box<dyn BlobStore>);
+    let local_store_arc: Arc<dyn BlobStore> = Arc::new(local_store);
+    let remote_store_arc: Arc<dyn BlobStore> = Arc::new(remote_store);
 
-    let layered = LayeredBlobStore::new(vec![Arc::clone(&local_store_arc), remote_store_arc]);
+    let layered = LayeredBlobStore::new(vec![Arc::clone(&local_store_arc), remote_store_arc])?;
 
     // GET from layered should find it in remote
     let retrieved = layered.get(&hash).await?;
@@ -307,20 +307,19 @@ async fn test_layered_store_promotion() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_layered_store_write_through() -> Result<()> {
+async fn test_layered_store_writes_to_all_tiers() -> Result<()> {
     let (_temp1, local_store) = create_test_store().await?;
     let (_temp2, remote_store) = create_test_store().await?;
 
     use std::sync::Arc;
-    let local_store_arc = Arc::new(Box::new(local_store) as Box<dyn BlobStore>);
-    let remote_store_arc = Arc::new(Box::new(remote_store) as Box<dyn BlobStore>);
+    let local_store_arc: Arc<dyn BlobStore> = Arc::new(local_store);
+    let remote_store_arc: Arc<dyn BlobStore> = Arc::new(remote_store);
 
-    // Enable write-through to write to all tiers
+    // Layered store always writes to all tiers
     let layered = LayeredBlobStore::with_options(
         vec![Arc::clone(&local_store_arc), Arc::clone(&remote_store_arc)],
         true, // auto_promote
-        true, // write_through
-    );
+    )?;
 
     // PUT to layered should write to all stores
     let data = Bytes::from("Write-through data");
