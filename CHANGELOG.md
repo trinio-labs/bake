@@ -1,5 +1,15 @@
 # Bake
 
+## v2.0.3 - 2026-01-08
+
+### Fixed
+
+- **Blobs not uploaded to remote cache** - Fixed critical bug where blobs were stored locally only even when S3/GCS was configured
+  - With layered cache (local + remote), manifests were uploaded to S3 but blobs stayed local
+  - This caused cache misses in CI when other machines tried to restore from remote
+  - Layered blob store now always writes to all tiers for consistency with manifest behavior
+  - Removed the confusing `write_through` option - writes always go to all configured tiers
+
 ## v2.0.2 - 2026-01-08
 
 ### Fixed

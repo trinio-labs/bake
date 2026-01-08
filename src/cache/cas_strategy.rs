@@ -31,7 +31,7 @@ pub enum CacheStrategy {
 /// Uses Blake3 hashing, FastCDC chunking, and multi-tier blob storage.
 pub struct Cache {
     /// Blob storage backend (None if disabled)
-    blob_store: Option<Arc<Box<dyn BlobStore>>>,
+    blob_store: Option<Arc<dyn BlobStore>>,
 
     /// Blob index for fast lookups (None if disabled)
     blob_index: Option<Arc<BlobIndex>>,
@@ -73,7 +73,23 @@ impl Default for CacheConfig {
 }
 
 impl Cache {
-    /// Create a CAS cache with local-only storage
+    /// Creates a CAS cache configured to use only local storage.
+    ///
+    /// Initializes and returns a Cache whose blob store, blob index, and action cache are rooted under
+    /// `cache_root` (paths: `cas/blobs`, `cas/index.db`, and `ac`). The returned Cache is enabled and
+    /// ready to store and retrieve artifacts for the given `project_root`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio_test::block_on(async {
+    /// use std::path::PathBuf;
+    /// let cache_root = PathBuf::from("/tmp/my_cache");
+    /// let project_root = PathBuf::from("/tmp/project");
+    /// let config = crate::cache::cas_strategy::CacheConfig::default();
+    /// let cache = crate::cache::cas_strategy::Cache::local(cache_root, project_root, config).await.unwrap();
+    /// # });
+    /// ```
     pub async fn local(
         cache_root: PathBuf,
         project_root: PathBuf,
@@ -94,7 +110,7 @@ impl Cache {
         action_cache.init().await?;
 
         Ok(Self {
-            blob_store: Some(Arc::new(Box::new(blob_store))),
+            blob_store: Some(Arc::new(blob_store)),
             blob_index: Some(Arc::new(blob_index)),
             action_cache: Some(Arc::new(action_cache)),
             project_root,
@@ -103,7 +119,39 @@ impl Cache {
         })
     }
 
-    /// Create a new CAS cache with multi-tier storage based on cache strategy
+    /// Create a CAS cache configured with a multi-tier blob storage strategy.
+    ///
+    /// This initializes one or more blob stores according to `cache_strategy` and
+    /// `project_cache_config` (local, S3, and/or GCS), opens the blob index, and
+    /// initializes the action cache. If multiple stores are configured they are
+    /// composed into a layered store with auto-promotion enabled; writes go to all
+    /// tiers. Returns an error if no stores could be initialized or if any required
+    /// initialization step fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # use tokio;
+    /// # async fn _example() -> anyhow::Result<()> {
+    /// use crate::cache::cas_strategy::CacheStrategy;
+    /// use crate::cache::CacheConfig;
+    /// // Provide appropriate project cache config with remotes as needed.
+    /// let cache_root = PathBuf::from("/tmp/cache");
+    /// let project_root = PathBuf::from(".");
+    /// let config = CacheConfig::default();
+    /// let project_cache_config = crate::project::config::CacheConfig::default();
+    ///
+    /// let cache = crate::cache::Cache::with_strategy(
+    ///     cache_root,
+    ///     project_root,
+    ///     config,
+    ///     CacheStrategy::LocalFirst,
+    ///     &project_cache_config,
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn with_strategy(
         cache_root: PathBuf,
         project_root: PathBuf,
@@ -114,7 +162,7 @@ impl Cache {
         use CacheStrategy::*;
 
         // Build list of blob stores based on strategy
-        let mut stores: Vec<Arc<Box<dyn BlobStore>>> = Vec::new();
+        let mut stores: Vec<Arc<dyn BlobStore>> = Vec::new();
 
         // Determine the order of stores based on strategy
         let use_local = matches!(cache_strategy, LocalOnly | LocalFirst | RemoteFirst);
@@ -127,7 +175,7 @@ impl Cache {
             let blob_root = cache_root.join("cas/blobs");
             let local_store = LocalBlobStore::new(blob_root);
             local_store.init().await?;
-            stores.push(Arc::new(Box::new(local_store)));
+            stores.push(Arc::new(local_store));
         }
 
         if use_remote {
@@ -143,7 +191,7 @@ impl Cache {
                     .await
                     {
                         Ok(s3_store) => {
-                            stores.push(Arc::new(Box::new(s3_store)));
+                            stores.push(Arc::new(s3_store));
                             debug!("S3 cache enabled: bucket={}", s3_config.bucket);
                         }
                         Err(e) => {
@@ -156,7 +204,7 @@ impl Cache {
                 if let Some(gcs_config) = &remotes.gcs {
                     match GcsBlobStore::new(gcs_config.bucket.clone(), None).await {
                         Ok(gcs_store) => {
-                            stores.push(Arc::new(Box::new(gcs_store)));
+                            stores.push(Arc::new(gcs_store));
                             debug!("GCS cache enabled: bucket={}", gcs_config.bucket);
                         }
                         Err(e) => {
@@ -172,7 +220,7 @@ impl Cache {
             let blob_root = cache_root.join("cas/blobs");
             let local_store = LocalBlobStore::new(blob_root);
             local_store.init().await?;
-            stores.push(Arc::new(Box::new(local_store)));
+            stores.push(Arc::new(local_store));
         }
 
         // If no stores could be initialized, return error
@@ -184,19 +232,16 @@ impl Cache {
         }
 
         // Create blob store (single or layered)
-        let blob_store: Arc<Box<dyn BlobStore>> = if stores.len() == 1 {
+        let blob_store: Arc<dyn BlobStore> = if stores.len() == 1 {
             // Single store - use it directly
             stores.into_iter().next().unwrap()
         } else {
-            // Multiple stores - create layered store
-            // For remote-first, we want writes to go to all stores (write-through)
-            // For local-first, we want writes to go only to local (fast)
-            let write_through = matches!(cache_strategy, RemoteFirst);
-            Arc::new(Box::new(LayeredBlobStore::with_options(
+            // Multiple stores - create layered store with auto-promotion enabled
+            // Writes always go to all tiers for consistency (blobs + manifests)
+            Arc::new(LayeredBlobStore::with_options(
                 stores,
                 true, // Enable auto-promotion
-                write_through,
-            )))
+            )?)
         };
 
         // Initialize blob index
@@ -218,7 +263,22 @@ impl Cache {
         })
     }
 
-    /// Create a disabled cache that always returns Miss and ignores Put operations
+    /// Creates a cache instance that is disabled and acts as an inert/no-op cache.
+    ///
+    /// The returned cache will not store or retrieve any blobs or manifests: `get` will
+    /// behave as a cache miss and `put` will be ignored. Statistics queries on the
+    /// disabled cache report zeroed values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use crate::cache::cas::Cache;
+    /// # #[tokio::main] async fn main() {
+    /// let cache = Cache::disabled();
+    /// let stats = cache.stats().await;
+    /// assert_eq!(stats.total_size(), 0);
+    /// # }
+    /// ```
     pub fn disabled() -> Self {
         Self {
             blob_store: None,
@@ -231,7 +291,23 @@ impl Cache {
     }
 
     // Helper methods to get references (panic if cache is disabled but these are called)
-    fn blob_store(&self) -> &Arc<Box<dyn BlobStore>> {
+    /// Accesses the configured blob store for this cache.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cache is disabled.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the Arc-wrapped `dyn BlobStore` used by the cache.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given an enabled `cache`:
+    /// let _store = cache.blob_store();
+    /// ```
+    fn blob_store(&self) -> &Arc<dyn BlobStore> {
         self.blob_store
             .as_ref()
             .expect("blob_store should exist when cache is enabled")
