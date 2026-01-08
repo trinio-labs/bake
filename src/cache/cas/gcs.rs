@@ -235,6 +235,79 @@ impl BlobStore for GcsBlobStore {
         }
     }
 
+    async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
+        let _permit = self.upload_sem.acquire().await?;
+
+        // Store manifests in ac/ subdirectory with hex-encoded key
+        let hex_key = hex::encode(key);
+        let object_name = match &self.prefix {
+            Some(prefix) => format!("{}/ac/{}.json", prefix, hex_key),
+            None => format!("ac/{}.json", hex_key),
+        };
+
+        self.storage
+            .write_object(&self.bucket_path, &object_name, content.clone())
+            .send_buffered()
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+            .context(format!("Failed to upload manifest for key '{}' to GCS", key))?;
+
+        debug!("Uploaded manifest for '{}' to GCS", key);
+        Ok(())
+    }
+
+    async fn get_manifest(&self, key: &str) -> Result<Option<Bytes>> {
+        let _permit = self.download_sem.acquire().await?;
+
+        let hex_key = hex::encode(key);
+        let object_name = match &self.prefix {
+            Some(prefix) => format!("{}/ac/{}.json", prefix, hex_key),
+            None => format!("ac/{}.json", hex_key),
+        };
+
+        let mut reader = match self
+            .storage
+            .read_object(&self.bucket_path, &object_name)
+            .send()
+            .await
+        {
+            Ok(reader) => reader,
+            Err(err) => {
+                if Self::is_not_found_error(&err) {
+                    debug!("Manifest not found in GCS for key: {}", key);
+                    return Ok(None);
+                } else {
+                    log::warn!(
+                        "GCS get_object error for manifest '{}' (treating as miss): {}",
+                        key,
+                        err
+                    );
+                    return Ok(None);
+                }
+            }
+        };
+
+        // Collect all chunks into a vector
+        let mut data = Vec::new();
+        while let Some(chunk) = reader.next().await {
+            let chunk = chunk
+                .map_err(|e| anyhow::anyhow!("{}", e))
+                .context(format!(
+                    "Failed to read manifest chunk for key '{}' from GCS",
+                    key
+                ))?;
+            data.extend_from_slice(&chunk);
+        }
+
+        let bytes = Bytes::from(data);
+        debug!(
+            "Downloaded manifest for '{}' from GCS ({} bytes)",
+            key,
+            bytes.len()
+        );
+        Ok(Some(bytes))
+    }
+
     async fn list(&self) -> Result<Vec<BlobHash>> {
         let prefix = match &self.prefix {
             Some(p) => format!("{}/", p),

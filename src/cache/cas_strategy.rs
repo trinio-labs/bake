@@ -489,7 +489,22 @@ impl Cache {
 
         action_result.execution_metadata = action_result.execution_metadata.complete();
 
+        // Store manifest locally
         self.action_cache().put(action_key, &action_result).await?;
+
+        // Also store manifest to remote blob store for cross-machine cache sharing
+        let manifest_json = Bytes::from(action_result.to_json()?);
+        if let Err(e) = self
+            .blob_store()
+            .put_manifest(action_key, manifest_json)
+            .await
+        {
+            // Log but don't fail - local cache is still valid
+            warn!(
+                "Failed to upload manifest for '{}' to remote cache: {}",
+                recipe_name, e
+            );
+        }
 
         debug!(
             "CAS PUT: Complete for '{}' ({} outputs, {} blobs uploaded)",
@@ -510,12 +525,55 @@ impl Cache {
 
         debug!("CAS GET: Checking cache for recipe '{}'", recipe_name);
 
-        // Phase 1: Download manifest (tiny, fast)
+        // Phase 1: Get manifest - check local first, then remote
         let action_result = match self.action_cache().get(action_key).await? {
             Some(result) => result,
             None => {
-                debug!("CAS GET: Miss - no manifest for '{}'", recipe_name);
-                return Ok(CacheResult::Miss);
+                // Local miss - try remote blob store
+                debug!(
+                    "CAS GET: Local manifest miss for '{}', checking remote",
+                    recipe_name
+                );
+
+                match self.blob_store().get_manifest(action_key).await {
+                    Ok(Some(manifest_bytes)) => {
+                        // Parse manifest from remote
+                        let json = String::from_utf8_lossy(&manifest_bytes);
+                        match ActionResult::from_json(&json) {
+                            Ok(result) => {
+                                debug!(
+                                    "CAS GET: Found manifest for '{}' in remote cache",
+                                    recipe_name
+                                );
+                                // Store locally for future use
+                                if let Err(e) =
+                                    self.action_cache().put(action_key, &result).await
+                                {
+                                    warn!("Failed to cache manifest locally: {}", e);
+                                }
+                                result
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to parse remote manifest for '{}': {}",
+                                    recipe_name, e
+                                );
+                                return Ok(CacheResult::Miss);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        debug!("CAS GET: Miss - no manifest for '{}'", recipe_name);
+                        return Ok(CacheResult::Miss);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to check remote manifest for '{}': {}",
+                            recipe_name, e
+                        );
+                        return Ok(CacheResult::Miss);
+                    }
+                }
             }
         };
 

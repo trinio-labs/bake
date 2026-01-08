@@ -323,6 +323,76 @@ impl BlobStore for LayeredBlobStore {
 
         Ok(all_hashes.into_iter().collect())
     }
+
+    async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
+        // Always write manifests to all tiers for consistency
+        let write_tasks: Vec<_> = self
+            .tiers
+            .iter()
+            .map(|tier| {
+                let tier = Arc::clone(tier);
+                let key = key.to_string();
+                let content = content.clone();
+                async move { tier.put_manifest(&key, content).await }
+            })
+            .collect();
+
+        let results = futures_util::future::join_all(write_tasks).await;
+
+        // Check if at least one succeeded
+        let mut any_success = false;
+        for (idx, result) in results.iter().enumerate() {
+            match result {
+                Ok(_) => any_success = true,
+                Err(e) => warn!("Failed to write manifest to tier {}: {}", idx, e),
+            }
+        }
+
+        if any_success {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to write manifest '{}' to all tiers", key)
+        }
+    }
+
+    async fn get_manifest(&self, key: &str) -> Result<Option<Bytes>> {
+        // Try tiers in order (respects configured priority)
+        for (tier_idx, tier) in self.tiers.iter().enumerate() {
+            match tier.get_manifest(key).await {
+                Ok(Some(content)) => {
+                    debug!(
+                        "Found manifest '{}' in tier {} ({} bytes)",
+                        key,
+                        tier_idx,
+                        content.len()
+                    );
+
+                    // Promote to faster tiers if auto_promote is enabled
+                    if self.auto_promote && tier_idx > 0 {
+                        for faster_tier in &self.tiers[..tier_idx] {
+                            if let Err(e) = faster_tier.put_manifest(key, content.clone()).await {
+                                warn!("Failed to promote manifest to faster tier: {}", e);
+                            }
+                        }
+                        debug!("Promoted manifest '{}' to faster tiers", key);
+                    }
+
+                    return Ok(Some(content));
+                }
+                Ok(None) => {
+                    // Not found in this tier, try next
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Error getting manifest from tier {}: {}", tier_idx, e);
+                    // Try next tier
+                    continue;
+                }
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
