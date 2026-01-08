@@ -1,5 +1,15 @@
 # Bake
 
+## v2.0.2 - 2026-01-08
+
+### Fixed
+
+- **Remote manifest storage for CI cache sharing** - Action cache manifests are now stored in remote blob stores (S3/GCS)
+  - Previously, manifests were stored locally only, causing cache misses on fresh CI machines
+  - Manifests are now uploaded alongside blobs for full cache portability across machines
+  - Respects configured cache order (LocalFirst vs RemoteFirst)
+  - Automatic promotion: manifests fetched from remote are cached locally
+
 ## v2.0.1 - 2026-01-06
 
 ### Fixed

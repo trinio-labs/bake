@@ -56,6 +56,20 @@ pub trait BlobStore: Send + Sync {
 
     /// List all blob hashes in the store (for debugging/maintenance)
     async fn list(&self) -> Result<Vec<BlobHash>>;
+
+    /// Store a manifest (action result) at a specific key
+    /// This is NOT content-addressed - the key is used directly as the path
+    /// Default implementation does nothing (local-only stores don't need remote manifest storage)
+    async fn put_manifest(&self, _key: &str, _content: Bytes) -> Result<()> {
+        Ok(())
+    }
+
+    /// Get a manifest (action result) by key
+    /// Returns None if not found
+    /// Default implementation returns None (local-only stores don't use remote manifests)
+    async fn get_manifest(&self, _key: &str) -> Result<Option<Bytes>> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

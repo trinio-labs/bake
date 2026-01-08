@@ -250,6 +250,89 @@ impl BlobStore for S3BlobStore {
         }
     }
 
+    async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
+        let _permit = self.upload_sem.acquire().await?;
+
+        // Store manifests in ac/ subdirectory with hex-encoded key
+        let hex_key = hex::encode(key);
+        let s3_key = match &self.prefix {
+            Some(prefix) => format!("{}/ac/{}.json", prefix, hex_key),
+            None => format!("ac/{}.json", hex_key),
+        };
+
+        let body = ByteStream::from(content.to_vec());
+
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&s3_key)
+            .body(body)
+            .send()
+            .await
+            .context(format!("Failed to upload manifest for key '{}' to S3", key))?;
+
+        debug!("Uploaded manifest for '{}' to S3", key);
+        Ok(())
+    }
+
+    async fn get_manifest(&self, key: &str) -> Result<Option<Bytes>> {
+        let _permit = self.download_sem.acquire().await?;
+
+        let hex_key = hex::encode(key);
+        let s3_key = match &self.prefix {
+            Some(prefix) => format!("{}/ac/{}.json", prefix, hex_key),
+            None => format!("ac/{}.json", hex_key),
+        };
+
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&s3_key)
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let data = response
+                    .body
+                    .collect()
+                    .await
+                    .context(format!(
+                        "Failed to read manifest body for key '{}' from S3",
+                        key
+                    ))?
+                    .into_bytes();
+
+                debug!(
+                    "Downloaded manifest for '{}' from S3 ({} bytes)",
+                    key,
+                    data.len()
+                );
+                Ok(Some(data))
+            }
+            Err(err) => {
+                // Check if it's a "not found" error by examining the service error
+                let is_not_found = err
+                    .as_service_error()
+                    .map(|e| e.is_no_such_key())
+                    .unwrap_or(false);
+
+                if is_not_found {
+                    debug!("Manifest not found in S3 for key: {}", key);
+                    Ok(None)
+                } else {
+                    // Log unexpected errors but treat as miss
+                    log::warn!(
+                        "S3 get_object error for manifest '{}' (treating as miss): {}",
+                        key,
+                        err
+                    );
+                    Ok(None)
+                }
+            }
+        }
+    }
+
     async fn list(&self) -> Result<Vec<BlobHash>> {
         // List all objects with our prefix structure
         let prefix = match &self.prefix {
