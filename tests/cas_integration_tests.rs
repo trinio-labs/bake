@@ -275,6 +275,31 @@ async fn test_chunking_large_file() -> Result<()> {
     Ok(())
 }
 
+/// Verifies that a LayeredBlobStore reads missing blobs from a downstream (remote) tier
+/// and promotes them into the local (first) tier after a successful get.
+///
+/// # Examples
+///
+/// ```
+/// # async fn run_example() -> anyhow::Result<()> {
+/// use std::sync::Arc;
+/// // create_test_store() returns (TempDir, LocalBlobStore)
+/// let (_t1, local) = create_test_store().await?;
+/// let (_t2, remote) = create_test_store().await?;
+/// let data = bytes::Bytes::from("remote data");
+/// let hash = remote.put(data.clone()).await?;
+///
+/// let local_arc: Arc<dyn BlobStore> = Arc::new(local);
+/// let remote_arc: Arc<dyn BlobStore> = Arc::new(remote);
+/// let layered = LayeredBlobStore::new(vec![Arc::clone(&local_arc), remote_arc])?;
+///
+/// // get should retrieve from remote and write into local
+/// let fetched = layered.get(&hash).await?;
+/// assert_eq!(fetched, data);
+/// let promoted = local_arc.get(&hash).await?;
+/// assert_eq!(promoted, data);
+/// # Ok(()) }
+/// ```
 #[tokio::test]
 async fn test_layered_store_promotion() -> Result<()> {
     // Create two local stores to simulate local + remote
@@ -306,6 +331,31 @@ async fn test_layered_store_promotion() -> Result<()> {
     Ok(())
 }
 
+/// Verifies that a layered blob store writes new blobs to every tier.
+///
+/// # Examples
+///
+/// ```
+/// # use bytes::Bytes;
+/// # use std::sync::Arc;
+/// # use anyhow::Result;
+/// # async fn run() -> Result<()> {
+/// let (_t1, local) = create_test_store().await?;
+/// let (_t2, remote) = create_test_store().await?;
+/// let local_arc: Arc<dyn BlobStore> = Arc::new(local);
+/// let remote_arc: Arc<dyn BlobStore> = Arc::new(remote);
+///
+/// // LayeredBlobStore::with_options constructs a layered store that writes to all tiers.
+/// let layered = LayeredBlobStore::with_options(vec![Arc::clone(&local_arc), Arc::clone(&remote_arc)], true)?;
+///
+/// let data = Bytes::from("Write-through data");
+/// let hash = layered.put(data).await?;
+///
+/// assert!(local_arc.contains(&hash).await?);
+/// assert!(remote_arc.contains(&hash).await?);
+/// # Ok(())
+/// # }
+/// ```
 #[tokio::test]
 async fn test_layered_store_writes_to_all_tiers() -> Result<()> {
     let (_temp1, local_store) = create_test_store().await?;

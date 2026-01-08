@@ -73,7 +73,23 @@ impl Default for CacheConfig {
 }
 
 impl Cache {
-    /// Create a CAS cache with local-only storage
+    /// Creates a CAS cache configured to use only local storage.
+    ///
+    /// Initializes and returns a Cache whose blob store, blob index, and action cache are rooted under
+    /// `cache_root` (paths: `cas/blobs`, `cas/index.db`, and `ac`). The returned Cache is enabled and
+    /// ready to store and retrieve artifacts for the given `project_root`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio_test::block_on(async {
+    /// use std::path::PathBuf;
+    /// let cache_root = PathBuf::from("/tmp/my_cache");
+    /// let project_root = PathBuf::from("/tmp/project");
+    /// let config = crate::cache::cas_strategy::CacheConfig::default();
+    /// let cache = crate::cache::cas_strategy::Cache::local(cache_root, project_root, config).await.unwrap();
+    /// # });
+    /// ```
     pub async fn local(
         cache_root: PathBuf,
         project_root: PathBuf,
@@ -103,7 +119,39 @@ impl Cache {
         })
     }
 
-    /// Create a new CAS cache with multi-tier storage based on cache strategy
+    /// Create a CAS cache configured with a multi-tier blob storage strategy.
+    ///
+    /// This initializes one or more blob stores according to `cache_strategy` and
+    /// `project_cache_config` (local, S3, and/or GCS), opens the blob index, and
+    /// initializes the action cache. If multiple stores are configured they are
+    /// composed into a layered store with auto-promotion enabled; writes go to all
+    /// tiers. Returns an error if no stores could be initialized or if any required
+    /// initialization step fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # use tokio;
+    /// # async fn _example() -> anyhow::Result<()> {
+    /// use crate::cache::cas_strategy::CacheStrategy;
+    /// use crate::cache::CacheConfig;
+    /// // Provide appropriate project cache config with remotes as needed.
+    /// let cache_root = PathBuf::from("/tmp/cache");
+    /// let project_root = PathBuf::from(".");
+    /// let config = CacheConfig::default();
+    /// let project_cache_config = crate::project::config::CacheConfig::default();
+    ///
+    /// let cache = crate::cache::Cache::with_strategy(
+    ///     cache_root,
+    ///     project_root,
+    ///     config,
+    ///     CacheStrategy::LocalFirst,
+    ///     &project_cache_config,
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn with_strategy(
         cache_root: PathBuf,
         project_root: PathBuf,
@@ -215,7 +263,22 @@ impl Cache {
         })
     }
 
-    /// Create a disabled cache that always returns Miss and ignores Put operations
+    /// Creates a cache instance that is disabled and acts as an inert/no-op cache.
+    ///
+    /// The returned cache will not store or retrieve any blobs or manifests: `get` will
+    /// behave as a cache miss and `put` will be ignored. Statistics queries on the
+    /// disabled cache report zeroed values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use crate::cache::cas::Cache;
+    /// # #[tokio::main] async fn main() {
+    /// let cache = Cache::disabled();
+    /// let stats = cache.stats().await;
+    /// assert_eq!(stats.total_size(), 0);
+    /// # }
+    /// ```
     pub fn disabled() -> Self {
         Self {
             blob_store: None,
@@ -228,6 +291,22 @@ impl Cache {
     }
 
     // Helper methods to get references (panic if cache is disabled but these are called)
+    /// Accesses the configured blob store for this cache.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cache is disabled.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the Arc-wrapped `dyn BlobStore` used by the cache.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given an enabled `cache`:
+    /// let _store = cache.blob_store();
+    /// ```
     fn blob_store(&self) -> &Arc<dyn BlobStore> {
         self.blob_store
             .as_ref()

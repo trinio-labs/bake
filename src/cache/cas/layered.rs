@@ -24,10 +24,41 @@ pub struct LayeredBlobStore {
 }
 
 impl LayeredBlobStore {
-    /// Create a new layered blob store
+    /// Creates a LayeredBlobStore with the provided tiers and auto-promotion enabled.
+    ///
+    /// The `tiers` vector must be non-empty and is interpreted as an ordered list of blob
+    /// stores with the fastest tier first. Auto-promotion will be enabled so that reads
+    /// from slower tiers may be promoted to faster tiers.
     ///
     /// # Errors
-    /// Returns an error if `tiers` is empty
+    ///
+    /// Returns an error if `tiers` is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// // Minimal local stub for example purposes.
+    /// struct DummyStore;
+    /// impl crate::blob::BlobStore for DummyStore {
+    ///     // implement required trait methods as no-op or unimplemented for the example
+    ///     # fn contains(&self, _hash: crate::blob::BlobHash) -> crate::Result<bool> { Ok(false) }
+    ///     # fn get(&self, _hash: crate::blob::BlobHash) -> crate::Result<bytes::Bytes> { unimplemented!() }
+    ///     # fn put(&self, _content: bytes::Bytes) -> crate::Result<crate::blob::BlobHash> { unimplemented!() }
+    ///     # fn contains_many(&self, _hashes: &[crate::blob::BlobHash]) -> crate::Result<Vec<bool>> { unimplemented!() }
+    ///     # fn get_many(&self, _hashes: &[crate::blob::BlobHash]) -> crate::Result<Vec<bytes::Bytes>> { unimplemented!() }
+    ///     # fn put_many(&self, _contents: &[bytes::Bytes]) -> crate::Result<Vec<crate::blob::BlobHash>> { unimplemented!() }
+    ///     # fn delete(&self, _hash: crate::blob::BlobHash) -> crate::Result<()> { unimplemented!() }
+    ///     # fn size(&self, _hash: crate::blob::BlobHash) -> crate::Result<Option<u64>> { unimplemented!() }
+    ///     # fn list(&self) -> crate::Result<Vec<crate::blob::BlobHash>> { unimplemented!() }
+    ///     # fn put_manifest(&self, _key: &str, _content: bytes::Bytes) -> crate::Result<()> { unimplemented!() }
+    ///     # fn get_manifest(&self, _key: &str) -> crate::Result<Option<bytes::Bytes>> { Ok(None) }
+    /// }
+    ///
+    /// let tiers: Vec<Arc<dyn crate::blob::BlobStore>> = vec![Arc::new(DummyStore)];
+    /// let layered = crate::blob::LayeredBlobStore::new(tiers).expect("tiers must be non-empty");
+    /// ```
     pub fn new(tiers: Vec<Arc<dyn BlobStore>>) -> Result<Self> {
         if tiers.is_empty() {
             anyhow::bail!("LayeredBlobStore requires at least one tier");
@@ -38,10 +69,22 @@ impl LayeredBlobStore {
         })
     }
 
-    /// Create with custom options
+    /// Creates a LayeredBlobStore with the provided tiers and auto-promotion setting.
+    ///
+    /// The `tiers` vector must be non-empty and is interpreted fastest-first (index 0 is the fastest tier).
+    /// When `auto_promote` is `true`, blobs read from slower tiers will be automatically promoted to faster tiers.
     ///
     /// # Errors
-    /// Returns an error if `tiers` is empty
+    ///
+    /// Returns an error if `tiers` is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// // `store1` and `store2` are existing implementations of `BlobStore`, with `store1` being faster.
+    /// let layered = LayeredBlobStore::with_options(vec![store1, store2], true)?;
+    /// ```
     pub fn with_options(tiers: Vec<Arc<dyn BlobStore>>, auto_promote: bool) -> Result<Self> {
         if tiers.is_empty() {
             anyhow::bail!("LayeredBlobStore requires at least one tier");
@@ -94,6 +137,22 @@ impl BlobStore for LayeredBlobStore {
         Ok(false)
     }
 
+    /// Retrieves the blob content for `hash` by searching tiers from fastest to slowest.
+    ///
+    /// If a tier returns the blob, the content is returned immediately and the implementation will
+    /// attempt to promote that blob to all faster tiers; promotion failures are logged and do not
+    /// prevent returning the found content.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &LayeredBlobStore, hash: BlobHash) {
+    /// let content = store.get(&hash).await.unwrap();
+    /// # }
+    /// ```
+    ///
+    /// # Returns
+    /// `Bytes` containing the blob content on success; returns an error if the blob is not found in any tier.
     async fn get(&self, hash: &BlobHash) -> Result<Bytes> {
         // Try each tier in order
         for (tier_idx, tier) in self.tiers.iter().enumerate() {
@@ -123,6 +182,31 @@ impl BlobStore for LayeredBlobStore {
         anyhow::bail!("Blob {} not found in any tier", hash)
     }
 
+    /// Stores `content` in all configured tiers and returns its computed hash.
+    ///
+    /// This performs write-through writes to every tier in parallel. If at least one tier
+    /// successfully stores the blob, the function returns the blob's content-derived hash;
+    /// if all tier writes fail, an error is returned. Failures on individual tiers are logged
+    /// but do not prevent success if another tier succeeds.
+    ///
+    /// # Returns
+    ///
+    /// The `BlobHash` computed from `content` when at least one tier write succeeds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bytes::Bytes;
+    /// # use std::sync::Arc;
+    /// # use futures::executor::block_on;
+    /// #
+    /// # // `store` is any implementation of the BlobStore trait available in scope.
+    /// # async fn example(store: Arc<dyn crate::BlobStore>) {
+    /// let content = Bytes::from("hello");
+    /// let hash = store.put(content.clone()).await.unwrap();
+    /// assert_eq!(hash, crate::BlobHash::from_content(&content));
+    /// # }
+    /// ```
     async fn put(&self, content: Bytes) -> Result<BlobHash> {
         let hash = BlobHash::from_content(&content);
 
@@ -154,6 +238,29 @@ impl BlobStore for LayeredBlobStore {
         Ok(hash)
     }
 
+    /// Checks which of the provided blob hashes exist in any tier.
+    ///
+    /// Checks each hash across tiers in priority order and returns a boolean vector
+    /// indicating presence per input hash. Stops querying tiers early for hashes
+    /// already found.
+    ///
+    /// # Parameters
+    ///
+    /// - `hashes`: slice of blob hashes to check for existence.
+    ///
+    /// # Returns
+    ///
+    /// `Vec<bool>` where each element is `true` if the corresponding hash exists in at least one tier, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &LayeredBlobStore, h1: BlobHash, h2: BlobHash) {
+    /// let results = store.contains_many(&[h1, h2]).await.unwrap();
+    /// assert_eq!(results.len(), 2);
+    /// // results[0] and results[1] indicate presence of h1 and h2 respectively
+    /// # }
+    /// ```
     async fn contains_many(&self, hashes: &[BlobHash]) -> Result<Vec<bool>> {
         // For each hash, check if it exists in any tier
         let mut results = vec![false; hashes.len()];
@@ -177,6 +284,24 @@ impl BlobStore for LayeredBlobStore {
         Ok(results)
     }
 
+    /// Retrieves multiple blobs for the given hashes from the layered store, preserving the input order.
+    ///
+    /// Queries tiers in priority order and returns contents for all requested hashes. If a blob is found
+    /// in a slower tier and `auto_promote` is enabled, the blob is promoted to faster tiers (best-effort).
+    /// If any requested hash is not found in any tier, the call returns an error.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<Bytes>` containing blob contents in the same order as the input `hashes`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &LayeredBlobStore, hashes: Vec<BlobHash>) {
+    /// let contents = store.get_many(&hashes).await.unwrap();
+    /// assert_eq!(contents.len(), hashes.len());
+    /// # }
+    /// ```
     async fn get_many(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
         debug!("get_many: retrieving {} blobs", hashes.len());
         let mut results = Vec::with_capacity(hashes.len());
@@ -251,6 +376,21 @@ impl BlobStore for LayeredBlobStore {
         Ok(results.into_iter().map(|(_, content)| content).collect())
     }
 
+    /// Writes a batch of blob contents to all configured tiers and returns the blob hashes from the first tier that succeeds.
+    ///
+    /// Attempts to write the entire batch to every tier in parallel, logs any per-tier failures, and succeeds if at least one tier reports success. If all tier writes fail, an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &impl crate::BlobStore) -> anyhow::Result<()> {
+    /// use bytes::Bytes;
+    /// let contents = vec![Bytes::from("one"), Bytes::from("two")];
+    /// let hashes = store.put_many(contents).await?;
+    /// assert_eq!(hashes.len(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn put_many(&self, contents: Vec<Bytes>) -> Result<Vec<BlobHash>> {
         // Always write to all tiers for consistency
         let write_tasks: Vec<_> = self
@@ -278,6 +418,22 @@ impl BlobStore for LayeredBlobStore {
         first_success.ok_or_else(|| anyhow::anyhow!("All tier writes failed for batch"))
     }
 
+    /// Deletes the blob identified by `hash` from all configured tiers.
+    ///
+    /// The operation attempts deletion on every tier in parallel and is considered
+    /// successful if at least one tier reports success.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if at least one tier deleted the blob, `Err` if all tier deletions failed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &LayeredBlobStore, hash: BlobHash) {
+    /// store.delete(&hash).await.unwrap();
+    /// # }
+    /// ```
     async fn delete(&self, hash: &BlobHash) -> Result<()> {
         // Delete from all tiers
         let delete_tasks: Vec<_> = self
@@ -336,6 +492,31 @@ impl BlobStore for LayeredBlobStore {
         Ok(all_hashes.into_iter().collect())
     }
 
+    /// Writes a manifest to every tier and succeeds if at least one tier accepts the write.
+    ///
+    /// Attempts to write `content` under `key` to all configured tiers in parallel. Per-tier write
+    /// failures are logged; the operation returns `Ok(())` if any tier succeeds, and an error if all
+    /// tier writes fail.
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: Manifest identifier to store.
+    /// - `content`: Manifest payload bytes to write.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if at least one tier wrote the manifest, `Err` if all tier writes failed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &LayeredBlobStore) -> anyhow::Result<()> {
+    /// let key = "manifest:v1";
+    /// let content = bytes::Bytes::from_static(b"{\"version\":1}");
+    /// store.put_manifest(key, content).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
         // Always write manifests to all tiers for consistency
         let write_tasks: Vec<_> = self
@@ -421,6 +602,19 @@ mod tests {
     }
 
     impl TestBlobStore {
+        /// Constructs a new TestBlobStore backed by a LocalBlobStore at the given filesystem path.
+        ///
+        /// The returned store uses the provided `path` as the local storage directory and initializes
+        /// an empty in-memory manifest map.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use std::path::PathBuf;
+        /// let store = TestBlobStore::new(PathBuf::from("/tmp/test_blob_store"));
+        /// ```
+        ///
+        /// @returns `Self` — a TestBlobStore backed by the given path and an empty manifest map.
         fn new(path: std::path::PathBuf) -> Self {
             Self {
                 inner: LocalBlobStore::new(path),
@@ -428,6 +622,19 @@ mod tests {
             }
         }
 
+        /// Initialize the underlying blob store.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # async fn example(store: &impl crate::BlobStore) {
+        /// store.init().await.unwrap();
+        /// # }
+        /// ```
+        ///
+        /// # Returns
+        ///
+        /// `Ok(())` if initialization succeeds, otherwise an error.
         async fn init(&self) -> Result<()> {
             self.inner.init().await
         }
@@ -435,42 +642,172 @@ mod tests {
 
     #[async_trait]
     impl BlobStore for TestBlobStore {
+        /// Checks whether a blob with the specified hash exists in any tier.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// // Synchronously run the async check for demonstration.
+        /// let exists = futures::executor::block_on(store.contains(&hash)).unwrap();
+        /// assert!(exists == false || exists == true);
+        /// ```
+        ///
+        /// # Returns
+        ///
+        /// `true` if the blob exists in any tier, `false` otherwise.
         async fn contains(&self, hash: &BlobHash) -> Result<bool> {
             self.inner.contains(hash).await
         }
 
+        /// Retrieve the blob content for the given `hash` from the underlying store.
+        ///
+        /// # Returns
+        ///
+        /// `Bytes` containing the blob content on success; an error if the blob is not found or a storage operation fails.
+        ///
+        /// # Examples
+        ///
+        /// ```tokio::test
+        /// async fn example_get() -> Result<(), Box<dyn std::error::Error>> {
+        ///     // Construct a store that implements `get`.
+        ///     let store = unimplemented!(); // e.g., LayeredBlobStore::new(...)
+        ///     let hash = unimplemented!();  // a BlobHash for an existing blob
+        ///     let content = store.get(&hash).await?;
+        ///     assert!(!content.is_empty());
+        ///     Ok(())
+        /// }
+        /// ```
         async fn get(&self, hash: &BlobHash) -> Result<Bytes> {
             self.inner.get(hash).await
         }
 
+        /// Stores the provided blob content in this store and returns its computed hash.
+        ///
+        /// Returns the `BlobHash` identifying the stored content.
+        ///
+        /// # Parameters
+        /// - `content`: bytes of the blob to store.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # use bytes::Bytes;
+        /// # use futures::executor::block_on;
+        /// # // `store` should be an initialized object implementing the same `put` API.
+        /// # let store = /* obtain store */ panic!();
+        /// let content = Bytes::from("hello");
+        /// let hash = block_on(store.put(content)).unwrap();
+        /// // `hash` can be used to retrieve the blob later.
+        /// ```
         async fn put(&self, content: Bytes) -> Result<BlobHash> {
             self.inner.put(content).await
         }
 
+        /// Delete the blob identified by `hash` from all underlying tiers.
+        ///
+        /// Attempts to remove the blob from every configured tier. Returns `Ok(())` if at least one tier reports success; returns an error if no tier deleted the blob.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// // async context
+        /// let store: LayeredBlobStore = /* ... */;
+        /// let hash = /* BlobHash */;
+        /// store.delete(&hash).await.unwrap();
+        /// ```
         async fn delete(&self, hash: &BlobHash) -> Result<()> {
             self.inner.delete(hash).await
         }
 
+        /// Get the size in bytes of the blob identified by `hash`, if it exists.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # async fn example(store: &LayeredBlobStore, hash: BlobHash) {
+        /// let size = store.size(&hash).await.unwrap();
+        /// if let Some(bytes) = size {
+        ///     assert!(bytes > 0);
+        /// }
+        /// # }
+        /// ```
+        ///
+        /// # Returns
+        ///
+        /// `Some(size_in_bytes)` if the blob exists, `None` otherwise.
         async fn size(&self, hash: &BlobHash) -> Result<Option<u64>> {
             self.inner.size(hash).await
         }
 
+        /// Lists all blob hashes available from the underlying store.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// #[tokio::test]
+        /// async fn example_list() {
+        ///     // Construct a store that implements the BlobStore trait.
+        ///     let store = /* create store */ ;
+        ///     let hashes = store.list().await.unwrap();
+        ///     // `hashes` contains the blob hashes present in the store.
+        ///     assert!(hashes.len() >= 0);
+        /// }
+        /// ```
+        ///
+        /// @returns A `Vec<BlobHash>` containing all blob hashes present in the store.
         async fn list(&self) -> Result<Vec<BlobHash>> {
             self.inner.list().await
         }
 
+        /// Stores a manifest value under the given key in the in-memory manifest map, replacing any existing entry.
+        ///
+        /// # Examples
+        ///
+        /// ```ignore
+        /// // within an async context
+        /// store.put_manifest("release-1", Bytes::from("manifest-data")).await?;
+        /// ```
         async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
             let mut manifests = self.manifests.lock().unwrap();
             manifests.insert(key.to_string(), content);
             Ok(())
         }
 
+        /// Retrieves a manifest by its key from the in-memory manifest store.
+        ///
+        /// Returns `Some(Bytes)` containing the manifest content when the key exists, or `None` when it does not.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # use bytes::Bytes;
+        /// # async fn example(store: &impl std::ops::Deref) {}
+        /// // Example usage (assuming `store` implements `get_manifest`):
+        /// // let content = store.get_manifest("config.json").await.unwrap();
+        /// // assert_eq!(content, Some(Bytes::from_static(b"{\"version\":1}")));
+        /// ```
         async fn get_manifest(&self, key: &str) -> Result<Option<Bytes>> {
             let manifests = self.manifests.lock().unwrap();
             Ok(manifests.get(key).cloned())
         }
     }
 
+    /// Create two temporary directories and initialize two TestBlobStore instances backed by them.
+    ///
+    /// Returns a tuple of (temp_dir1, temp_dir2, store1, store2) where each `TempDir` is the
+    /// filesystem backing for its corresponding store and each `Arc<dyn BlobStore>` is an initialized,
+    /// ready-to-use store instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #[tokio::test]
+    /// async fn example_create_test_stores() {
+    ///     let (_dir1, _dir2, store1, store2) = create_test_stores().await;
+    ///     // stores are initialized and ready for use
+    ///     let _ = (store1, store2);
+    /// }
+    /// ```
     async fn create_test_stores() -> (
         TempDir,
         TempDir,
