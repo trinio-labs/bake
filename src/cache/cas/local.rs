@@ -403,9 +403,10 @@ impl BlobStore for LocalBlobStore {
 
         // Update access time in index if available (for LRU tracking)
         if let Some(index) = &self.index
-            && let Err(e) = index.touch(hash) {
-                warn!("Failed to update access time for {}: {}", hash, e);
-            }
+            && let Err(e) = index.touch(hash)
+        {
+            warn!("Failed to update access time for {}: {}", hash, e);
+        }
 
         debug!("Retrieved blob {} ({} bytes)", hash, buffer.len());
         Ok(Bytes::from(buffer))
@@ -469,9 +470,10 @@ impl BlobStore for LocalBlobStore {
 
         // Update index if available
         if let Some(index) = &self.index
-            && let Err(e) = index.insert(&hash, size) {
-                warn!("Failed to update index for {}: {}", hash, e);
-            }
+            && let Err(e) = index.insert(&hash, size)
+        {
+            warn!("Failed to update index for {}: {}", hash, e);
+        }
 
         debug!("Stored blob {} ({} bytes)", hash, content.len());
         Ok(hash)
@@ -485,9 +487,10 @@ impl BlobStore for LocalBlobStore {
 
             // Remove from index if available
             if let Some(index) = &self.index
-                && let Err(e) = index.remove(hash) {
-                    warn!("Failed to remove {} from index: {}", hash, e);
-                }
+                && let Err(e) = index.remove(hash)
+            {
+                warn!("Failed to remove {} from index: {}", hash, e);
+            }
 
             debug!("Deleted blob {}", hash);
         }

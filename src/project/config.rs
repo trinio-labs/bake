@@ -94,9 +94,6 @@ pub struct UpdateConfig {
     pub check_interval_days: u64,
 
     #[serde(default)]
-    pub auto_update: bool,
-
-    #[serde(default)]
     pub prerelease: bool,
 }
 
@@ -105,7 +102,6 @@ impl Default for UpdateConfig {
         Self {
             enabled: true,
             check_interval_days: update_check_interval_default(),
-            auto_update: false,
             prerelease: false,
         }
     }
@@ -357,7 +353,6 @@ remotes:
         let config = UpdateConfig::default();
         assert!(config.enabled);
         assert_eq!(config.check_interval_days, 7);
-        assert!(!config.auto_update);
         assert!(!config.prerelease);
     }
 
@@ -366,13 +361,11 @@ remotes:
         let yaml = r#"
 enabled: true
 check_interval_days: 14
-auto_update: true
 prerelease: true
 "#;
         let config: UpdateConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.enabled);
         assert_eq!(config.check_interval_days, 14);
-        assert!(config.auto_update);
         assert!(config.prerelease);
     }
 
@@ -428,7 +421,6 @@ cache:
 update:
   enabled: true
   check_interval_days: 3
-  auto_update: false
   prerelease: true
 "#;
         let config: ToolConfig = serde_yaml::from_str(yaml).unwrap();
@@ -455,7 +447,6 @@ update:
         // Validate update config
         assert!(config.update.enabled);
         assert_eq!(config.update.check_interval_days, 3);
-        assert!(!config.update.auto_update);
         assert!(config.update.prerelease);
 
         // Validate overall configuration

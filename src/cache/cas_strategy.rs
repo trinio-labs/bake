@@ -239,8 +239,7 @@ impl Cache {
             // Multiple stores - create layered store with auto-promotion enabled
             // Writes always go to all tiers for consistency (blobs + manifests)
             Arc::new(LayeredBlobStore::with_options(
-                stores,
-                true, // Enable auto-promotion
+                stores, true, // Enable auto-promotion
             )?)
         };
 
@@ -622,9 +621,7 @@ impl Cache {
                                     recipe_name
                                 );
                                 // Store locally for future use
-                                if let Err(e) =
-                                    self.action_cache().put(action_key, &result).await
-                                {
+                                if let Err(e) = self.action_cache().put(action_key, &result).await {
                                     warn!("Failed to cache manifest locally: {}", e);
                                 }
                                 result

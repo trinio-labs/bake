@@ -14,7 +14,7 @@ pub mod test_utils;
 
 // Re-export commonly used types for convenience
 pub use project::BakeProject;
-pub use update::{check_for_updates, perform_self_update};
+pub use update::check_for_updates;
 
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
@@ -111,15 +111,11 @@ pub struct Args {
     #[arg(short, long)]
     pub jobs: Option<usize>,
 
-    /// Check for updates  
+    /// Check for updates
     #[arg(long)]
     pub check_updates: bool,
 
-    /// Self update bake to the latest version
-    #[arg(long)]
-    pub self_update: bool,
-
-    /// Include prerelease versions when updating
+    /// Include prerelease versions when checking for updates
     #[arg(long)]
     pub prerelease: bool,
 
@@ -150,6 +146,14 @@ pub struct Args {
     /// Force override version check - run even if project requires newer bake version
     #[arg(long)]
     pub force_version_override: bool,
+
+    /// Generate shell completion script and print to stdout
+    #[arg(long, value_name = "SHELL")]
+    pub completions: Option<clap_complete::Shell>,
+
+    /// List all recipe names (cookbook:recipe) for shell completion
+    #[arg(long, hide = true)]
+    pub list_recipe_names: bool,
 }
 
 pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -247,7 +251,6 @@ pub async fn load_project_with_feedback(
         let update_config = crate::update::UpdateConfig {
             enabled: project.config.update.enabled,
             check_interval_days: project.config.update.check_interval_days,
-            auto_update: project.config.update.auto_update,
             prerelease: project.config.update.prerelease,
         };
         let _ = check_for_updates(&update_config, false).await;
@@ -263,31 +266,16 @@ pub fn resolve_bake_path(path_arg: &Option<String>) -> anyhow::Result<std::path:
     }
 }
 
-pub async fn handle_self_update(prerelease: bool) -> anyhow::Result<()> {
-    println!("Checking for updates...");
-
-    match perform_self_update(prerelease) {
-        Ok(_) => println!("Update completed successfully!"),
-        Err(e) => {
-            eprintln!("Update failed: {e}");
-            std::process::exit(1);
-        }
-    }
-    Ok(())
-}
-
 pub async fn handle_check_updates(prerelease: bool) -> anyhow::Result<()> {
     let config = update::UpdateConfig {
         enabled: true,
         check_interval_days: 0, // Always check
-        auto_update: false,
         prerelease,
     };
 
     match check_for_updates(&config, true).await? {
         Some(version) => {
             println!("New version available: {version}");
-            println!("Run 'bake --self-update' to update");
         }
         None => {
             println!("You are using the latest version");
@@ -856,20 +844,299 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     baker::bake(project, cache, execution_plan, false).await
 }
 
+/// Write recipe names to an arbitrary writer (for testability)
+pub async fn handle_list_recipe_names_to_writer(
+    bake_path: &std::path::Path,
+    writer: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
+    let project = BakeProject::load(bake_path, None, IndexMap::new(), false)?;
+    let mut unique_recipes = std::collections::BTreeSet::new();
+    for (cookbook_name, cookbook) in &project.cookbooks {
+        for (recipe_name, recipe) in &cookbook.recipes {
+            unique_recipes.insert(recipe_name.clone());
+            if let Some(desc) = &recipe.description {
+                writeln!(writer, "{cookbook_name}:{recipe_name}\t{desc}")?;
+            } else {
+                writeln!(writer, "{cookbook_name}:{recipe_name}")?;
+            }
+        }
+    }
+    // Output :recipe entries for the cross-cookbook shorthand syntax
+    for recipe_name in &unique_recipes {
+        writeln!(writer, ":{recipe_name}")?;
+    }
+    Ok(())
+}
+
+async fn handle_list_recipe_names(bake_path: &std::path::Path) -> anyhow::Result<()> {
+    handle_list_recipe_names_to_writer(bake_path, &mut std::io::stdout()).await
+}
+
+fn generate_bash_completion() -> String {
+    r#"_bake_completions() {
+    local cur prev
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # Options that take a value — complete the value, not a new flag
+    case "$prev" in
+        -p|--path)
+            COMPREPLY=($(compgen -d -- "$cur"))
+            return
+            ;;
+        -D|--var|--define)
+            return
+            ;;
+        --cache)
+            COMPREPLY=($(compgen -W "local-only remote-only local-first remote-first disabled" -- "$cur"))
+            return
+            ;;
+        --env)
+            return
+            ;;
+        --completions)
+            COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
+            return
+            ;;
+        --jobs|-j)
+            return
+            ;;
+        --tags|-t)
+            return
+            ;;
+    esac
+
+    # Handle :recipe syntax — bash splits on colon due to COMP_WORDBREAKS
+    if [[ "$prev" == ":" ]]; then
+        local bake_path=""
+        for ((i=1; i < COMP_CWORD; i++)); do
+            if [[ "${COMP_WORDS[i]}" == "-p" || "${COMP_WORDS[i]}" == "--path" ]]; then
+                bake_path="${COMP_WORDS[i+1]}"
+                break
+            fi
+        done
+        local recipes
+        if [[ -n "$bake_path" ]]; then
+            recipes=$(bake --list-recipe-names --path "$bake_path" 2>/dev/null | cut -f1)
+        else
+            recipes=$(bake --list-recipe-names 2>/dev/null | cut -f1)
+        fi
+        # Extract unique recipe names from :recipe entries
+        local recipe_names
+        recipe_names=$(echo "$recipes" | grep "^:" | sed "s/^://")
+        COMPREPLY=($(compgen -W "$recipe_names" -- "$cur"))
+        return
+    fi
+
+    # Flags
+    if [[ "$cur" == -* ]]; then
+        local flags="--path --show-plan --explain --clean --verbose --quiet --var --define --regex --tags --dry-run --fail-fast --jobs --check-updates --prerelease --list-templates --validate-templates --render --skip-cache --cache --env --force-version-override --completions --help --version"
+        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+        return
+    fi
+
+    # Recipe completions (cookbook:recipe)
+    local bake_path=""
+    for ((i=1; i < COMP_CWORD; i++)); do
+        if [[ "${COMP_WORDS[i]}" == "-p" || "${COMP_WORDS[i]}" == "--path" ]]; then
+            bake_path="${COMP_WORDS[i+1]}"
+            break
+        fi
+    done
+
+    local recipes
+    if [[ -n "$bake_path" ]]; then
+        recipes=$(bake --list-recipe-names --path "$bake_path" 2>/dev/null | cut -f1)
+    else
+        recipes=$(bake --list-recipe-names 2>/dev/null | cut -f1)
+    fi
+
+    if [[ -z "$recipes" ]]; then
+        return
+    fi
+
+    # Colon-aware completion
+    if [[ "$cur" == *:* ]]; then
+        local cookbook="${cur%%:*}"
+        local partial="${cur#*:}"
+        local matching
+        matching=$(echo "$recipes" | grep "^${cookbook}:" | sed "s/^${cookbook}://")
+        COMPREPLY=($(compgen -W "$matching" -- "$partial"))
+        # Prepend the cookbook: prefix back
+        COMPREPLY=("${COMPREPLY[@]/#/${cookbook}:}")
+    else
+        COMPREPLY=($(compgen -W "$recipes" -- "$cur"))
+    fi
+
+    # Prevent bash from splitting on colons
+    __ltrim_colon_completions "$cur" 2>/dev/null
+}
+
+complete -o nospace -F _bake_completions bake
+"#
+    .to_string()
+}
+
+fn generate_zsh_completion() -> String {
+    r##"#compdef bake
+
+_bake() {
+    local -a recipes
+    local bake_path=""
+
+    # Extract --path / -p value from existing args
+    for ((i=1; i < ${#words[@]}; i++)); do
+        if [[ "${words[i]}" == "-p" || "${words[i]}" == "--path" ]]; then
+            bake_path="${words[i+1]}"
+            break
+        fi
+    done
+
+    _bake_recipes() {
+        local cmd="bake --list-recipe-names"
+        if [[ -n "$bake_path" ]]; then
+            cmd="$cmd --path $bake_path"
+        fi
+        local recipe_list
+        recipe_list=$(eval "$cmd" 2>/dev/null)
+        if [[ -n "$recipe_list" ]]; then
+            local -a completions
+            local line name desc escaped
+            while IFS=$'\t' read -r name desc; do
+                # Escape colons in the name so _describe doesn't split on them
+                escaped="${name//:/\\:}"
+                if [[ -n "$desc" ]]; then
+                    completions+=("${escaped}:${desc}")
+                else
+                    completions+=("${escaped}")
+                fi
+            done <<< "$recipe_list"
+            _describe 'recipe' completions
+        fi
+    }
+
+    _arguments -s \
+        '1:recipe:_bake_recipes' \
+        '(-p --path)'{-p,--path}'[Path to config file or directory]:path:_directories' \
+        '(-e --show-plan --explain)'{-e,--show-plan,--explain}'[Show execution plan only]' \
+        '(-c --clean)'{-c,--clean}'[Clean outputs and caches]' \
+        '(-v --verbose)'{-v,--verbose}'[Verbose mode]' \
+        '(-q --quiet)'{-q,--quiet}'[Quiet mode]' \
+        '*'{-D,--var,--define}'[Variable override (key=value)]:variable:' \
+        '--regex[Enable regex pattern matching]' \
+        '*'{-t,--tags}'[Filter by tags]:tags:' \
+        '(-n --dry-run)'{-n,--dry-run}'[Dry run mode]' \
+        '(-f --fail-fast)'{-f,--fail-fast}'[Fail fast on first error]' \
+        '(-j --jobs)'{-j,--jobs}'[Max concurrent recipes]:jobs:' \
+        '--check-updates[Check for updates]' \
+        '--prerelease[Include prerelease versions]' \
+        '--list-templates[List available templates]' \
+        '--validate-templates[Validate all templates]' \
+        '--render[Print rendered cookbooks]' \
+        '--skip-cache[Skip cache]' \
+        '--cache[Cache strategy]:strategy:(local-only remote-only local-first remote-first disabled)' \
+        '--env[Environment for variable overrides]:environment:' \
+        '--force-version-override[Force version check override]' \
+        '--completions[Generate shell completions]:shell:(bash zsh fish)' \
+        '(- *)--help[Show help]' \
+        '(- *)--version[Show version]'
+}
+
+_bake "$@"
+"##
+    .to_string()
+}
+
+fn generate_fish_completion() -> String {
+    r#"# Disable file completions by default
+complete -c bake -f
+
+# Helper function for recipe completions
+function __bake_recipes
+    set -l bake_path ""
+    set -l tokens (commandline -opc)
+    for i in (seq 1 (count $tokens))
+        if test "$tokens[$i]" = "-p" -o "$tokens[$i]" = "--path"
+            set -l next (math $i + 1)
+            if test $next -le (count $tokens)
+                set bake_path $tokens[$next]
+            end
+        end
+    end
+
+    if test -n "$bake_path"
+        bake --list-recipe-names --path "$bake_path" 2>/dev/null
+    else
+        bake --list-recipe-names 2>/dev/null
+    end
+end
+
+# Recipe completions (only when not completing a flag)
+complete -c bake -n 'not string match -q -- "-*" (commandline -ct)' -a '(__bake_recipes)'
+
+# Flag completions
+complete -c bake -s p -l path -d 'Path to config file or directory' -r -F
+complete -c bake -s e -l show-plan -d 'Show execution plan only'
+complete -c bake -s c -l clean -d 'Clean outputs and caches'
+complete -c bake -s v -l verbose -d 'Verbose mode'
+complete -c bake -s q -l quiet -d 'Quiet mode'
+complete -c bake -s D -l var -d 'Variable override (key=value)' -r
+complete -c bake -l regex -d 'Enable regex pattern matching'
+complete -c bake -s t -l tags -d 'Filter by tags' -r
+complete -c bake -s n -l dry-run -d 'Dry run mode'
+complete -c bake -s f -l fail-fast -d 'Fail fast on first error'
+complete -c bake -s j -l jobs -d 'Max concurrent recipes' -r
+complete -c bake -l check-updates -d 'Check for updates'
+complete -c bake -l prerelease -d 'Include prerelease versions'
+complete -c bake -l list-templates -d 'List available templates'
+complete -c bake -l validate-templates -d 'Validate all templates'
+complete -c bake -l render -d 'Print rendered cookbooks'
+complete -c bake -l skip-cache -d 'Skip cache'
+complete -c bake -l cache -d 'Cache strategy' -r -a 'local-only remote-only local-first remote-first disabled'
+complete -c bake -l env -d 'Environment for variable overrides' -r
+complete -c bake -l force-version-override -d 'Force version check override'
+complete -c bake -l completions -d 'Generate shell completions' -r -a 'bash zsh fish'
+complete -c bake -l help -d 'Show help'
+complete -c bake -l version -d 'Show version'
+"#
+    .to_string()
+}
+
+fn print_completions(shell: clap_complete::Shell) {
+    let script = match shell {
+        clap_complete::Shell::Bash => generate_bash_completion(),
+        clap_complete::Shell::Zsh => generate_zsh_completion(),
+        clap_complete::Shell::Fish => generate_fish_completion(),
+        _ => {
+            eprintln!("Unsupported shell: {shell}. Supported shells: bash, zsh, fish");
+            std::process::exit(1);
+        }
+    };
+    print!("{script}");
+}
+
 /// Main entry point for the library - initializes logging and runs the application
 pub async fn run() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or(DEFAULT_LOG_LEVEL)).init();
 
+    let args = Args::parse();
+
+    // Handle completion-related flags before printing any UI
+    if let Some(shell) = args.completions {
+        print_completions(shell);
+        return Ok(());
+    }
+
+    if args.list_recipe_names {
+        let bake_path = resolve_bake_path(&args.path)?;
+        return handle_list_recipe_names(&bake_path).await;
+    }
+
+    // Print welcome banner
     let term = Term::stdout();
     let padded_version = format!("{VERSION:<8}");
     term.set_title("Bake");
     println!("{}", WELCOME_MSG.replace("xx.xx.xx", &padded_version));
-
-    let args = Args::parse();
-
-    if args.self_update {
-        return handle_self_update(args.prerelease).await;
-    }
 
     if args.check_updates {
         return handle_check_updates(args.prerelease).await;
@@ -1000,7 +1267,6 @@ name: test_project
             fail_fast: false,
             jobs: None,
             check_updates: false,
-            self_update: false,
             prerelease: false,
             list_templates: true,
             validate_templates: false,
@@ -1009,6 +1275,8 @@ name: test_project
             cache: None,
             env: None,
             force_version_override: false,
+            completions: None,
+            list_recipe_names: false,
         };
 
         // This should succeed and print "No templates found"
@@ -1040,7 +1308,6 @@ name: test_project
             fail_fast: false,
             jobs: None,
             check_updates: false,
-            self_update: false,
             prerelease: false,
             list_templates: false,
             validate_templates: true,
@@ -1049,6 +1316,8 @@ name: test_project
             cache: None,
             env: None,
             force_version_override: false,
+            completions: None,
+            list_recipe_names: false,
         };
 
         // This should succeed and print "No templates found"
@@ -1080,7 +1349,6 @@ name: test_project
             fail_fast: false,
             jobs: None,
             check_updates: false,
-            self_update: false,
             prerelease: false,
             list_templates: false,
             validate_templates: false,
@@ -1089,6 +1357,8 @@ name: test_project
             cache: None,
             env: None,
             force_version_override: false,
+            completions: None,
+            list_recipe_names: false,
         };
 
         // This should succeed but print "No recipes to bake"
@@ -1112,7 +1382,6 @@ name: test_project
             fail_fast: false,
             jobs: Some(4),
             check_updates: false,
-            self_update: false,
             prerelease: false,
             list_templates: false,
             validate_templates: false,
@@ -1121,6 +1390,8 @@ name: test_project
             cache: None,
             env: None,
             force_version_override: false,
+            completions: None,
+            list_recipe_names: false,
         };
 
         // Test that Args implements Debug (this will compile if it does)
@@ -1135,5 +1406,75 @@ name: test_project
         assert!(WELCOME_MSG.contains("Let's Bake!"));
         // Verify VERSION is accessible (it's guaranteed to be non-empty by Cargo)
         let _ = VERSION;
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_recipe_names() {
+        let temp_dir = tempdir().unwrap();
+
+        let bake_config = r#"
+name: test_project
+cookbooks:
+  - path: ./app
+"#;
+        fs::write(temp_dir.path().join("bake.yml"), bake_config).unwrap();
+
+        fs::create_dir_all(temp_dir.path().join("app")).unwrap();
+        let cookbook_config = r#"
+name: app
+recipes:
+  build:
+    description: Build the project
+    run: echo build
+  test:
+    run: echo test
+"#;
+        fs::write(temp_dir.path().join("app/cookbook.yml"), cookbook_config).unwrap();
+
+        let mut buf = Vec::new();
+        handle_list_recipe_names_to_writer(temp_dir.path(), &mut buf)
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(lines.contains(&"app:build\tBuild the project"));
+        assert!(lines.contains(&"app:test"));
+        assert!(lines.contains(&":build"));
+        assert!(lines.contains(&":test"));
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn test_generate_completions_produces_output() {
+        use clap::CommandFactory;
+        let mut buf = Vec::new();
+        let mut cmd = Args::command();
+        clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "bake", &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(!output.is_empty());
+        assert!(output.contains("bake"));
+    }
+
+    #[test]
+    fn test_bash_completion_script_contains_key_elements() {
+        let script = generate_bash_completion();
+        assert!(script.contains("_bake_completions"));
+        assert!(script.contains("--list-recipe-names"));
+        assert!(script.contains("complete -o nospace -F _bake_completions bake"));
+    }
+
+    #[test]
+    fn test_zsh_completion_script_contains_key_elements() {
+        let script = generate_zsh_completion();
+        assert!(script.contains("#compdef bake"));
+        assert!(script.contains("--list-recipe-names"));
+    }
+
+    #[test]
+    fn test_fish_completion_script_contains_key_elements() {
+        let script = generate_fish_completion();
+        assert!(script.contains("complete -c bake"));
+        assert!(script.contains("--list-recipe-names"));
     }
 }

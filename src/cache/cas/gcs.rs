@@ -250,7 +250,10 @@ impl BlobStore for GcsBlobStore {
             .send_buffered()
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))
-            .context(format!("Failed to upload manifest for key '{}' to GCS", key))?;
+            .context(format!(
+                "Failed to upload manifest for key '{}' to GCS",
+                key
+            ))?;
 
         debug!("Uploaded manifest for '{}' to GCS", key);
         Ok(())

@@ -1,5 +1,17 @@
 # Bake
 
+## v2.1.0 - 2026-02-25
+
+### Added
+
+- **Shell completion for bash, zsh, and fish** - Tab completion for all flags, options, and recipe names
+  - `bake --completions <shell>` generates a shell-specific completion script
+  - Dynamic `cookbook:recipe` completion with colon-aware filtering (e.g., `bake web:<TAB>`)
+  - Cross-cookbook `:recipe` shorthand completion (e.g., `bake :<TAB>` lists all unique recipe names)
+  - Recipe descriptions shown inline when available (zsh and fish)
+  - `--path` awareness: completions respect the project path for multi-project setups
+  - Install with: `bake --completions zsh > ~/.zfunc/_bake`, `bake --completions bash >> ~/.bashrc`, or `bake --completions fish > ~/.config/fish/completions/bake.fish`
+
 ## v2.0.3 - 2026-01-08
 
 ### Fixed

@@ -111,6 +111,48 @@ recipes:
     run: ./deploy.sh
 ```
 
+## Shell Completions
+
+Bake supports tab completion for bash, zsh, and fish — including cookbook:recipe names and descriptions.
+
+Generate a completion script with:
+
+```bash
+bake --completions bash  # or zsh, fish
+```
+
+### Bash
+
+```bash
+bake --completions bash > ~/.local/share/bash-completion/completions/bake
+```
+
+### Zsh
+
+```bash
+# Standard zsh (e.g. system zsh on macOS):
+bake --completions zsh > ~/.zfunc/_bake
+
+# If zsh was installed via Homebrew, use the Homebrew completions directory instead:
+bake --completions zsh > $(brew --prefix)/share/zsh/site-functions/_bake
+```
+
+Make sure `~/.zfunc` (or the Homebrew path) is in your `fpath` before `compinit`:
+
+```zsh
+# In your ~/.zshrc (for standard zsh):
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+```
+
+### Fish
+
+```bash
+bake --completions fish > ~/.config/fish/completions/bake.fish
+```
+
+After installing, restart your shell or source the completion file.
+
 ## Documentation
 
 ### Getting Started
@@ -127,10 +169,9 @@ recipes:
 - [Best Practices](docs/guides/best-practices.md)
 - [Troubleshooting](docs/guides/troubleshooting.md)
 
-### Reference  
+### Reference
 - [CLI Commands](docs/reference/cli-commands.md)
 - [Configuration Schema](docs/reference/configuration-schema.md)
-- [Auto-Update](docs/reference/auto-update.md)
 
 ## Community
 

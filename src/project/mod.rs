@@ -287,9 +287,10 @@ impl BakeProject {
     ) -> anyhow::Result<()> {
         // Check if cookbook is already fully loaded
         if let Some(cookbook) = self.cookbooks.get(cookbook_name)
-            && cookbook.fully_loaded {
-                return Ok(()); // Already fully loaded
-            }
+            && cookbook.fully_loaded
+        {
+            return Ok(()); // Already fully loaded
+        }
 
         // Get the path from minimal cookbook
         let config_path = self
@@ -845,10 +846,11 @@ impl BakeProject {
 
             // Stop search if we are at the filesystem root or a git repository root.
             if let Some(parent_dir) = parent
-                && !dir.join(".git").is_dir() {
-                    // Continue searching in the parent directory.
-                    return Self::find_config_file_in_dir(parent_dir);
-                }
+                && !dir.join(".git").is_dir()
+            {
+                // Continue searching in the parent directory.
+                return Self::find_config_file_in_dir(parent_dir);
+            }
             // If no config file is found after checking all relevant directories.
             bail!(
                 "Project Load: bake.yml or bake.yaml not found in '{}' or any parent directory. Ensure a configuration file exists at the project root.",

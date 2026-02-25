@@ -295,9 +295,10 @@ impl Cookbook {
 
                     // Apply environment overrides if specified
                     if let Some(env) = environment
-                        && let Some(env_overrides) = recipe.overrides.get(env) {
-                            combined.extend(env_overrides.clone());
-                        }
+                        && let Some(env_overrides) = recipe.overrides.get(env)
+                    {
+                        combined.extend(env_overrides.clone());
+                    }
 
                     combined
                 };
@@ -540,17 +541,18 @@ recipes:
         // Check that the processed values have the correct types
         if let Value::Mapping(map) = &yaml_value
             && let Some(Value::Mapping(recipes)) = map.get("recipes")
-                && let Some(Value::Mapping(build_recipe)) = recipes.get("build") {
-                    // These should be converted back to their original types
-                    assert!(matches!(
-                        build_recipe.get("force_build"),
-                        Some(Value::Bool(false))
-                    ));
-                    assert!(
-                        matches!(build_recipe.get("max_workers"), Some(Value::Number(n)) if n.as_i64() == Some(4))
-                    );
-                    assert!(matches!(build_recipe.get("debug"), Some(Value::Bool(true))));
-                }
+            && let Some(Value::Mapping(build_recipe)) = recipes.get("build")
+        {
+            // These should be converted back to their original types
+            assert!(matches!(
+                build_recipe.get("force_build"),
+                Some(Value::Bool(false))
+            ));
+            assert!(
+                matches!(build_recipe.get("max_workers"), Some(Value::Number(n)) if n.as_i64() == Some(4))
+            );
+            assert!(matches!(build_recipe.get("debug"), Some(Value::Bool(true))));
+        }
     }
 
     #[test]

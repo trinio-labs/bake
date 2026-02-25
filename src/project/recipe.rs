@@ -115,17 +115,17 @@ impl Recipe {
         let mut file_hashes = BTreeMap::<PathBuf, String>::new();
 
         if let Some(cache) = &self.cache
-            && !cache.inputs.is_empty() {
-                // Group patterns by their walk roots (performance optimization)
-                let pattern_groups =
-                    self.group_patterns_by_walk_root(&cache.inputs, &cookbook_dir)?;
+            && !cache.inputs.is_empty()
+        {
+            // Group patterns by their walk roots (performance optimization)
+            let pattern_groups = self.group_patterns_by_walk_root(&cache.inputs, &cookbook_dir)?;
 
-                // Process each group with simplified canonical path logic
-                for (walk_root, patterns) in pattern_groups {
-                    debug!("Walking from {walk_root:?} for patterns: {patterns:?}");
-                    self.walk_and_hash(&walk_root, &patterns, &cookbook_dir, &mut file_hashes)?;
-                }
+            // Process each group with simplified canonical path logic
+            for (walk_root, patterns) in pattern_groups {
+                debug!("Walking from {walk_root:?} for patterns: {patterns:?}");
+                self.walk_and_hash(&walk_root, &patterns, &cookbook_dir, &mut file_hashes)?;
             }
+        }
 
         // Add environment variables
         let environment = self

@@ -89,7 +89,10 @@ impl LayeredBlobStore {
         if tiers.is_empty() {
             anyhow::bail!("LayeredBlobStore requires at least one tier");
         }
-        Ok(Self { tiers, auto_promote })
+        Ok(Self {
+            tiers,
+            auto_promote,
+        })
     }
 
     /// Promote a blob from a slower tier to faster tiers
@@ -178,7 +181,11 @@ impl BlobStore for LayeredBlobStore {
             }
         }
 
-        debug!("Blob {} not found in any of {} tiers", hash, self.tiers.len());
+        debug!(
+            "Blob {} not found in any of {} tiers",
+            hash,
+            self.tiers.len()
+        );
         anyhow::bail!("Blob {} not found in any tier", hash)
     }
 
@@ -224,12 +231,15 @@ impl BlobStore for LayeredBlobStore {
         let results = futures_util::future::join_all(write_tasks).await;
 
         // Log failures and check if at least one succeeded
-        let any_success = results.iter().enumerate().fold(false, |acc, (idx, result)| {
-            if let Err(e) = result {
-                warn!("Failed to write to tier {}: {}", idx, e);
-            }
-            acc || result.is_ok()
-        });
+        let any_success = results
+            .iter()
+            .enumerate()
+            .fold(false, |acc, (idx, result)| {
+                if let Err(e) = result {
+                    warn!("Failed to write to tier {}: {}", idx, e);
+                }
+                acc || result.is_ok()
+            });
 
         if !any_success {
             anyhow::bail!("All tier writes failed for blob {}", hash);
@@ -449,12 +459,15 @@ impl BlobStore for LayeredBlobStore {
         let results = futures_util::future::join_all(delete_tasks).await;
 
         // Log failures and check if at least one succeeded
-        let any_success = results.iter().enumerate().fold(false, |acc, (idx, result)| {
-            if let Err(e) = result {
-                warn!("Failed to delete from tier {}: {}", idx, e);
-            }
-            acc || result.is_ok()
-        });
+        let any_success = results
+            .iter()
+            .enumerate()
+            .fold(false, |acc, (idx, result)| {
+                if let Err(e) = result {
+                    warn!("Failed to delete from tier {}: {}", idx, e);
+                }
+                acc || result.is_ok()
+            });
 
         if any_success {
             Ok(())
@@ -533,12 +546,15 @@ impl BlobStore for LayeredBlobStore {
         let results = futures_util::future::join_all(write_tasks).await;
 
         // Log failures and check if at least one succeeded
-        let any_success = results.iter().enumerate().fold(false, |acc, (idx, result)| {
-            if let Err(e) = result {
-                warn!("Failed to write manifest to tier {}: {}", idx, e);
-            }
-            acc || result.is_ok()
-        });
+        let any_success = results
+            .iter()
+            .enumerate()
+            .fold(false, |acc, (idx, result)| {
+                if let Err(e) = result {
+                    warn!("Failed to write manifest to tier {}: {}", idx, e);
+                }
+                acc || result.is_ok()
+            });
 
         if any_success {
             Ok(())
@@ -808,12 +824,7 @@ mod tests {
     ///     let _ = (store1, store2);
     /// }
     /// ```
-    async fn create_test_stores() -> (
-        TempDir,
-        TempDir,
-        Arc<dyn BlobStore>,
-        Arc<dyn BlobStore>,
-    ) {
+    async fn create_test_stores() -> (TempDir, TempDir, Arc<dyn BlobStore>, Arc<dyn BlobStore>) {
         let temp1 = TempDir::new().unwrap();
         let temp2 = TempDir::new().unwrap();
 
