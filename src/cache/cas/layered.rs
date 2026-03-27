@@ -37,27 +37,18 @@ impl LayeredBlobStore {
     /// # Examples
     ///
     /// ```
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
     /// use std::sync::Arc;
     ///
-    /// // Minimal local stub for example purposes.
-    /// struct DummyStore;
-    /// impl crate::blob::BlobStore for DummyStore {
-    ///     // implement required trait methods as no-op or unimplemented for the example
-    ///     # fn contains(&self, _hash: crate::blob::BlobHash) -> crate::Result<bool> { Ok(false) }
-    ///     # fn get(&self, _hash: crate::blob::BlobHash) -> crate::Result<bytes::Bytes> { unimplemented!() }
-    ///     # fn put(&self, _content: bytes::Bytes) -> crate::Result<crate::blob::BlobHash> { unimplemented!() }
-    ///     # fn contains_many(&self, _hashes: &[crate::blob::BlobHash]) -> crate::Result<Vec<bool>> { unimplemented!() }
-    ///     # fn get_many(&self, _hashes: &[crate::blob::BlobHash]) -> crate::Result<Vec<bytes::Bytes>> { unimplemented!() }
-    ///     # fn put_many(&self, _contents: &[bytes::Bytes]) -> crate::Result<Vec<crate::blob::BlobHash>> { unimplemented!() }
-    ///     # fn delete(&self, _hash: crate::blob::BlobHash) -> crate::Result<()> { unimplemented!() }
-    ///     # fn size(&self, _hash: crate::blob::BlobHash) -> crate::Result<Option<u64>> { unimplemented!() }
-    ///     # fn list(&self) -> crate::Result<Vec<crate::blob::BlobHash>> { unimplemented!() }
-    ///     # fn put_manifest(&self, _key: &str, _content: bytes::Bytes) -> crate::Result<()> { unimplemented!() }
-    ///     # fn get_manifest(&self, _key: &str) -> crate::Result<Option<bytes::Bytes>> { Ok(None) }
-    /// }
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
     ///
-    /// let tiers: Vec<Arc<dyn crate::blob::BlobStore>> = vec![Arc::new(DummyStore)];
-    /// let layered = crate::blob::LayeredBlobStore::new(tiers).expect("tiers must be non-empty");
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).expect("tiers must be non-empty");
+    /// # let _ = layered;
+    /// # });
     /// ```
     pub fn new(tiers: Vec<Arc<dyn BlobStore>>) -> Result<Self> {
         if tiers.is_empty() {
@@ -80,10 +71,22 @@ impl LayeredBlobStore {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
     /// use std::sync::Arc;
-    /// // `store1` and `store2` are existing implementations of `BlobStore`, with `store1` being faster.
-    /// let layered = LayeredBlobStore::with_options(vec![store1, store2], true)?;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local1 = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// let local2 = Arc::new(LocalBlobStore::new(temp.path().join("tier2")));
+    /// local1.init().await.unwrap();
+    /// local2.init().await.unwrap();
+    ///
+    /// let store1: Arc<dyn BlobStore> = local1;
+    /// let store2: Arc<dyn BlobStore> = local2;
+    /// let layered = LayeredBlobStore::with_options(vec![store1, store2], true).unwrap();
+    /// # let _ = layered;
+    /// # });
     /// ```
     pub fn with_options(tiers: Vec<Arc<dyn BlobStore>>, auto_promote: bool) -> Result<Self> {
         if tiers.is_empty() {
@@ -148,10 +151,22 @@ impl BlobStore for LayeredBlobStore {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// # async fn example(store: &LayeredBlobStore, hash: BlobHash) {
-    /// let content = store.get(&hash).await.unwrap();
-    /// # }
+    /// ```
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
+    /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    /// let hash = layered.put(Bytes::from_static(b"hello")).await.unwrap();
+    ///
+    /// let content = layered.get(&hash).await.unwrap();
+    /// assert_eq!(content, Bytes::from_static(b"hello"));
+    /// # });
     /// ```
     ///
     /// # Returns
@@ -203,16 +218,21 @@ impl BlobStore for LayeredBlobStore {
     /// # Examples
     ///
     /// ```
-    /// # use bytes::Bytes;
-    /// # use std::sync::Arc;
-    /// # use futures::executor::block_on;
-    /// #
-    /// # // `store` is any implementation of the BlobStore trait available in scope.
-    /// # async fn example(store: Arc<dyn crate::BlobStore>) {
+    /// use bake::cache::cas::{BlobHash, BlobStore, LayeredBlobStore, LocalBlobStore};
+    /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    ///
     /// let content = Bytes::from("hello");
-    /// let hash = store.put(content.clone()).await.unwrap();
-    /// assert_eq!(hash, crate::BlobHash::from_content(&content));
-    /// # }
+    /// let hash = layered.put(content.clone()).await.unwrap();
+    /// assert_eq!(hash, BlobHash::from_content(&content));
+    /// # });
     /// ```
     async fn put(&self, content: Bytes) -> Result<BlobHash> {
         let hash = BlobHash::from_content(&content);
@@ -264,12 +284,24 @@ impl BlobStore for LayeredBlobStore {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// # async fn example(store: &LayeredBlobStore, h1: BlobHash, h2: BlobHash) {
-    /// let results = store.contains_many(&[h1, h2]).await.unwrap();
+    /// ```
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
+    /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    /// let h1 = layered.put(Bytes::from_static(b"one")).await.unwrap();
+    /// let h2 = layered.put(Bytes::from_static(b"two")).await.unwrap();
+    ///
+    /// let results = layered.contains_many(&[h1, h2]).await.unwrap();
     /// assert_eq!(results.len(), 2);
-    /// // results[0] and results[1] indicate presence of h1 and h2 respectively
-    /// # }
+    /// assert_eq!(results, vec![true, true]);
+    /// # });
     /// ```
     async fn contains_many(&self, hashes: &[BlobHash]) -> Result<Vec<bool>> {
         // For each hash, check if it exists in any tier
@@ -307,10 +339,23 @@ impl BlobStore for LayeredBlobStore {
     /// # Examples
     ///
     /// ```
-    /// # async fn example(store: &LayeredBlobStore, hashes: Vec<BlobHash>) {
-    /// let contents = store.get_many(&hashes).await.unwrap();
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
+    /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    /// let hash1 = layered.put(Bytes::from_static(b"one")).await.unwrap();
+    /// let hash2 = layered.put(Bytes::from_static(b"two")).await.unwrap();
+    /// let hashes = vec![hash1, hash2];
+    ///
+    /// let contents = layered.get_many(&hashes).await.unwrap();
     /// assert_eq!(contents.len(), hashes.len());
-    /// # }
+    /// # });
     /// ```
     async fn get_many(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
         debug!("get_many: retrieving {} blobs", hashes.len());
@@ -393,13 +438,21 @@ impl BlobStore for LayeredBlobStore {
     /// # Examples
     ///
     /// ```
-    /// # async fn example(store: &impl crate::BlobStore) -> anyhow::Result<()> {
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
     /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    ///
     /// let contents = vec![Bytes::from("one"), Bytes::from("two")];
-    /// let hashes = store.put_many(contents).await?;
+    /// let hashes = layered.put_many(contents).await.unwrap();
     /// assert_eq!(hashes.len(), 2);
-    /// # Ok(())
-    /// # }
+    /// # });
     /// ```
     async fn put_many(&self, contents: Vec<Bytes>) -> Result<Vec<BlobHash>> {
         // Always write to all tiers for consistency
@@ -440,9 +493,20 @@ impl BlobStore for LayeredBlobStore {
     /// # Examples
     ///
     /// ```
-    /// # async fn example(store: &LayeredBlobStore, hash: BlobHash) {
-    /// store.delete(&hash).await.unwrap();
-    /// # }
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
+    /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    /// let hash = layered.put(Bytes::from_static(b"delete-me")).await.unwrap();
+    ///
+    /// layered.delete(&hash).await.unwrap();
+    /// # });
     /// ```
     async fn delete(&self, hash: &BlobHash) -> Result<()> {
         // Delete from all tiers
@@ -522,13 +586,22 @@ impl BlobStore for LayeredBlobStore {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # async fn example(store: &LayeredBlobStore) -> anyhow::Result<()> {
+    /// ```no_run
+    /// use bake::cache::cas::{BlobStore, LayeredBlobStore, LocalBlobStore};
+    /// use bytes::Bytes;
+    /// use std::sync::Arc;
+    ///
+    /// let temp = tempfile::tempdir().unwrap();
+    /// # tokio_test::block_on(async {
+    /// let local = Arc::new(LocalBlobStore::new(temp.path().join("tier1")));
+    /// local.init().await.unwrap();
+    /// let tier: Arc<dyn BlobStore> = local;
+    /// let layered = LayeredBlobStore::new(vec![tier]).unwrap();
+    ///
     /// let key = "manifest:v1";
-    /// let content = bytes::Bytes::from_static(b"{\"version\":1}");
-    /// store.put_manifest(key, content).await?;
-    /// # Ok(())
-    /// # }
+    /// let content = Bytes::from_static(b"{\"version\":1}");
+    /// layered.put_manifest(key, content).await.unwrap();
+    /// # });
     /// ```
     async fn put_manifest(&self, key: &str, content: Bytes) -> Result<()> {
         // Always write manifests to all tiers for consistency
