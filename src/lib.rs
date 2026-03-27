@@ -17,11 +17,18 @@ pub use project::BakeProject;
 pub use update::check_for_updates;
 
 use anyhow::{Context, bail};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use console::Term;
 use env_logger::Env;
 use indexmap::IndexMap;
-use std::sync::Arc;
+use std::{
+    collections::BTreeSet,
+    ffi::OsString,
+    fmt::Write as _,
+    io::{self, IsTerminal, Write as IoWrite},
+    path::PathBuf,
+    sync::Arc,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_LOG_LEVEL: &str = "warn";
@@ -154,6 +161,37 @@ pub struct Args {
     /// List all recipe names (cookbook:recipe) for shell completion
     #[arg(long, hide = true)]
     pub list_recipe_names: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "bake skill",
+    about = "Generate Bake helper assets for AI tools"
+)]
+pub struct SkillArgs {
+    #[command(subcommand)]
+    pub command: SkillCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillCommands {
+    /// Generate or update Bake helper assets for this project
+    Generate(GenerateSkillArgs),
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct GenerateSkillArgs {
+    /// Path to config file or directory containing a bake.yml file
+    #[arg(short, long)]
+    pub path: Option<String>,
+
+    /// Environment for variable overrides when generating the project-specific reference
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Overwrite existing generated skill files without prompting
+    #[arg(long)]
+    pub force: bool,
 }
 
 pub fn parse_key_val(s: &str) -> anyhow::Result<(String, String)> {
@@ -589,6 +627,422 @@ pub async fn handle_render(args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn collect_known_environments(project: &BakeProject) -> BTreeSet<String> {
+    let mut environments = BTreeSet::new();
+    environments.extend(project.overrides.keys().cloned());
+
+    for cookbook in project.cookbooks.values() {
+        environments.extend(cookbook.overrides.keys().cloned());
+
+        for recipe in cookbook.recipes.values() {
+            environments.extend(recipe.overrides.keys().cloned());
+        }
+    }
+
+    environments
+}
+
+fn collect_selector_examples(project: &BakeProject) -> (String, String, String) {
+    let cookbook_name = project
+        .cookbooks
+        .keys()
+        .next()
+        .cloned()
+        .unwrap_or_else(|| "<cookbook>".to_string());
+    let recipe_name = project
+        .cookbooks
+        .get(&cookbook_name)
+        .and_then(|cookbook| cookbook.recipes.keys().next())
+        .cloned()
+        .unwrap_or_else(|| "<recipe>".to_string());
+
+    let cookbook_example = if cookbook_name == "<cookbook>" {
+        "`bake <cookbook>:<recipe>`".to_string()
+    } else {
+        format!("`bake {cookbook_name}:{recipe_name}`")
+    };
+
+    let cookbook_scope_example = if cookbook_name == "<cookbook>" {
+        "`bake <cookbook>:`".to_string()
+    } else {
+        format!("`bake {cookbook_name}:`")
+    };
+
+    let mut recipe_cookbooks = std::collections::BTreeMap::<String, BTreeSet<String>>::new();
+    for (cookbook_name, cookbook) in &project.cookbooks {
+        for recipe_name in cookbook.recipes.keys() {
+            recipe_cookbooks
+                .entry(recipe_name.clone())
+                .or_default()
+                .insert(cookbook_name.clone());
+        }
+    }
+
+    let cross_scope_example = recipe_cookbooks
+        .iter()
+        .find(|(_, cookbooks)| cookbooks.len() > 1)
+        .map(|(recipe_name, _)| format!("`bake :{recipe_name}`"))
+        .unwrap_or_else(|| "`bake :<recipe>`".to_string());
+
+    (
+        cookbook_example,
+        cookbook_scope_example,
+        cross_scope_example,
+    )
+}
+
+fn format_inline_code_list<I>(items: I) -> String
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    items
+        .into_iter()
+        .map(|item| format!("`{}`", item.as_ref()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn generate_project_specific_skill_markdown(project: &BakeProject) -> anyhow::Result<String> {
+    let (cookbook_example, cookbook_scope_example, cross_scope_example) =
+        collect_selector_examples(project);
+    let known_environments = collect_known_environments(project);
+
+    let mut output = String::new();
+    writeln!(&mut output, "# Project-Specific Bake Reference")?;
+    writeln!(&mut output)?;
+    writeln!(
+        &mut output,
+        "This repository uses Bake to define project tasks in `bake.yml` and cookbook files. A cookbook is the project-local scope or domain used in selectors like `foo:build`."
+    )?;
+
+    if let Some(description) = &project.description
+        && !description.trim().is_empty()
+    {
+        writeln!(&mut output)?;
+        writeln!(
+            &mut output,
+            "Project: `{}`. {}",
+            project.name,
+            description.trim()
+        )?;
+    }
+
+    writeln!(&mut output)?;
+    writeln!(&mut output, "## Targeting Recipes")?;
+    writeln!(
+        &mut output,
+        "- `{}` runs a single recipe inside one cookbook.",
+        cookbook_example.trim_matches('`')
+    )?;
+    writeln!(
+        &mut output,
+        "- `{}` runs every recipe in that cookbook.",
+        cookbook_scope_example.trim_matches('`')
+    )?;
+    writeln!(
+        &mut output,
+        "- `{}` runs the same recipe across every cookbook that defines it.",
+        cross_scope_example.trim_matches('`')
+    )?;
+    writeln!(
+        &mut output,
+        "- Bake resolves declared dependencies automatically, so selecting a target recipe also schedules its prerequisite recipes."
+    )?;
+    writeln!(
+        &mut output,
+        "- Add `--regex` to treat both sides of `cookbook:recipe` as regular expressions."
+    )?;
+    writeln!(
+        &mut output,
+        "- Add `--tags <tag1,tag2>` to match recipes that carry any of those tags."
+    )?;
+    writeln!(
+        &mut output,
+        "- Use `--show-plan`, `--dry-run`, `--clean`, `--env <name>`, and `-D key=value` when you need planning, cleanup, environment selection, or variable overrides."
+    )?;
+
+    writeln!(&mut output)?;
+    writeln!(&mut output, "## Project Inventory")?;
+    writeln!(&mut output, "- Project name: `{}`", project.name)?;
+    writeln!(
+        &mut output,
+        "- Cookbooks: {}",
+        if project.cookbooks.is_empty() {
+            "none".to_string()
+        } else {
+            format_inline_code_list(project.cookbooks.keys().map(String::as_str))
+        }
+    )?;
+
+    if !known_environments.is_empty() {
+        writeln!(
+            &mut output,
+            "- Known `--env` values: {}",
+            format_inline_code_list(known_environments.iter().map(String::as_str))
+        )?;
+    }
+
+    if !project.environment.is_empty() {
+        writeln!(
+            &mut output,
+            "- Project environment variables exposed to recipes: {}",
+            format_inline_code_list(project.environment.iter().map(String::as_str))
+        )?;
+    }
+
+    if !project.template_registry.is_empty() {
+        writeln!(&mut output, "- Available recipe templates:")?;
+        for (name, template) in &project.template_registry {
+            if let Some(description) = &template.description {
+                writeln!(&mut output, "  - `{name}`: {}", description.trim())?;
+            } else {
+                writeln!(&mut output, "  - `{name}`")?;
+            }
+        }
+    }
+
+    if !project.helper_registry.is_empty() {
+        writeln!(&mut output, "- Available custom helpers:")?;
+        for (name, helper) in &project.helper_registry {
+            if let Some(description) = &helper.description {
+                writeln!(&mut output, "  - `{name}`: {}", description.trim())?;
+            } else {
+                writeln!(&mut output, "  - `{name}`")?;
+            }
+        }
+    }
+
+    writeln!(&mut output)?;
+    writeln!(&mut output, "## Cookbook Scopes")?;
+
+    if project.cookbooks.is_empty() {
+        writeln!(
+            &mut output,
+            "No cookbooks were found in this project, so Bake currently has no project-local recipe scopes to document."
+        )?;
+        return Ok(output);
+    }
+
+    for (cookbook_name, cookbook) in &project.cookbooks {
+        writeln!(&mut output)?;
+        writeln!(&mut output, "### `{cookbook_name}`")?;
+
+        if !cookbook.tags.is_empty() {
+            writeln!(
+                &mut output,
+                "Inherited cookbook tags: {}",
+                format_inline_code_list(cookbook.tags.iter().map(String::as_str))
+            )?;
+        }
+
+        for (recipe_name, recipe) in &cookbook.recipes {
+            let mut parts = Vec::new();
+
+            if let Some(description) = &recipe.description
+                && !description.trim().is_empty()
+            {
+                parts.push(description.trim().to_string());
+            }
+
+            if !recipe.tags.is_empty() {
+                parts.push(format!(
+                    "tags: {}",
+                    format_inline_code_list(recipe.tags.iter().map(String::as_str))
+                ));
+            }
+
+            if let Some(dependencies) = &recipe.dependencies
+                && !dependencies.is_empty()
+            {
+                parts.push(format!(
+                    "depends on {}",
+                    format_inline_code_list(dependencies.iter().map(String::as_str))
+                ));
+            }
+
+            if let Some(cache) = &recipe.cache
+                && !cache.outputs.is_empty()
+            {
+                parts.push(format!(
+                    "cache outputs: {}",
+                    format_inline_code_list(cache.outputs.iter().map(String::as_str))
+                ));
+            }
+
+            if parts.is_empty() {
+                writeln!(&mut output, "- `{cookbook_name}:{recipe_name}`")?;
+            } else {
+                writeln!(
+                    &mut output,
+                    "- `{cookbook_name}:{recipe_name}`: {}",
+                    parts.join(". ")
+                )?;
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+fn generate_codex_skill_markdown() -> String {
+    r#"---
+name: bake
+description: Use when this repository relies on Bake as its task runner. Prefer Bake recipes over raw cargo, go, npm, or other tool commands when a matching recipe exists. Read the project-specific Bake reference before choosing commands.
+---
+
+# Bake
+
+Treat Bake as the canonical task runner for this repository.
+
+## Workflow
+
+- Read [project-specific-skill.md](references/project-specific-skill.md) before suggesting or running commands.
+- If the repository defines a Bake recipe for a task such as build, test, lint, or release, prefer the Bake recipe over the underlying tool command.
+- For example, if the reference shows a test recipe for a cookbook or domain, use `bake <cookbook>:test` instead of jumping straight to `cargo test`, `go test`, `npm test`, or similar raw commands.
+- Bake resolves recipe dependencies automatically. If `bake app:test` depends on `app:build` or setup recipes, select `app:test` and let Bake schedule the prerequisites.
+- Do not manually run prerequisite Bake recipes before the target unless the user explicitly asks for that narrower step.
+- Prefer targeted selectors: `bake <cookbook>:<recipe>` for one recipe, `bake <cookbook>:` for one cookbook scope, and `bake :<recipe>` for the same recipe across multiple cookbooks.
+- Prefer `bake --show-plan ...` before broad or unfamiliar runs.
+- Use `bake --dry-run` when the user wants a preview without execution.
+- Use `--env <name>`, `-D key=value`, `--tags`, and `--regex` only when they materially change the selection.
+- Fall back to raw tool commands only when no suitable Bake recipe exists or the user explicitly asks to bypass Bake.
+- If you update Bake cookbooks, recipes, templates, or helpers, regenerate this skill with `bake skill generate`.
+
+## Reference
+
+- For repository-specific cookbook names, recipes, environments, templates, helpers, and examples, read [project-specific-skill.md](references/project-specific-skill.md).
+"#
+    .to_string()
+}
+
+#[derive(Debug, Clone)]
+struct GeneratedSkillFile {
+    path: PathBuf,
+    content: String,
+}
+
+fn build_skill_artifacts(project: &BakeProject) -> anyhow::Result<Vec<GeneratedSkillFile>> {
+    let codex_root = project.root_path.join(".codex/skills/bake");
+    let claude_root = project.root_path.join(".claude");
+    let claude_skill_root = claude_root.join("skills/bake");
+
+    Ok(vec![
+        GeneratedSkillFile {
+            path: codex_root.join("SKILL.md"),
+            content: generate_codex_skill_markdown(),
+        },
+        GeneratedSkillFile {
+            path: codex_root.join("references/project-specific-skill.md"),
+            content: generate_project_specific_skill_markdown(project)?,
+        },
+        GeneratedSkillFile {
+            path: claude_skill_root.join("SKILL.md"),
+            content: generate_codex_skill_markdown(),
+        },
+        GeneratedSkillFile {
+            path: claude_skill_root.join("references/project-specific-skill.md"),
+            content: generate_project_specific_skill_markdown(project)?,
+        },
+    ])
+}
+
+fn existing_skill_paths(files: &[GeneratedSkillFile]) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|file| file.path.exists())
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+fn prompt_for_skill_update(existing_paths: &[PathBuf]) -> anyhow::Result<bool> {
+    if existing_paths.is_empty() {
+        return Ok(true);
+    }
+
+    if !io::stdin().is_terminal() {
+        bail!(
+            "Bake skill files already exist. Re-run with `--force` to overwrite:\n{}",
+            existing_paths
+                .iter()
+                .map(|path| format!("- {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    let term = Term::stdout();
+    term.write_line("Bake skill files already exist:")?;
+    for path in existing_paths {
+        term.write_line(&format!("- {}", path.display()))?;
+    }
+    term.write_str("Update them? [y/N]: ")?;
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let answer = input.trim().to_ascii_lowercase();
+    Ok(matches!(answer.as_str(), "y" | "yes"))
+}
+
+fn write_skill_files(files: &[GeneratedSkillFile]) -> anyhow::Result<()> {
+    for file in files {
+        if let Some(parent) = file.path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+        }
+
+        std::fs::write(&file.path, &file.content)
+            .with_context(|| format!("Failed to write {}", file.path.display()))?;
+    }
+
+    Ok(())
+}
+
+pub async fn handle_generate_skill(args: &GenerateSkillArgs) -> anyhow::Result<()> {
+    let bake_path = resolve_bake_path(&args.path)?;
+    let project = BakeProject::load(&bake_path, args.env.as_deref(), IndexMap::new(), false)?;
+
+    let mut project = project;
+    let context = project.build_variable_context(&IndexMap::new());
+    let _ = project.get_recipes_for_execution(None, false, &[], args.env.as_deref(), &context)?;
+
+    let files = build_skill_artifacts(&project)?;
+    let existing = existing_skill_paths(&files);
+
+    if !args.force && !prompt_for_skill_update(&existing)? {
+        println!("Bake skill generation cancelled.");
+        return Ok(());
+    }
+
+    write_skill_files(&files)?;
+
+    println!("Generated Bake skill assets:");
+    for file in files {
+        println!("- {}", file.path.display());
+    }
+
+    Ok(())
+}
+
+pub async fn run_skill_command(args: SkillArgs) -> anyhow::Result<()> {
+    match args.command {
+        SkillCommands::Generate(generate_args) => handle_generate_skill(&generate_args).await,
+    }
+}
+
+fn parse_skill_command_from_env() -> Option<SkillArgs> {
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    match raw_args.get(1).and_then(|arg| arg.to_str()) {
+        Some("skill") => {
+            let mut skill_args = vec![OsString::from("bake skill")];
+            skill_args.extend(raw_args.into_iter().skip(2));
+            Some(SkillArgs::parse_from(skill_args))
+        }
+        _ => None,
+    }
+}
+
 pub async fn run_bake(args: Args) -> anyhow::Result<()> {
     let bake_path = resolve_bake_path(&args.path)?;
     let variables = parse_variables(&args.vars);
@@ -878,6 +1332,30 @@ fn generate_bash_completion() -> String {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
+    if [[ "${COMP_WORDS[1]}" == "skill" ]]; then
+        if [[ $COMP_CWORD -eq 2 ]]; then
+            COMPREPLY=($(compgen -W "generate" -- "$cur"))
+            return
+        fi
+
+        if [[ "${COMP_WORDS[2]}" == "generate" ]]; then
+            case "$prev" in
+                -p|--path)
+                    COMPREPLY=($(compgen -d -- "$cur"))
+                    return
+                    ;;
+                --env)
+                    return
+                    ;;
+            esac
+
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--path --env --force --help" -- "$cur"))
+                return
+            fi
+        fi
+    fi
+
     # Options that take a value — complete the value, not a new flag
     case "$prev" in
         -p|--path)
@@ -935,6 +1413,10 @@ fn generate_bash_completion() -> String {
         return
     fi
 
+    if [[ $COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "skill" -- "$cur"))
+    fi
+
     # Recipe completions (cookbook:recipe)
     local bake_path=""
     for ((i=1; i < COMP_CWORD; i++)); do
@@ -965,7 +1447,7 @@ fn generate_bash_completion() -> String {
         # Prepend the cookbook: prefix back
         COMPREPLY=("${COMPREPLY[@]/#/${cookbook}:}")
     else
-        COMPREPLY=($(compgen -W "$recipes" -- "$cur"))
+        COMPREPLY+=($(compgen -W "$recipes" -- "$cur"))
     fi
 
     # Prevent bash from splitting on colons
@@ -1002,6 +1484,7 @@ _bake() {
         if [[ -n "$recipe_list" ]]; then
             local -a completions
             local line name desc escaped
+            completions+=("skill:Generate Bake AI helper assets")
             while IFS=$'\t' read -r name desc; do
                 # Escape colons in the name so _describe doesn't split on them
                 escaped="${name//:/\\:}"
@@ -1071,6 +1554,13 @@ function __bake_recipes
     end
 end
 
+# Skill subcommand completions
+complete -c bake -n 'test (count (commandline -opc)) -eq 1' -a 'skill' -d 'Generate Bake AI helper assets'
+complete -c bake -n 'test (count (commandline -opc)) -ge 2; and test (commandline -opc)[2] = skill; and test (count (commandline -opc)) -eq 2' -a 'generate' -d 'Generate or update Bake skills'
+complete -c bake -n 'contains -- skill (commandline -opc); and contains -- generate (commandline -opc)' -l path -d 'Path to config file or directory' -r -F
+complete -c bake -n 'contains -- skill (commandline -opc); and contains -- generate (commandline -opc)' -l env -d 'Environment for generated reference' -r
+complete -c bake -n 'contains -- skill (commandline -opc); and contains -- generate (commandline -opc)' -l force -d 'Overwrite existing generated files'
+
 # Recipe completions (only when not completing a flag)
 complete -c bake -n 'not string match -q -- "-*" (commandline -ct)' -a '(__bake_recipes)'
 
@@ -1118,6 +1608,10 @@ fn print_completions(shell: clap_complete::Shell) {
 /// Main entry point for the library - initializes logging and runs the application
 pub async fn run() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or(DEFAULT_LOG_LEVEL)).init();
+
+    if let Some(skill_args) = parse_skill_command_from_env() {
+        return run_skill_command(skill_args).await;
+    }
 
     let args = Args::parse();
 
@@ -1445,6 +1939,134 @@ recipes:
         assert_eq!(lines.len(), 4);
     }
 
+    #[tokio::test]
+    async fn test_handle_generate_skill_creates_codex_and_claude_assets() {
+        let temp_dir = tempdir().unwrap();
+
+        let bake_config = r#"
+name: storefront
+description: Shared task runner for the monorepo
+overrides:
+  dev: {}
+  prod: {}
+cookbooks:
+  - path: ./apps
+  - path: ./fulfillments
+"#;
+        fs::write(temp_dir.path().join("bake.yml"), bake_config).unwrap();
+
+        fs::create_dir_all(temp_dir.path().join("apps")).unwrap();
+        fs::write(
+            temp_dir.path().join("apps/cookbook.yml"),
+            r#"
+name: apps
+recipes:
+  lint:
+    description: Lint the application packages
+    run: echo lint apps
+  test:
+    run: echo test apps
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(temp_dir.path().join("fulfillments")).unwrap();
+        fs::write(
+            temp_dir.path().join("fulfillments/cookbook.yml"),
+            r#"
+name: fulfillments
+tags: ["backend"]
+recipes:
+  lint:
+    description: Lint only the fulfillments domain
+    run: echo lint fulfillments
+  deploy:
+    tags: ["deploy"]
+    dependencies:
+      - lint
+    run: echo deploy fulfillments
+"#,
+        )
+        .unwrap();
+
+        let args = GenerateSkillArgs {
+            path: Some(temp_dir.path().to_string_lossy().to_string()),
+            env: None,
+            force: true,
+        };
+
+        handle_generate_skill(&args).await.unwrap();
+
+        let codex_skill =
+            fs::read_to_string(temp_dir.path().join(".codex/skills/bake/SKILL.md")).unwrap();
+        assert!(codex_skill.contains("name: bake"));
+        assert!(codex_skill.contains("references/project-specific-skill.md"));
+        assert!(codex_skill.contains("Treat Bake as the canonical task runner"));
+        assert!(codex_skill.contains("prefer the Bake recipe over the underlying tool command"));
+        assert!(codex_skill.contains("use `bake <cookbook>:test` instead of jumping straight"));
+        assert!(codex_skill.contains("Bake resolves recipe dependencies automatically"));
+        assert!(codex_skill.contains("bake skill generate"));
+
+        let codex_reference = fs::read_to_string(
+            temp_dir
+                .path()
+                .join(".codex/skills/bake/references/project-specific-skill.md"),
+        )
+        .unwrap();
+        assert!(codex_reference.contains("# Project-Specific Bake Reference"));
+        assert!(codex_reference.contains("`bake :lint`"));
+        assert!(codex_reference.contains("`bake apps:lint`"));
+        assert!(codex_reference.contains("Known `--env` values: `dev`, `prod`"));
+        assert!(
+            codex_reference
+                .contains("`fulfillments:deploy`: tags: `deploy`. depends on `fulfillments:lint`")
+        );
+        assert!(codex_reference.contains("### `fulfillments`"));
+
+        let claude_skill =
+            fs::read_to_string(temp_dir.path().join(".claude/skills/bake/SKILL.md")).unwrap();
+        assert_eq!(claude_skill, codex_skill);
+
+        let claude_reference = fs::read_to_string(
+            temp_dir
+                .path()
+                .join(".claude/skills/bake/references/project-specific-skill.md"),
+        )
+        .unwrap();
+        assert_eq!(claude_reference, codex_reference);
+    }
+
+    #[test]
+    fn test_existing_skill_paths_detects_generated_files() {
+        let temp_dir = tempdir().unwrap();
+        let files = vec![
+            GeneratedSkillFile {
+                path: temp_dir.path().join(".codex/skills/bake/SKILL.md"),
+                content: "codex".to_string(),
+            },
+            GeneratedSkillFile {
+                path: temp_dir.path().join(".claude/skills/bake/SKILL.md"),
+                content: "claude skill".to_string(),
+            },
+        ];
+
+        assert!(existing_skill_paths(&files).is_empty());
+
+        fs::create_dir_all(temp_dir.path().join(".codex/skills/bake")).unwrap();
+        fs::write(temp_dir.path().join(".codex/skills/bake/SKILL.md"), "codex").unwrap();
+        fs::create_dir_all(temp_dir.path().join(".claude/skills/bake")).unwrap();
+        fs::write(
+            temp_dir.path().join(".claude/skills/bake/SKILL.md"),
+            "claude skill",
+        )
+        .unwrap();
+
+        let existing = existing_skill_paths(&files);
+        assert_eq!(existing.len(), 2);
+        assert!(existing[0].ends_with(".codex/skills/bake/SKILL.md"));
+        assert!(existing[1].ends_with(".claude/skills/bake/SKILL.md"));
+    }
+
     #[test]
     fn test_generate_completions_produces_output() {
         use clap::CommandFactory;
@@ -1461,6 +2083,8 @@ recipes:
         let script = generate_bash_completion();
         assert!(script.contains("_bake_completions"));
         assert!(script.contains("--list-recipe-names"));
+        assert!(script.contains("skill"));
+        assert!(script.contains("--force"));
         assert!(script.contains("complete -o nospace -F _bake_completions bake"));
     }
 
@@ -1469,6 +2093,7 @@ recipes:
         let script = generate_zsh_completion();
         assert!(script.contains("#compdef bake"));
         assert!(script.contains("--list-recipe-names"));
+        assert!(script.contains("skill:Generate Bake AI helper assets"));
     }
 
     #[test]
@@ -1476,5 +2101,7 @@ recipes:
         let script = generate_fish_completion();
         assert!(script.contains("complete -c bake"));
         assert!(script.contains("--list-recipe-names"));
+        assert!(script.contains("Generate Bake AI helper assets"));
+        assert!(script.contains("Generate or update Bake skills"));
     }
 }
