@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=./schemas/bake-project.schema.json
+name: bake
+description: Dogfood Bake against the Bake repository itself
+
+environment:
+  - CI
+  - RUST_LOG
+  - CARGO_TERM_COLOR
+
+config:
+  minVersion: "2.1.0"
+  verbose: true

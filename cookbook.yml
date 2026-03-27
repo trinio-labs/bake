@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=./schemas/cookbook.schema.json
+name: repo
+tags:
+  - rust
+  - dogfood
+
+recipes:
+  build:
+    description: Build Bake
+    run: cargo build
+
+  fmt:
+    description: Check Rust formatting
+    run: cargo fmt --check
+
+  lint:
+    description: Run clippy for Bake
+    run: cargo clippy --all-targets
+
+  test-lib:
+    description: Run Bake library tests
+    run: cargo test --lib
+
+  check:
+    description: Run the core dogfood checks for Bake
+    dependencies:
+      - build
+      - fmt
+      - lint
+      - test-lib
+    run: echo "Bake dogfood checks completed"
