@@ -27,7 +27,7 @@ Bake is a parallel task runner with smart caching, built in Rust. The architectu
    
    - Provides public functions for CLI argument parsing and handling
    - Exposes main application logic for integration testing
-   - Contains Args struct and command handlers (list-templates, validate, render)
+   - Contains Args struct and command handlers for baking, template inspection, rendering, and skill generation
    - Main run() function that orchestrates the entire application
 
 2. **main.rs** - Binary entry point

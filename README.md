@@ -41,6 +41,9 @@ bake app:build
 
 # Override variables
 bake --var environment=production
+
+# Generate Codex and Claude Bake helper assets for this repo
+bake --generate skill
 ```
 
 [5-minute tutorial →](docs/getting-started/quick-start.md)
