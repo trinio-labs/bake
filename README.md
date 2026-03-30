@@ -43,7 +43,7 @@ bake app:build
 bake --var environment=production
 
 # Generate Codex and Claude Bake helper assets for this repo
-bake skill generate
+bake --generate skill
 ```
 
 [5-minute tutorial →](docs/getting-started/quick-start.md)

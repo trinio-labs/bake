@@ -17,13 +17,12 @@ pub use project::BakeProject;
 pub use update::check_for_updates;
 
 use anyhow::{Context, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use console::Term;
 use env_logger::Env;
 use indexmap::IndexMap;
 use std::{
     collections::BTreeSet,
-    ffi::OsString,
     fmt::Write as _,
     io::{self, IsTerminal, Write as IoWrite},
     path::PathBuf,
@@ -54,6 +53,12 @@ pub enum CacheStrategy {
     RemoteFirst,
     /// Disable all caching
     Disabled,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum GenerateTarget {
+    /// Generate Bake helper assets for AI tools
+    Skill,
 }
 
 /// Bake is a build system that runs and caches tasks based on yaml configuration
@@ -158,25 +163,17 @@ pub struct Args {
     #[arg(long, value_name = "SHELL")]
     pub completions: Option<clap_complete::Shell>,
 
+    /// Generate Bake helper assets for the selected target
+    #[arg(long, value_enum, value_name = "TARGET")]
+    pub generate: Option<GenerateTarget>,
+
+    /// Overwrite existing generated files without prompting
+    #[arg(long, requires = "generate")]
+    pub force: bool,
+
     /// List all recipe names (cookbook:recipe) for shell completion
     #[arg(long, hide = true)]
     pub list_recipe_names: bool,
-}
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "bake skill",
-    about = "Generate Bake helper assets for AI tools"
-)]
-pub struct SkillArgs {
-    #[command(subcommand)]
-    pub command: SkillCommands,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SkillCommands {
-    /// Generate or update Bake helper assets for this project
-    Generate(GenerateSkillArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -907,7 +904,7 @@ Treat Bake as the canonical task runner for this repository.
 - Use `bake --dry-run` when the user wants a preview without execution.
 - Use `--env <name>`, `-D key=value`, `--tags`, and `--regex` only when they materially change the selection.
 - Fall back to raw tool commands only when no suitable Bake recipe exists or the user explicitly asks to bypass Bake.
-- If you update Bake cookbooks, recipes, templates, or helpers, regenerate this skill with `bake skill generate`.
+- If you update Bake cookbooks, recipes, templates, or helpers, regenerate this skill with `bake --generate skill`.
 
 ## Reference
 
@@ -1025,21 +1022,14 @@ pub async fn handle_generate_skill(args: &GenerateSkillArgs) -> anyhow::Result<(
     Ok(())
 }
 
-pub async fn run_skill_command(args: SkillArgs) -> anyhow::Result<()> {
-    match args.command {
-        SkillCommands::Generate(generate_args) => handle_generate_skill(&generate_args).await,
-    }
-}
-
-fn parse_skill_command_from_env() -> Option<SkillArgs> {
-    let raw_args: Vec<OsString> = std::env::args_os().collect();
-    match raw_args.get(1).and_then(|arg| arg.to_str()) {
-        Some("skill") => {
-            let mut skill_args = vec![OsString::from("bake skill")];
-            skill_args.extend(raw_args.into_iter().skip(2));
-            Some(SkillArgs::parse_from(skill_args))
-        }
-        _ => None,
+fn generate_skill_args_from_args(args: &Args) -> Option<GenerateSkillArgs> {
+    match args.generate {
+        Some(GenerateTarget::Skill) => Some(GenerateSkillArgs {
+            path: args.path.clone(),
+            env: args.env.clone(),
+            force: args.force,
+        }),
+        None => None,
     }
 }
 
@@ -1332,30 +1322,6 @@ fn generate_bash_completion() -> String {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    if [[ "${COMP_WORDS[1]}" == "skill" ]]; then
-        if [[ $COMP_CWORD -eq 2 ]]; then
-            COMPREPLY=($(compgen -W "generate" -- "$cur"))
-            return
-        fi
-
-        if [[ "${COMP_WORDS[2]}" == "generate" ]]; then
-            case "$prev" in
-                -p|--path)
-                    COMPREPLY=($(compgen -d -- "$cur"))
-                    return
-                    ;;
-                --env)
-                    return
-                    ;;
-            esac
-
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "--path --env --force --help" -- "$cur"))
-                return
-            fi
-        fi
-    fi
-
     # Options that take a value — complete the value, not a new flag
     case "$prev" in
         -p|--path)
@@ -1367,6 +1333,10 @@ fn generate_bash_completion() -> String {
             ;;
         --cache)
             COMPREPLY=($(compgen -W "local-only remote-only local-first remote-first disabled" -- "$cur"))
+            return
+            ;;
+        --generate)
+            COMPREPLY=($(compgen -W "skill" -- "$cur"))
             return
             ;;
         --env)
@@ -1408,13 +1378,9 @@ fn generate_bash_completion() -> String {
 
     # Flags
     if [[ "$cur" == -* ]]; then
-        local flags="--path --show-plan --explain --clean --verbose --quiet --var --define --regex --tags --dry-run --fail-fast --jobs --check-updates --prerelease --list-templates --validate-templates --render --skip-cache --cache --env --force-version-override --completions --help --version"
+        local flags="--path --show-plan --explain --clean --verbose --quiet --var --define --regex --tags --dry-run --fail-fast --jobs --check-updates --prerelease --list-templates --validate-templates --render --skip-cache --cache --env --force-version-override --completions --generate --force --help --version"
         COMPREPLY=($(compgen -W "$flags" -- "$cur"))
         return
-    fi
-
-    if [[ $COMP_CWORD -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "skill" -- "$cur"))
     fi
 
     # Recipe completions (cookbook:recipe)
@@ -1484,7 +1450,6 @@ _bake() {
         if [[ -n "$recipe_list" ]]; then
             local -a completions
             local line name desc escaped
-            completions+=("skill:Generate Bake AI helper assets")
             while IFS=$'\t' read -r name desc; do
                 # Escape colons in the name so _describe doesn't split on them
                 escaped="${name//:/\\:}"
@@ -1519,6 +1484,8 @@ _bake() {
         '--skip-cache[Skip cache]' \
         '--cache[Cache strategy]:strategy:(local-only remote-only local-first remote-first disabled)' \
         '--env[Environment for variable overrides]:environment:' \
+        '--generate[Generate Bake helper assets]:target:(skill)' \
+        '--force[Overwrite existing generated files]' \
         '--force-version-override[Force version check override]' \
         '--completions[Generate shell completions]:shell:(bash zsh fish)' \
         '(- *)--help[Show help]' \
@@ -1554,13 +1521,6 @@ function __bake_recipes
     end
 end
 
-# Skill subcommand completions
-complete -c bake -n 'test (count (commandline -opc)) -eq 1' -a 'skill' -d 'Generate Bake AI helper assets'
-complete -c bake -n 'test (count (commandline -opc)) -ge 2; and test (commandline -opc)[2] = skill; and test (count (commandline -opc)) -eq 2' -a 'generate' -d 'Generate or update Bake skills'
-complete -c bake -n 'contains -- skill (commandline -opc); and contains -- generate (commandline -opc)' -l path -d 'Path to config file or directory' -r -F
-complete -c bake -n 'contains -- skill (commandline -opc); and contains -- generate (commandline -opc)' -l env -d 'Environment for generated reference' -r
-complete -c bake -n 'contains -- skill (commandline -opc); and contains -- generate (commandline -opc)' -l force -d 'Overwrite existing generated files'
-
 # Recipe completions (only when not completing a flag)
 complete -c bake -n 'not string match -q -- "-*" (commandline -ct)' -a '(__bake_recipes)'
 
@@ -1584,6 +1544,8 @@ complete -c bake -l render -d 'Print rendered cookbooks'
 complete -c bake -l skip-cache -d 'Skip cache'
 complete -c bake -l cache -d 'Cache strategy' -r -a 'local-only remote-only local-first remote-first disabled'
 complete -c bake -l env -d 'Environment for variable overrides' -r
+complete -c bake -l generate -d 'Generate Bake helper assets' -r -a 'skill'
+complete -c bake -n 'contains -- --generate (commandline -opc); and contains -- skill (commandline -opc)' -l force -d 'Overwrite existing generated files'
 complete -c bake -l force-version-override -d 'Force version check override'
 complete -c bake -l completions -d 'Generate shell completions' -r -a 'bash zsh fish'
 complete -c bake -l help -d 'Show help'
@@ -1609,16 +1571,16 @@ fn print_completions(shell: clap_complete::Shell) {
 pub async fn run() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or(DEFAULT_LOG_LEVEL)).init();
 
-    if let Some(skill_args) = parse_skill_command_from_env() {
-        return run_skill_command(skill_args).await;
-    }
-
     let args = Args::parse();
 
     // Handle completion-related flags before printing any UI
     if let Some(shell) = args.completions {
         print_completions(shell);
         return Ok(());
+    }
+
+    if let Some(generate_args) = generate_skill_args_from_args(&args) {
+        return handle_generate_skill(&generate_args).await;
     }
 
     if args.list_recipe_names {
@@ -1770,6 +1732,8 @@ name: test_project
             env: None,
             force_version_override: false,
             completions: None,
+            generate: None,
+            force: false,
             list_recipe_names: false,
         };
 
@@ -1811,6 +1775,8 @@ name: test_project
             env: None,
             force_version_override: false,
             completions: None,
+            generate: None,
+            force: false,
             list_recipe_names: false,
         };
 
@@ -1852,6 +1818,8 @@ name: test_project
             env: None,
             force_version_override: false,
             completions: None,
+            generate: None,
+            force: false,
             list_recipe_names: false,
         };
 
@@ -1885,6 +1853,8 @@ name: test_project
             env: None,
             force_version_override: false,
             completions: None,
+            generate: None,
+            force: false,
             list_recipe_names: false,
         };
 
@@ -2005,7 +1975,7 @@ recipes:
         assert!(codex_skill.contains("prefer the Bake recipe over the underlying tool command"));
         assert!(codex_skill.contains("use `bake <cookbook>:test` instead of jumping straight"));
         assert!(codex_skill.contains("Bake resolves recipe dependencies automatically"));
-        assert!(codex_skill.contains("bake skill generate"));
+        assert!(codex_skill.contains("bake --generate skill"));
 
         let codex_reference = fs::read_to_string(
             temp_dir
@@ -2079,11 +2049,30 @@ recipes:
     }
 
     #[test]
+    fn test_generate_skill_args_from_args() {
+        let args = Args::parse_from([
+            "bake",
+            "--generate",
+            "skill",
+            "--path",
+            "/tmp/project",
+            "--env",
+            "dev",
+            "--force",
+        ]);
+
+        let generate_args = generate_skill_args_from_args(&args).unwrap();
+        assert_eq!(generate_args.path.as_deref(), Some("/tmp/project"));
+        assert_eq!(generate_args.env.as_deref(), Some("dev"));
+        assert!(generate_args.force);
+    }
+
+    #[test]
     fn test_bash_completion_script_contains_key_elements() {
         let script = generate_bash_completion();
         assert!(script.contains("_bake_completions"));
         assert!(script.contains("--list-recipe-names"));
-        assert!(script.contains("skill"));
+        assert!(script.contains("--generate"));
         assert!(script.contains("--force"));
         assert!(script.contains("complete -o nospace -F _bake_completions bake"));
     }
@@ -2093,7 +2082,7 @@ recipes:
         let script = generate_zsh_completion();
         assert!(script.contains("#compdef bake"));
         assert!(script.contains("--list-recipe-names"));
-        assert!(script.contains("skill:Generate Bake AI helper assets"));
+        assert!(script.contains("--generate[Generate Bake helper assets]:target:(skill)"));
     }
 
     #[test]
@@ -2101,7 +2090,7 @@ recipes:
         let script = generate_fish_completion();
         assert!(script.contains("complete -c bake"));
         assert!(script.contains("--list-recipe-names"));
-        assert!(script.contains("Generate Bake AI helper assets"));
-        assert!(script.contains("Generate or update Bake skills"));
+        assert!(script.contains("complete -c bake -l generate"));
+        assert!(script.contains("Overwrite existing generated files"));
     }
 }
