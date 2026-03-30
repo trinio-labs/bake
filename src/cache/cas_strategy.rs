@@ -82,12 +82,18 @@ impl Cache {
     /// # Examples
     ///
     /// ```
-    /// # tokio_test::block_on(async {
+    /// use bake::cache::{Cache, CacheConfig};
     /// use std::path::PathBuf;
-    /// let cache_root = PathBuf::from("/tmp/my_cache");
-    /// let project_root = PathBuf::from("/tmp/project");
-    /// let config = crate::cache::cas_strategy::CacheConfig::default();
-    /// let cache = crate::cache::cas_strategy::Cache::local(cache_root, project_root, config).await.unwrap();
+    ///
+    /// # tokio_test::block_on(async {
+    /// let temp = tempfile::tempdir().unwrap();
+    /// let cache_root = temp.path().join("cache");
+    /// let project_root = temp.path().join("project");
+    /// tokio::fs::create_dir_all(&project_root).await.unwrap();
+    /// let config = CacheConfig::default();
+    /// let cache = Cache::local(cache_root, project_root, config).await.unwrap();
+    /// let stats = cache.stats().await.unwrap();
+    /// assert_eq!(stats.total_size(), 0);
     /// # });
     /// ```
     pub async fn local(
@@ -131,26 +137,28 @@ impl Cache {
     /// # Examples
     ///
     /// ```
-    /// # use std::path::PathBuf;
-    /// # use tokio;
-    /// # async fn _example() -> anyhow::Result<()> {
-    /// use crate::cache::cas_strategy::CacheStrategy;
-    /// use crate::cache::CacheConfig;
-    /// // Provide appropriate project cache config with remotes as needed.
-    /// let cache_root = PathBuf::from("/tmp/cache");
-    /// let project_root = PathBuf::from(".");
-    /// let config = CacheConfig::default();
-    /// let project_cache_config = crate::project::config::CacheConfig::default();
+    /// use bake::cache::{Cache, CacheConfig, CacheStrategy};
+    /// use bake::project::config::CacheConfig as ProjectCacheConfig;
     ///
-    /// let cache = crate::cache::Cache::with_strategy(
+    /// # tokio_test::block_on(async {
+    /// // Provide appropriate project cache config with remotes as needed.
+    /// let temp = tempfile::tempdir().unwrap();
+    /// let cache_root = temp.path().join("cache");
+    /// let project_root = temp.path().join("project");
+    /// tokio::fs::create_dir_all(&project_root).await.unwrap();
+    /// let config = CacheConfig::default();
+    /// let project_cache_config = ProjectCacheConfig::default();
+    ///
+    /// let cache = Cache::with_strategy(
     ///     cache_root,
     ///     project_root,
     ///     config,
     ///     CacheStrategy::LocalFirst,
     ///     &project_cache_config,
-    /// ).await?;
-    /// # Ok(())
-    /// # }
+    /// ).await.unwrap();
+    /// let stats = cache.stats().await.unwrap();
+    /// assert_eq!(stats.total_size(), 0);
+    /// # });
     /// ```
     pub async fn with_strategy(
         cache_root: PathBuf,
@@ -271,12 +279,13 @@ impl Cache {
     /// # Examples
     ///
     /// ```
-    /// # use crate::cache::cas::Cache;
-    /// # #[tokio::main] async fn main() {
+    /// use bake::cache::Cache;
+    ///
+    /// # tokio_test::block_on(async {
     /// let cache = Cache::disabled();
-    /// let stats = cache.stats().await;
+    /// let stats = cache.stats().await.unwrap();
     /// assert_eq!(stats.total_size(), 0);
-    /// # }
+    /// # });
     /// ```
     pub fn disabled() -> Self {
         Self {
@@ -302,7 +311,7 @@ impl Cache {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // Given an enabled `cache`:
     /// let _store = cache.blob_store();
     /// ```
