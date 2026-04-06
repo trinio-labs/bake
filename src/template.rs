@@ -342,13 +342,9 @@ impl VariableContext {
             cached
         } else {
             // Execute command
-            let result =
-                Self::execute_shell_command(command, working_dir).map_err(|e| {
-                    handlebars::RenderErrorReason::Other(format!(
-                        "shell-lines command failed: {}",
-                        e
-                    ))
-                })?;
+            let result = Self::execute_shell_command(command, working_dir).map_err(|e| {
+                handlebars::RenderErrorReason::Other(format!("shell-lines command failed: {}", e))
+            })?;
 
             // Cache the result
             {
@@ -430,12 +426,9 @@ impl VariableContext {
         let resolved_params = match helper_def.resolve_parameters(&params) {
             Ok(params) => params,
             Err(e) => {
-                return Err(RenderError::from(
-                    handlebars::RenderErrorReason::Other(format!(
-                        "Helper '{}' parameter error: {}",
-                        helper_def.name, e
-                    )),
-                ));
+                return Err(RenderError::from(handlebars::RenderErrorReason::Other(
+                    format!("Helper '{}' parameter error: {}", helper_def.name, e),
+                )));
             }
         };
 
@@ -446,12 +439,12 @@ impl VariableContext {
         let rendered_script = match context.render_raw_template(&helper_def.run) {
             Ok(script) => script,
             Err(e) => {
-                return Err(RenderError::from(
-                    handlebars::RenderErrorReason::Other(format!(
+                return Err(RenderError::from(handlebars::RenderErrorReason::Other(
+                    format!(
                         "Helper '{}' script rendering failed: {}",
                         helper_def.name, e
-                    )),
-                ));
+                    ),
+                )));
             }
         };
 
@@ -496,12 +489,9 @@ impl VariableContext {
         ) {
             Ok(output) => output,
             Err(e) => {
-                return Err(RenderError::from(
-                    handlebars::RenderErrorReason::Other(format!(
-                        "Helper '{}' execution failed: {}",
-                        helper_def.name, e
-                    )),
-                ));
+                return Err(RenderError::from(handlebars::RenderErrorReason::Other(
+                    format!("Helper '{}' execution failed: {}", helper_def.name, e),
+                )));
             }
         };
 
@@ -517,8 +507,7 @@ impl VariableContext {
                     .collect();
 
                 let json_array: JsonValue = lines.clone().into();
-                let array_str =
-                    serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_string());
+                let array_str = serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_string());
                 (array_str, json_array)
             }
         };

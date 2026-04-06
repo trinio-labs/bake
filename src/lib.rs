@@ -1023,14 +1023,12 @@ pub async fn handle_generate_skill(args: &GenerateSkillArgs) -> anyhow::Result<(
 }
 
 fn generate_skill_args_from_args(args: &Args) -> Option<GenerateSkillArgs> {
-    match args.generate {
-        Some(GenerateTarget::Skill) => Some(GenerateSkillArgs {
+    args.generate
+        .map(|GenerateTarget::Skill| GenerateSkillArgs {
             path: args.path.clone(),
             env: args.env.clone(),
             force: args.force,
-        }),
-        None => None,
-    }
+        })
 }
 
 pub async fn run_bake(args: Args) -> anyhow::Result<()> {
