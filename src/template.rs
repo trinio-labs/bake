@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::bail;
-use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
+use handlebars::{
+    Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext, RenderError,
+    ScopedJson,
+};
 use indexmap::IndexMap;
 use serde_json::{Value as JsonValue, json};
 
@@ -322,223 +325,200 @@ impl VariableContext {
         }
     }
 
-    /// Creates a shell-lines helper closure that can be registered with Handlebars
-    fn create_shell_lines_helper(
-        shell_cache: ShellCache,
-        working_dir: Option<std::path::PathBuf>,
-    ) -> impl handlebars::HelperDef + Send + Sync {
-        move |h: &Helper,
-              _: &Handlebars,
-              _: &Context,
-              _: &mut RenderContext,
-              out: &mut dyn Output|
-              -> HelperResult {
-            let command = h.param(0).and_then(|v| v.value().as_str()).ok_or_else(|| {
-                handlebars::RenderErrorReason::Other(
-                    "shell-lines helper requires a command string parameter".to_string(),
-                )
+    /// Helper method to execute a shell-lines command: run command, cache result, split into lines
+    fn execute_shell_lines(
+        command: &str,
+        working_dir: &Option<std::path::PathBuf>,
+        shell_cache: &ShellCache,
+    ) -> Result<(String, JsonValue), RenderError> {
+        // Check cache first
+        let cache_key = command.to_string();
+        let cached_output = {
+            let cache = shell_cache.lock().unwrap();
+            cache.get(&cache_key).cloned()
+        };
+
+        let output = if let Some(cached) = cached_output {
+            cached
+        } else {
+            // Execute command
+            let result = Self::execute_shell_command(command, working_dir).map_err(|e| {
+                handlebars::RenderErrorReason::Other(format!("shell-lines command failed: {}", e))
             })?;
-
-            // Check cache first
-            let cache_key = command.to_string();
-            let cached_output = {
-                let cache = shell_cache.lock().unwrap();
-                cache.get(&cache_key).cloned()
-            };
-
-            let output = if let Some(cached) = cached_output {
-                cached
-            } else {
-                // Execute command
-                let result = Self::execute_shell_command(command, &working_dir).map_err(|e| {
-                    handlebars::RenderErrorReason::Other(format!(
-                        "shell-lines command failed: {}",
-                        e
-                    ))
-                })?;
-
-                // Cache the result
-                {
-                    let mut cache = shell_cache.lock().unwrap();
-                    cache.insert(cache_key, result.clone());
-                }
-                result
-            };
-
-            // Split by newlines, filter empty lines, and create YAML array
-            let lines: Vec<String> = output
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            // Use serde_json to properly serialize the array
-            let array_str = serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_string());
-            out.write(&array_str)?;
-
-            Ok(())
-        }
-    }
-
-    /// Creates a custom helper closure that can be registered with Handlebars
-    fn create_custom_helper(
-        helper_def: crate::project::Helper,
-        base_context: VariableContext,
-        shell_cache: ShellCache,
-    ) -> impl handlebars::HelperDef + Send + Sync {
-        move |h: &Helper,
-              _: &Handlebars,
-              _: &Context,
-              _: &mut RenderContext,
-              out: &mut dyn Output|
-              -> HelperResult {
-            use crate::project::HelperReturnType;
-            use std::collections::BTreeMap;
-
-            // Extract positional arguments
-            let mut positional_args: Vec<serde_yaml::Value> = Vec::new();
-            for i in 0..10 {
-                // Support up to 10 positional args
-                if let Some(param) = h.param(i) {
-                    let value = param.value();
-                    if let Some(s) = value.as_str() {
-                        positional_args.push(serde_yaml::Value::String(s.to_string()));
-                    } else if let Some(n) = value.as_f64() {
-                        positional_args.push(serde_yaml::Value::Number(serde_yaml::Number::from(
-                            n as i64,
-                        )));
-                    } else if let Some(b) = value.as_bool() {
-                        positional_args.push(serde_yaml::Value::Bool(b));
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            // Extract named arguments from hash
-            let mut named_args = BTreeMap::new();
-            for (key, value) in h.hash() {
-                if let Some(s) = value.value().as_str() {
-                    named_args.insert(key.to_string(), serde_yaml::Value::String(s.to_string()));
-                } else if let Some(n) = value.value().as_f64() {
-                    named_args.insert(
-                        key.to_string(),
-                        serde_yaml::Value::Number(serde_yaml::Number::from(n as i64)),
-                    );
-                } else if let Some(b) = value.value().as_bool() {
-                    named_args.insert(key.to_string(), serde_yaml::Value::Bool(b));
-                }
-            }
-
-            // Map positional args to parameter names (by order)
-            let mut params = BTreeMap::new();
-            for (idx, param_name) in helper_def.parameters.keys().enumerate() {
-                if let Some(value) = positional_args.get(idx) {
-                    params.insert(param_name.clone(), value.clone());
-                }
-            }
-
-            // Override with named args
-            params.extend(named_args);
-
-            // Resolve parameters with defaults and validation
-            let resolved_params = match helper_def.resolve_parameters(&params) {
-                Ok(params) => params,
-                Err(e) => {
-                    return Err(handlebars::RenderError::from(
-                        handlebars::RenderErrorReason::Other(format!(
-                            "Helper '{}' parameter error: {}",
-                            helper_def.name, e
-                        )),
-                    ));
-                }
-            };
-
-            // Build context with params constant
-            let context = helper_def.build_context(&base_context, &resolved_params);
-
-            // Render the run script
-            let rendered_script = match context.render_raw_template(&helper_def.run) {
-                Ok(script) => script,
-                Err(e) => {
-                    return Err(handlebars::RenderError::from(
-                        handlebars::RenderErrorReason::Other(format!(
-                            "Helper '{}' script rendering failed: {}",
-                            helper_def.name, e
-                        )),
-                    ));
-                }
-            };
-
-            // Create cache key from helper name + rendered script + working directory
-            // to ensure different working directories don't share cache entries
-            let cache_key = format!(
-                "{}:{}:{}",
-                helper_def.name,
-                rendered_script,
-                context
-                    .working_directory
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "none".to_string())
-            );
-            {
-                let cache = shell_cache.lock().unwrap();
-                if let Some(cached_output) = cache.get(&cache_key) {
-                    log::debug!("Cache HIT for helper '{}'", helper_def.name);
-                    out.write(cached_output)?;
-                    return Ok(());
-                } else {
-                    log::debug!(
-                        "Cache MISS for helper '{}', working_dir: {:?}",
-                        helper_def.name,
-                        context.working_directory
-                    );
-                }
-            }
-
-            // Execute the rendered script with helper-specific environment variables
-            let output = match Self::execute_shell_command_with_env(
-                &rendered_script,
-                &context.working_directory,
-                &helper_def.environment,
-            ) {
-                Ok(output) => output,
-                Err(e) => {
-                    return Err(handlebars::RenderError::from(
-                        handlebars::RenderErrorReason::Other(format!(
-                            "Helper '{}' execution failed: {}",
-                            helper_def.name, e
-                        )),
-                    ));
-                }
-            };
-
-            // Format output based on return type
-            let formatted_output = match helper_def.returns {
-                HelperReturnType::String => output.clone(),
-                HelperReturnType::Array => {
-                    // Split by newlines and create array (same as shell-lines)
-                    let lines: Vec<String> = output
-                        .lines()
-                        .filter(|line| !line.trim().is_empty())
-                        .map(|s| s.trim().to_string())
-                        .collect();
-
-                    // Use serde_json to properly serialize the array
-                    serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_string())
-                }
-            };
 
             // Cache the result
             {
                 let mut cache = shell_cache.lock().unwrap();
-                cache.insert(cache_key, formatted_output.clone());
+                cache.insert(cache_key, result.clone());
             }
+            result
+        };
 
-            out.write(&formatted_output)?;
-            Ok(())
+        // Split by newlines, filter empty lines
+        let lines: Vec<String> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .collect();
+
+        let json_array: JsonValue = lines.clone().into();
+        let array_str = serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_string());
+        Ok((array_str, json_array))
+    }
+
+    /// Executes a custom helper and returns the formatted string output and structured JSON value.
+    fn execute_custom_helper(
+        h: &Helper,
+        helper_def: &crate::project::Helper,
+        base_context: &VariableContext,
+        shell_cache: &ShellCache,
+    ) -> Result<(String, JsonValue), RenderError> {
+        use crate::project::HelperReturnType;
+        use std::collections::BTreeMap;
+
+        // Extract positional arguments
+        let mut positional_args: Vec<serde_yaml::Value> = Vec::new();
+        for i in 0..10 {
+            // Support up to 10 positional args
+            if let Some(param) = h.param(i) {
+                let value = param.value();
+                if let Some(s) = value.as_str() {
+                    positional_args.push(serde_yaml::Value::String(s.to_string()));
+                } else if let Some(n) = value.as_f64() {
+                    positional_args.push(serde_yaml::Value::Number(serde_yaml::Number::from(
+                        n as i64,
+                    )));
+                } else if let Some(b) = value.as_bool() {
+                    positional_args.push(serde_yaml::Value::Bool(b));
+                }
+            } else {
+                break;
+            }
         }
+
+        // Extract named arguments from hash
+        let mut named_args = BTreeMap::new();
+        for (key, value) in h.hash() {
+            if let Some(s) = value.value().as_str() {
+                named_args.insert(key.to_string(), serde_yaml::Value::String(s.to_string()));
+            } else if let Some(n) = value.value().as_f64() {
+                named_args.insert(
+                    key.to_string(),
+                    serde_yaml::Value::Number(serde_yaml::Number::from(n as i64)),
+                );
+            } else if let Some(b) = value.value().as_bool() {
+                named_args.insert(key.to_string(), serde_yaml::Value::Bool(b));
+            }
+        }
+
+        // Map positional args to parameter names (by order)
+        let mut params = BTreeMap::new();
+        for (idx, param_name) in helper_def.parameters.keys().enumerate() {
+            if let Some(value) = positional_args.get(idx) {
+                params.insert(param_name.clone(), value.clone());
+            }
+        }
+
+        // Override with named args
+        params.extend(named_args);
+
+        // Resolve parameters with defaults and validation
+        let resolved_params = match helper_def.resolve_parameters(&params) {
+            Ok(params) => params,
+            Err(e) => {
+                return Err(RenderError::from(handlebars::RenderErrorReason::Other(
+                    format!("Helper '{}' parameter error: {}", helper_def.name, e),
+                )));
+            }
+        };
+
+        // Build context with params constant
+        let context = helper_def.build_context(base_context, &resolved_params);
+
+        // Render the run script
+        let rendered_script = match context.render_raw_template(&helper_def.run) {
+            Ok(script) => script,
+            Err(e) => {
+                return Err(RenderError::from(handlebars::RenderErrorReason::Other(
+                    format!(
+                        "Helper '{}' script rendering failed: {}",
+                        helper_def.name, e
+                    ),
+                )));
+            }
+        };
+
+        // Create cache key from helper name + rendered script + working directory
+        // to ensure different working directories don't share cache entries
+        let cache_key = format!(
+            "{}:{}:{}",
+            helper_def.name,
+            rendered_script,
+            context
+                .working_directory
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        {
+            let cache = shell_cache.lock().unwrap();
+            if let Some(cached_output) = cache.get(&cache_key) {
+                log::debug!("Cache HIT for helper '{}'", helper_def.name);
+                // Reconstruct the JSON value from cached string
+                let json_value = match helper_def.returns {
+                    HelperReturnType::Array => {
+                        serde_json::from_str(cached_output).unwrap_or(JsonValue::Array(vec![]))
+                    }
+                    HelperReturnType::String => JsonValue::String(cached_output.clone()),
+                };
+                return Ok((cached_output.clone(), json_value));
+            } else {
+                log::debug!(
+                    "Cache MISS for helper '{}', working_dir: {:?}",
+                    helper_def.name,
+                    context.working_directory
+                );
+            }
+        }
+
+        // Execute the rendered script with helper-specific environment variables
+        let output = match Self::execute_shell_command_with_env(
+            &rendered_script,
+            &context.working_directory,
+            &helper_def.environment,
+        ) {
+            Ok(output) => output,
+            Err(e) => {
+                return Err(RenderError::from(handlebars::RenderErrorReason::Other(
+                    format!("Helper '{}' execution failed: {}", helper_def.name, e),
+                )));
+            }
+        };
+
+        // Format output based on return type
+        let (formatted_output, json_value) = match helper_def.returns {
+            HelperReturnType::String => (output.clone(), JsonValue::String(output)),
+            HelperReturnType::Array => {
+                // Split by newlines and create array (same as shell-lines)
+                let lines: Vec<String> = output
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .collect();
+
+                let json_array: JsonValue = lines.clone().into();
+                let array_str = serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_string());
+                (array_str, json_array)
+            }
+        };
+
+        // Cache the result
+        {
+            let mut cache = shell_cache.lock().unwrap();
+            cache.insert(cache_key, formatted_output.clone());
+        }
+
+        Ok((formatted_output, json_value))
     }
 
     /// Executes a shell command and returns its stdout output
@@ -614,21 +594,21 @@ impl VariableContext {
 
         handlebars.register_helper(
             "shell-lines",
-            Box::new(Self::create_shell_lines_helper(
-                Arc::clone(&self.shell_cache),
-                self.working_directory.clone(),
-            )),
+            Box::new(ShellLinesHelper {
+                shell_cache: Arc::clone(&self.shell_cache),
+                working_dir: self.working_directory.clone(),
+            }),
         );
 
         // Register custom user-defined helpers
         for helper in &self.helpers {
             handlebars.register_helper(
                 &helper.name,
-                Box::new(Self::create_custom_helper(
-                    helper.clone(),
-                    self.clone(),
-                    Arc::clone(&self.shell_cache),
-                )),
+                Box::new(CustomHelperDef {
+                    helper_def: helper.clone(),
+                    base_context: self.clone(),
+                    shell_cache: Arc::clone(&self.shell_cache),
+                }),
             );
         }
 
@@ -823,6 +803,97 @@ impl VariableContext {
             }
             _ => {} // Other types (Number, Bool, Null) don't need processing
         }
+        Ok(())
+    }
+}
+
+/// Struct-based Handlebars helper for `shell-lines` that implements `call_inner`,
+/// enabling use as a subexpression in `{{#each (shell-lines "...")}}`.
+struct ShellLinesHelper {
+    shell_cache: ShellCache,
+    working_dir: Option<std::path::PathBuf>,
+}
+
+impl HelperDef for ShellLinesHelper {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &Helper<'rc>,
+        _: &'reg Handlebars<'reg>,
+        _: &'rc Context,
+        _: &mut RenderContext<'reg, 'rc>,
+    ) -> Result<ScopedJson<'rc>, RenderError> {
+        let command = h.param(0).and_then(|v| v.value().as_str()).ok_or_else(|| {
+            handlebars::RenderErrorReason::Other(
+                "shell-lines helper requires a command string parameter".to_string(),
+            )
+        })?;
+
+        let (_array_str, json_array) =
+            VariableContext::execute_shell_lines(command, &self.working_dir, &self.shell_cache)?;
+        Ok(ScopedJson::Derived(json_array))
+    }
+
+    fn call<'reg: 'rc, 'rc>(
+        &self,
+        h: &Helper<'rc>,
+        _: &'reg Handlebars<'reg>,
+        _: &'rc Context,
+        _: &mut RenderContext<'reg, 'rc>,
+        out: &mut dyn Output,
+    ) -> HelperResult {
+        let command = h.param(0).and_then(|v| v.value().as_str()).ok_or_else(|| {
+            handlebars::RenderErrorReason::Other(
+                "shell-lines helper requires a command string parameter".to_string(),
+            )
+        })?;
+
+        let (array_str, _json_array) =
+            VariableContext::execute_shell_lines(command, &self.working_dir, &self.shell_cache)?;
+        out.write(&array_str)?;
+        Ok(())
+    }
+}
+
+/// Struct-based Handlebars helper for custom user-defined helpers that implements `call_inner`,
+/// enabling array-returning helpers to be used in `{{#each (my-helper)}}`.
+struct CustomHelperDef {
+    helper_def: crate::project::Helper,
+    base_context: VariableContext,
+    shell_cache: ShellCache,
+}
+
+impl HelperDef for CustomHelperDef {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &Helper<'rc>,
+        _: &'reg Handlebars<'reg>,
+        _: &'rc Context,
+        _: &mut RenderContext<'reg, 'rc>,
+    ) -> Result<ScopedJson<'rc>, RenderError> {
+        let (_formatted, json_value) = VariableContext::execute_custom_helper(
+            h,
+            &self.helper_def,
+            &self.base_context,
+            &self.shell_cache,
+        )?;
+        Ok(ScopedJson::Derived(json_value))
+    }
+
+    fn call<'reg: 'rc, 'rc>(
+        &self,
+        h: &Helper<'rc>,
+        _: &'reg Handlebars<'reg>,
+        _: &'rc Context,
+        _: &mut RenderContext<'reg, 'rc>,
+        out: &mut dyn Output,
+    ) -> HelperResult {
+        let (formatted, _json_value) = VariableContext::execute_custom_helper(
+            h,
+            &self.helper_def,
+            &self.base_context,
+            &self.shell_cache,
+        )?;
+        out.write(&formatted)?;
         Ok(())
     }
 }
@@ -1332,6 +1403,14 @@ prod:
     }
 
     #[test]
+    fn test_shell_lines_in_each_subexpression() {
+        let context = VariableContext::empty();
+        let template = r#"{{#each (shell-lines 'printf "a\nb\nc"')}}{{this}},{{/each}}"#;
+        let result = context.render_raw_template(template).unwrap();
+        assert_eq!(result, "a,b,c,");
+    }
+
+    #[test]
     fn test_shell_helper_caching() {
         let context = VariableContext::empty();
 
@@ -1579,6 +1658,31 @@ items: {{shell-lines 'printf "item1\nitem2\nitem3"'}}
 
         let result = context.render_raw_template(r#"{{make-list}}"#).unwrap();
         assert_eq!(result, r#"["item1","item2","item3"]"#);
+    }
+
+    #[test]
+    fn test_custom_helper_array_in_each_subexpression() {
+        use crate::project::helper::{Helper, HelperReturnType};
+
+        let mut context = VariableContext::empty();
+
+        let helper = Helper {
+            name: "make-list".to_string(),
+            description: None,
+            returns: HelperReturnType::Array,
+            parameters: BTreeMap::new(),
+            variables: BTreeMap::new(),
+            environment: Vec::new(),
+            run: "printf 'item1\\nitem2\\nitem3'".to_string(),
+            helper_path: PathBuf::new(),
+        };
+
+        context.helpers.push(helper);
+
+        let result = context
+            .render_raw_template(r#"{{#each (make-list)}}{{this}},{{/each}}"#)
+            .unwrap();
+        assert_eq!(result, "item1,item2,item3,");
     }
 
     #[test]

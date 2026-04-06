@@ -1,5 +1,27 @@
 # Bake
 
+## v2.2.0 - 2026-04-06
+
+### Added
+
+- **Skill generation command** - New `--generate skill` flag to generate AI-tool helper assets for a bake project
+  - Produces a project-specific Bake reference document with cookbook/recipe details, selector examples, and environment info
+  - `--force` flag to overwrite existing generated files without prompting
+  - Supports `--path` and `--env` for multi-project and environment-specific generation
+
+### Fixed
+
+- **Array-returning helpers in `#each` subexpressions** - Fixed `shell-lines` and custom helpers returning arrays that were not iterable inside `{{#each (helper)}}` blocks
+  - Closure-based Handlebars helpers only implemented `call()`, which writes strings to output; when used as subexpressions, Handlebars calls `call_inner()` which was unimplemented, causing arrays to be wrapped as a single JSON string
+  - Replaced closure-based helpers with struct-based `HelperDef` implementations that provide both `call_inner()` (returns structured JSON for subexpressions) and `call()` (writes serialized string for direct rendering)
+  - Preserves full backward compatibility for existing templates
+
+- **Cache doctests** - Repaired broken doctests in `layered.rs` and `cas_strategy.rs` cache modules
+
+### Technical
+
+- **Dogfooding** - Added `bake.yml` and `cookbook.yml` to the bake repository itself for local development workflows
+
 ## v2.1.0 - 2026-02-25
 
 ### Added

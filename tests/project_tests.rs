@@ -188,7 +188,6 @@ recipes:
 
 #[test_case("/invalid/circular"; "circular dependency")]
 #[test_case("/invalid/recipes"; "invalid recipes")]
-#[test_case("/invalid/nobake"; "no bake file")]
 fn test_invalid_project_configurations(path: &str) {
     let result = BakeProject::load(
         &PathBuf::from(config_path(path)),
@@ -197,6 +196,17 @@ fn test_invalid_project_configurations(path: &str) {
         false,
     );
     assert!(result.is_err(), "Expected error for path: {path}");
+}
+
+#[test]
+fn test_no_bake_file() {
+    // Use a temp directory with a .git sentinel to prevent upward search
+    // into the real repo (nested .git dirs can't be tracked by git)
+    let temp_dir = tempdir().unwrap();
+    std::fs::create_dir_all(temp_dir.path().join(".git")).unwrap();
+
+    let result = BakeProject::load(temp_dir.path(), None, IndexMap::new(), false);
+    assert!(result.is_err(), "Expected error for missing bake.yml");
 }
 
 #[test]
