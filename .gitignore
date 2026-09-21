@@ -5,3 +5,5 @@ target
 **/.bake/logs
 .serena
 lcov.info
+
+.DS_Store
