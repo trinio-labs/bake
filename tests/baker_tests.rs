@@ -1,7 +1,19 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use async_trait::async_trait;
+use bytes::Bytes;
 use test_case::test_case;
 
-use bake::{baker, cache::Cache};
+use bake::{
+    baker,
+    cache::{
+        Cache,
+        cas::{BlobHash, BlobStore, LocalBlobStore},
+    },
+};
 
 mod common;
 
@@ -134,4 +146,93 @@ fn test_recipe_filtering(pattern: &str, expected: &[&str]) {
             expected_fqn
         );
     }
+}
+
+/// Blob store whose reads stall, standing in for a slow remote cache.
+struct SlowBlobStore {
+    inner: LocalBlobStore,
+    delay: Duration,
+}
+
+#[async_trait]
+impl BlobStore for SlowBlobStore {
+    async fn contains(&self, hash: &BlobHash) -> anyhow::Result<bool> {
+        self.inner.contains(hash).await
+    }
+
+    async fn get(&self, hash: &BlobHash) -> anyhow::Result<Bytes> {
+        tokio::time::sleep(self.delay).await;
+        self.inner.get(hash).await
+    }
+
+    async fn put(&self, content: Bytes) -> anyhow::Result<BlobHash> {
+        self.inner.put(content).await
+    }
+
+    async fn delete(&self, hash: &BlobHash) -> anyhow::Result<()> {
+        self.inner.delete(hash).await
+    }
+
+    async fn size(&self, hash: &BlobHash) -> anyhow::Result<Option<u64>> {
+        self.inner.size(hash).await
+    }
+
+    async fn list(&self) -> anyhow::Result<Vec<BlobHash>> {
+        self.inner.list().await
+    }
+}
+
+async fn build_slow_cache(project: &Arc<bake::project::BakeProject>, delay: Duration) -> Cache {
+    let cache_root = project.get_project_bake_path().join("cache");
+    let inner = LocalBlobStore::new(cache_root.join("cas/blobs"));
+    inner.init().await.unwrap();
+    Cache::with_blob_store(
+        cache_root,
+        project.root_path.clone(),
+        bake::cache::CacheConfig::default(),
+        Arc::new(SlowBlobStore { inner, delay }),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cache_lookups_do_not_hold_execution_permits() {
+    const RESTORE_DELAY: Duration = Duration::from_secs(1);
+    const CACHED_RECIPES: usize = 4;
+
+    let cached_names: Vec<String> = (0..CACHED_RECIPES).map(|i| format!("cached{i}")).collect();
+    let mut recipe_names: Vec<&str> = cached_names.iter().map(String::as_str).collect();
+    recipe_names.push("uncached");
+
+    let mut builder = common::TestProjectBuilder::new().with_cookbook("foo", &recipe_names);
+    for name in &cached_names {
+        builder = builder.with_recipe_cache_outputs(&format!("foo:{name}"), vec![]);
+    }
+    let mut project = builder.build();
+    // A single execution slot: if lookups held it, the cached recipes would restore one at a time.
+    project.config.max_parallel = 1;
+    project.config.reserved_threads = 0;
+
+    let plan = get_execution_plan(&mut project, None, false, &[]).unwrap();
+    let project = Arc::new(project);
+
+    // The first bake misses and populates the cache; nothing is read from the blob store.
+    let cache = build_slow_cache(&project, RESTORE_DELAY).await;
+    baker::bake(project.clone(), cache, plan.clone(), false)
+        .await
+        .unwrap();
+
+    let cache = build_slow_cache(&project, RESTORE_DELAY).await;
+    let started = Instant::now();
+    baker::bake(project, cache, plan, false).await.unwrap();
+    let elapsed = started.elapsed();
+
+    // Every hit reads two blobs (stdout and stderr), so one restore costs twice the delay and
+    // four of them serialized behind the permit would cost eight times the delay.
+    let serialized = RESTORE_DELAY * 2 * CACHED_RECIPES as u32;
+    assert!(
+        elapsed < serialized / 2,
+        "cache lookups appear to be serialized behind execution permits: {elapsed:?} (serialized would be {serialized:?})"
+    );
 }

@@ -110,20 +110,6 @@ pub async fn bake(
 
             level_join_set.spawn(async move {
                 let recipe_fqn = recipe_to_run.full_name();
-                let permit = match semaphore_clone.acquire_owned().await {
-                    Ok(p) => p,
-                    Err(_) => {
-                        let status = RunStatus {
-                            status: Status::Error,
-                            output: "Semaphore closed".to_string(),
-                        };
-                        results_clone
-                            .lock()
-                            .unwrap()
-                            .insert(recipe_fqn, status.clone());
-                        return status;
-                    }
-                };
 
                 // Create the progress bar option for this task.
                 let progress_bar_owner = if !arc_project_clone.config.verbose {
@@ -161,6 +147,7 @@ pub async fn bake(
                         arc_project_clone,
                         arc_cache_clone,
                         recipe_hashes_clone,
+                        semaphore_clone,
                         progress_bar_for_manage, // Pass the clone that can be moved
                         cancel_tx_clone_for_task.subscribe(), // Use cloned sender to subscribe
                     ) => status,
@@ -170,7 +157,6 @@ pub async fn bake(
                     .lock()
                     .unwrap()
                     .insert(recipe_fqn.clone(), final_status.clone());
-                drop(permit);
                 final_status
             });
         }
@@ -318,11 +304,18 @@ fn process_final_results(
 }
 
 /// Manages the execution of a single recipe, including caching, running, progress, and cancellation.
+///
+/// Only the recipe's own process holds one of the `execution_permits`. Cache lookups (which
+/// may download and restore outputs from a remote store) and the upload after a successful run
+/// happen outside the permit: they are network-bound, the cache already bounds its own transfer
+/// concurrency, and holding an execution slot during a slow restore would starve recipes that
+/// are ready to run.
 async fn manage_single_recipe_execution(
     recipe_to_run: Recipe,
     project: Arc<BakeProject>,
     cache: Arc<Cache>,
     recipe_hashes: Arc<BTreeMap<String, String>>,
+    execution_permits: Arc<Semaphore>,
     progress_bar: Option<ProgressBar>,
     mut cancel_rx: broadcast::Receiver<()>, // Receiver for cancellation signals
 ) -> RunStatus {
@@ -379,15 +372,26 @@ async fn manage_single_recipe_execution(
             }
 
             // If not cached (i.e., CacheResult::Miss was matched and fell through) or cache is disabled, run the recipe.
+            let permit = match execution_permits.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    run_status.status = Status::Error;
+                    run_status.output = "Semaphore closed".to_string();
+                    return;
+                }
+            };
             run_status.status = Status::Running;
             if let Some(pb) = progress_bar.as_ref() {
                 pb.set_message(format!("Baking recipe {recipe_fqn}... (running)"));
             }
-            match run_recipe(
+            let run_result = run_recipe(
                 &recipe_to_run,
                 project.get_recipe_log_path(&recipe_fqn),
                 &project.config
-            ).await {
+            ).await;
+            // Released before the cache upload so the slot goes to the next runnable recipe.
+            drop(permit);
+            match run_result {
                 Ok(result) => {
                     run_status.status = Status::Done;
                     if recipe_to_run.cache.is_some() { // Try to cache if successful run

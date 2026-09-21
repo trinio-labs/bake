@@ -1,5 +1,11 @@
 # Bake
 
+## Unreleased
+
+### Fixed
+
+- **Cache lookups no longer occupy execution slots** - Restoring a cached recipe (manifest fetch, blob download, output restore) ran while holding one of the `maxParallel` permits, so a batch of slow remote restores could stall recipes that were ready to run for minutes. Lookups and the post-run upload now happen outside the permit; only the recipe's own process holds one. The cache's own transfer limits still bound how many downloads and uploads run at once.
+
 ## v2.2.0 - 2026-04-06
 
 ### Added

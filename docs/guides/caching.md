@@ -593,6 +593,10 @@ config:
     parallel_operations: 4     # Parallel cache transfers
 ```
 
+Cache lookups and uploads never count against `maxParallel`: a recipe takes an execution slot
+only while its own command runs, so a slow remote restore does not hold back recipes that are
+ready to run.
+
 ### Use Cache Hierarchies
 
 Organize caches for better reuse:

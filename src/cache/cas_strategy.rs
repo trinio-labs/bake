@@ -101,22 +101,29 @@ impl Cache {
         project_root: PathBuf,
         config: CacheConfig,
     ) -> Result<Self> {
-        // Initialize blob store
-        let blob_root = cache_root.join("cas/blobs");
-        let blob_store = LocalBlobStore::new(blob_root);
+        let blob_store = LocalBlobStore::new(cache_root.join("cas/blobs"));
         blob_store.init().await?;
+        Self::with_blob_store(cache_root, project_root, config, Arc::new(blob_store)).await
+    }
 
-        // Initialize blob index
-        let index_path = cache_root.join("cas/index.db");
-        let blob_index = BlobIndex::open(&index_path)?;
+    /// Creates a CAS cache over an already initialized blob store.
+    ///
+    /// The blob index (`cas/index.db`) and action cache (`ac`) are rooted under `cache_root`;
+    /// blobs live wherever `blob_store` puts them. This is the seam for a custom or wrapped
+    /// store, such as one that instruments or throttles transfers.
+    pub async fn with_blob_store(
+        cache_root: PathBuf,
+        project_root: PathBuf,
+        config: CacheConfig,
+        blob_store: Arc<dyn BlobStore>,
+    ) -> Result<Self> {
+        let blob_index = BlobIndex::open(cache_root.join("cas/index.db"))?;
 
-        // Initialize action cache
-        let ac_root = cache_root.join("ac");
-        let action_cache = ActionCache::new(ac_root);
+        let action_cache = ActionCache::new(cache_root.join("ac"));
         action_cache.init().await?;
 
         Ok(Self {
-            blob_store: Some(Arc::new(blob_store)),
+            blob_store: Some(blob_store),
             blob_index: Some(Arc::new(blob_index)),
             action_cache: Some(Arc::new(action_cache)),
             project_root,
@@ -251,23 +258,7 @@ impl Cache {
             )?)
         };
 
-        // Initialize blob index
-        let index_path = cache_root.join("cas/index.db");
-        let blob_index = BlobIndex::open(&index_path)?;
-
-        // Initialize action cache
-        let ac_root = cache_root.join("ac");
-        let action_cache = ActionCache::new(ac_root);
-        action_cache.init().await?;
-
-        Ok(Self {
-            blob_store: Some(blob_store),
-            blob_index: Some(Arc::new(blob_index)),
-            action_cache: Some(Arc::new(action_cache)),
-            project_root,
-            config,
-            disabled: false,
-        })
+        Self::with_blob_store(cache_root, project_root, config, blob_store).await
     }
 
     /// Creates a cache instance that is disabled and acts as an inert/no-op cache.
