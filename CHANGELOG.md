@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`Cache::with_blob_store`** - Builds a cache over an already initialised blob store, so a caller can wrap or instrument transfers. `Cache::local` and `Cache::with_strategy` now delegate to it.
+
 ### Fixed
 
 - **Cache lookups no longer occupy execution slots** - Restoring a cached recipe (manifest fetch, blob download, output restore) ran while holding one of the `maxParallel` permits, so a batch of slow remote restores could stall recipes that were ready to run for minutes. Lookups and the post-run upload now happen outside the permit; only the recipe's own process holds one. The cache's own transfer limits still bound how many downloads and uploads run at once.
+- **Cache transfer limits are shared by all recipes** - `upload_parallelism`, `download_parallelism` and the hashing limit were per call, so each recipe got its own budget and a dependency level could multiply them. They now live on the cache and bound every recipe together. The stdout/stderr blobs a cache hit reads back went straight to the store with no limit at all; they take a download permit too.
 
 ## v2.2.0 - 2026-04-06
 

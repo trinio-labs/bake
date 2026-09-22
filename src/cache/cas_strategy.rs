@@ -42,11 +42,30 @@ pub struct Cache {
     /// Project root path
     project_root: PathBuf,
 
-    /// Configuration
-    config: CacheConfig,
+    /// Transfer and hashing limits. They live on the cache rather than on each call
+    /// because recipes look up and store their outputs concurrently: per-call semaphores
+    /// bound one recipe's transfers while letting a whole dependency level multiply them.
+    limits: Limits,
 
     /// Whether this cache is disabled (always returns Miss)
     disabled: bool,
+}
+
+/// Semaphores shared by every `get` and `put` on one cache.
+struct Limits {
+    hashing: Arc<Semaphore>,
+    upload: Arc<Semaphore>,
+    download: Arc<Semaphore>,
+}
+
+impl Limits {
+    fn new(config: &CacheConfig) -> Self {
+        Self {
+            hashing: Arc::new(Semaphore::new(config.hashing_parallelism)),
+            upload: Arc::new(Semaphore::new(config.upload_parallelism)),
+            download: Arc::new(Semaphore::new(config.download_parallelism)),
+        }
+    }
 }
 
 /// Configuration for CAS cache
@@ -127,7 +146,7 @@ impl Cache {
             blob_index: Some(Arc::new(blob_index)),
             action_cache: Some(Arc::new(action_cache)),
             project_root,
-            config,
+            limits: Limits::new(&config),
             disabled: false,
         })
     }
@@ -284,7 +303,7 @@ impl Cache {
             blob_index: None,
             action_cache: None,
             project_root: PathBuf::new(),
-            config: CacheConfig::default(),
+            limits: Limits::new(&CacheConfig::default()),
             disabled: true,
         }
     }
@@ -435,7 +454,7 @@ impl Cache {
         }
 
         // Phase 1: Hash all outputs in parallel (with controlled concurrency to avoid "too many open files")
-        let hash_sem = Arc::new(Semaphore::new(self.config.hashing_parallelism));
+        let hash_sem = self.limits.hashing.clone();
         let mut hashed_outputs = Vec::with_capacity(all_files.len());
 
         // Determine safe chunk size based on system file descriptor limits
@@ -482,7 +501,7 @@ impl Cache {
         let exists_flags = self.blob_store().contains_many(&digests).await?;
 
         // Phase 3: Upload missing blobs in parallel (chunked to avoid too many open files)
-        let upload_sem = Arc::new(Semaphore::new(self.config.upload_parallelism));
+        let upload_sem = self.limits.upload.clone();
 
         // Collect blobs that need uploading
         let blobs_to_upload: Vec<_> = hashed_outputs
@@ -591,6 +610,18 @@ impl Cache {
         Ok(())
     }
 
+    /// Reads back the stdout and stderr a cached run captured. These are blob reads like any
+    /// other, so they take a download permit rather than going straight to the store.
+    async fn get_streams(&self, action_result: &ActionResult) -> Result<(String, String)> {
+        let _permit = self.limits.download.acquire().await?;
+        let stdout = self.blob_store().get(&action_result.stdout_digest).await?;
+        let stderr = self.blob_store().get(&action_result.stderr_digest).await?;
+        Ok((
+            String::from_utf8_lossy(&stdout).to_string(),
+            String::from_utf8_lossy(&stderr).to_string(),
+        ))
+    }
+
     /// Restore recipe outputs from cache (GET operation)
     pub async fn get(&self, action_key: &str, recipe_name: &str) -> Result<CacheResult> {
         // If cache is disabled, always return Miss
@@ -668,12 +699,7 @@ impl Cache {
                 recipe_name
             );
 
-            // Load stdout/stderr from blob store
-            let stdout_content = self.blob_store().get(&action_result.stdout_digest).await?;
-            let stderr_content = self.blob_store().get(&action_result.stderr_digest).await?;
-
-            let stdout = String::from_utf8_lossy(&stdout_content).to_string();
-            let stderr = String::from_utf8_lossy(&stderr_content).to_string();
+            let (stdout, stderr) = self.get_streams(&action_result).await?;
 
             return Ok(CacheResult::Hit {
                 stdout,
@@ -701,7 +727,7 @@ impl Cache {
         }
 
         // Phase 4: Download blobs in parallel
-        let download_sem = Arc::new(Semaphore::new(self.config.download_parallelism));
+        let download_sem = self.limits.download.clone();
         let download_tasks: Vec<_> = needs_download
             .iter()
             .map(|output| {
@@ -748,11 +774,7 @@ impl Cache {
         futures_util::future::try_join_all(download_tasks).await?;
 
         // Phase 5: Restore stdout/stderr
-        let stdout_content = self.blob_store().get(&action_result.stdout_digest).await?;
-        let stderr_content = self.blob_store().get(&action_result.stderr_digest).await?;
-
-        let stdout = String::from_utf8_lossy(&stdout_content).to_string();
-        let stderr = String::from_utf8_lossy(&stderr_content).to_string();
+        let (stdout, stderr) = self.get_streams(&action_result).await?;
 
         debug!(
             "CAS GET: Hit - restored {} outputs for '{}'",
