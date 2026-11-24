@@ -271,6 +271,20 @@ du -sh .bake/cache/recipes/*
 find .bake/cache/recipes -name "*.tar.zst" | head -10
 ```
 
+### Git Worktrees
+
+When the project lives in a linked git worktree (one created with `git worktree add`), bake keeps the cache in the main worktree's copy of the project, at `<main worktree>/<project path>/.bake/cache`, so every worktree of a repository shares one cache. Cache keys use paths relative to the project, which is why an entry built in one worktree can be restored in another. Logs (`.bake/logs`), templates and helpers stay per worktree, and only the cache is shared.
+
+```text
+~/code/app                 # main worktree, owns the cache
+└── .bake/cache
+~/code/app-feature         # linked worktree, reads and writes ~/code/app/.bake/cache
+```
+
+Bake falls back to `<project>/.bake/cache` when it cannot find a main worktree to share with: outside git, in the main worktree itself, in a submodule or `--separate-git-dir` checkout (unless the git directory was moved into a directory literally named `.git`, in which case git treats its parent as the main worktree and linked worktrees share that one), in a worktree of a bare repository (or of one whose main worktree git cannot confirm), or when git is missing, older than 2.31 or fails. This lookup never fails a run, it only changes where the cache lives.
+
+`bake --clean` removes the cache directory in use, if it exists, and prints its path, so from a linked worktree it wipes the shared cache for every worktree, and anything baking at that moment may see misses and rebuild. A recipe whose command or variables contain the worktree's absolute path (for example through `{{project.root}}`) gets a different cache key in each worktree, so it will not hit across them.
+
 ## Remote Caching
 
 ### AWS S3 Cache

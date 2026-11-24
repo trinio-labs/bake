@@ -51,8 +51,10 @@ impl ActionCache {
         // Serialize to JSON
         let json = result.to_json()?;
 
-        // Write atomically using temp file
-        let temp_path = path.with_extension("tmp");
+        // Write atomically via a temp file unique to this call: concurrent writers of
+        // the same key (tasks or other bake processes sharing the cache) must never
+        // share a temp path. `list` only reads `.json`, so crash leftovers are ignored.
+        let temp_path = path.with_extension(format!("tmp.{}", rand::random::<u64>()));
         fs::write(&temp_path, json).await?;
         fs::rename(&temp_path, &path).await?;
 
@@ -204,6 +206,47 @@ mod tests {
 
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.recipe, result.recipe);
+    }
+
+    // Concurrent `put` of one key, from tasks or from separate bake processes
+    // sharing a cache. Each writer writes its own `<key>.tmp.<random u64>` and then
+    // renames it onto `<key>.json`. rename(2) atomically replaces the target whether
+    // or not it exists, and no writer touches another writer's temp file, so the
+    // order of the other writer's write cannot affect this writer's rename.
+    //
+    // | `<key>.json` before | A renames while B writes | B renames while A writes | both written, A renames first | both written, B renames first |
+    // |---------------------|--------------------------|--------------------------|-------------------------------|-------------------------------|
+    // | absent              | ok, then B's JSON        | ok, then A's JSON        | ok, B's JSON                  | ok, A's JSON                  |
+    // | present-complete    | ok, then B's JSON        | ok, then A's JSON        | ok, B's JSON                  | ok, A's JSON                  |
+    //
+    // "ok" = both renames succeed; the final file is the last renamer's complete
+    // JSON and every intermediate state is one writer's complete JSON (or the old
+    // complete file). With the old shared `<key>.tmp`, the first rename took the
+    // other writer's temp file away (its rename failed with ENOENT) and a write
+    // could truncate the temp file another writer was about to rename (a partial
+    // manifest).
+    #[tokio::test]
+    async fn test_concurrent_put_same_key() {
+        let (cache, _temp) = create_test_action_cache().await;
+        let cache = std::sync::Arc::new(cache);
+
+        let handles: Vec<_> = (0..32)
+            .map(|i| {
+                let cache = cache.clone();
+                tokio::spawn(async move {
+                    let mut result = ActionResult::new(format!("writer:{i}"));
+                    result.exit_code = i;
+                    cache.put("same_key", &result).await
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+
+        // Parsing succeeds only on complete JSON; matching fields prove one writer's.
+        let stored = cache.get("same_key").await.unwrap().unwrap();
+        assert_eq!(stored.recipe, format!("writer:{}", stored.exit_code));
     }
 
     #[tokio::test]

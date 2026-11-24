@@ -1,5 +1,16 @@
 # Bake
 
+## Unreleased
+
+### Added
+
+- **Shared cache across git worktrees** - A project inside a linked git worktree now uses the main worktree's `.bake/cache`, so every worktree of a repository shares one cache. Outside git, in the main worktree, in submodules, in worktrees of bare repositories, or when git is missing or older than 2.31, the cache stays at `<project>/.bake/cache`. `bake --clean` from any worktree removes the shared cache.
+
+### Fixed
+
+- **Concurrent action-cache writes** - Several bake processes storing the same action-cache entry at once could fail because they shared one temp file name. Each write now uses its own temp file.
+- **SQLite "database is locked" errors** - The blob index now waits up to 30 seconds for another process's lock instead of failing, including when several processes open a fresh cache at the same moment.
+
 ## v2.3.0 - 2026-09-22
 
 ### Added

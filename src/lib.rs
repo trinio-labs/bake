@@ -1101,7 +1101,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
         }
 
         // Clean CAS cache directory
-        let cache_dir = project.get_project_bake_path().join("cache");
+        let cache_dir = project.get_cache_path();
         if cache_dir.exists() {
             std::fs::remove_dir_all(&cache_dir).with_context(|| {
                 format!("Failed to remove cache directory {}", cache_dir.display())
@@ -1270,7 +1270,7 @@ pub async fn run_bake(args: Args) -> anyhow::Result<()> {
             };
 
             // Create multi-tier cache
-            let cache_root = project.get_project_bake_path().join("cache");
+            let cache_root = project.get_cache_path();
             cache::Cache::with_strategy(
                 cache_root,
                 project.root_path.clone(),

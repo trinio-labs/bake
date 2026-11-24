@@ -1041,6 +1041,13 @@ impl BakeProject {
         self.root_path.join(".bake")
     }
 
+    /// Returns the local cache directory, shared across git worktrees.
+    ///
+    /// See [`resolve_cache_path`].
+    pub fn get_cache_path(&self) -> PathBuf {
+        resolve_cache_path(&self.root_path)
+    }
+
     /// Filters recipes based on a colon-separated pattern with regex support.
     ///
     /// # Arguments
@@ -1193,6 +1200,164 @@ impl BakeProject {
 
         Ok(matching_fqns)
     }
+}
+
+/// Git's repository-local environment variables, as printed by
+/// `git rev-parse --local-env-vars`. Any of them inherited by bake (e.g. from a
+/// git hook) would make git describe a repository other than the one at the
+/// directory it runs in, so every git call that discovers the layout removes them.
+pub const GIT_LOCAL_ENV_VARS: [&str; 15] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+];
+
+/// Resolves the local cache directory (`.bake/cache`) for a project.
+///
+/// When `project_root` is inside a linked git worktree, the cache lives in the
+/// main worktree's copy of the project (`<main>/<project path>/.bake/cache`), so
+/// every worktree of a repository shares one cache. Cache keys use paths relative
+/// to the project, so entries are portable between worktrees.
+///
+/// In every other case (outside git, in the main worktree, in a submodule or
+/// `--separate-git-dir` checkout, in a worktree of a bare repository or of a
+/// repository whose main worktree git cannot confirm, or when git is missing,
+/// older than 2.31 or fails) this returns `<project_root>/.bake/cache`. It never
+/// fails.
+///
+/// The layout is discovered from `project_root` alone: git's repository-local
+/// variables inherited by bake (e.g. `GIT_DIR` set by a git hook) are ignored.
+pub fn resolve_cache_path(project_root: &Path) -> PathBuf {
+    main_worktree_project_root(project_root)
+        .unwrap_or_else(|| project_root.to_path_buf())
+        .join(".bake")
+        .join("cache")
+}
+
+/// Maps `project_root`, inside a linked worktree, to the same project directory
+/// in the repository's main worktree.
+///
+/// Only a main worktree that git itself confirms is returned, which takes two
+/// `rev-parse` calls:
+///
+/// 1. In the project: toplevel `T`, git dir `G` and common dir `C`. `G == C`
+///    means the project is not in a linked worktree (it is in a main worktree, a
+///    submodule checkout or a `--separate-git-dir` checkout), so `None`.
+/// 2. In a candidate directory (`C` without a trailing `/.git`, else `C` itself;
+///    a submodule's git dir reports its `core.worktree`): toplevel `M`, whose git
+///    dir and common dir must both be `C` and which must not be bare. That makes
+///    `M` a work tree whose own git dir is this repository.
+///
+/// Any failure or unexpected answer gives `None`: git missing, a non-zero exit
+/// (e.g. the candidate is a bare repository or a separate git dir with no work
+/// tree), or output that is not exactly one absolute, existing path per line.
+///
+/// One layout passes the check without being the project's main worktree: a
+/// `--separate-git-dir` repository whose git dir is itself named `.git` (e.g.
+/// `store/.git` for a checkout at `sep`). Git treats `store` as its main
+/// worktree and the git dir does not point back at `sep`, so linked worktrees
+/// of it share `store/<project path>/.bake/cache`.
+fn main_worktree_project_root(project_root: &Path) -> Option<PathBuf> {
+    let lines = rev_parse(
+        project_root,
+        &["--show-toplevel", "--git-dir", "--git-common-dir"],
+    )?;
+    let [toplevel, git_dir, common_dir] = real_paths(&lines)?;
+    if git_dir == common_dir {
+        return None;
+    }
+
+    let candidate = match common_dir.file_name() {
+        Some(name) if name == ".git" => common_dir.parent()?,
+        _ => &common_dir,
+    };
+    let mut lines = rev_parse(
+        candidate,
+        &[
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+            "--is-bare-repository",
+        ],
+    )?;
+    if lines.pop()? != "false" {
+        return None;
+    }
+    let [main_root, main_git_dir, main_common_dir] = real_paths(&lines)?;
+    if main_git_dir != common_dir || main_common_dir != common_dir {
+        return None;
+    }
+
+    // git reports canonical paths (e.g. /private/var on macOS), so compare canonically.
+    let project_root = project_root.canonicalize().ok()?;
+    let relative = project_root.strip_prefix(&toplevel).ok()?;
+    Some(main_root.join(relative))
+}
+
+/// Runs `git rev-parse --path-format=absolute <flags>` in `dir` and returns one
+/// line per flag, or `None` if git fails or prints any other number of lines.
+///
+/// The count check rejects a path containing a newline (it spans two lines) and
+/// a git older than 2.31, which echoes the unknown `--path-format=absolute`
+/// back as an extra line.
+fn rev_parse(dir: &Path, flags: &[&str]) -> Option<Vec<String>> {
+    let args = [&["rev-parse", "--path-format=absolute"], flags].concat();
+    let stdout = git_stdout(dir, &args)?;
+    let lines: Vec<String> = stdout
+        .strip_suffix('\n')?
+        .split('\n')
+        .map(String::from)
+        .collect();
+    (lines.len() == flags.len()).then_some(lines)
+}
+
+/// Canonicalizes paths reported by git, or `None` if any is relative or does
+/// not exist.
+fn real_paths<const N: usize>(lines: &[String]) -> Option<[PathBuf; N]> {
+    let paths = lines
+        .iter()
+        .map(|line| {
+            let path = Path::new(line);
+            path.is_absolute()
+                .then(|| path.canonicalize().ok())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    paths.try_into().ok()
+}
+
+/// Runs git in `dir` and returns its stdout, or `None` if git cannot be spawned,
+/// exits non-zero, or prints non-UTF-8.
+///
+/// [`GIT_LOCAL_ENV_VARS`] are removed so git describes `dir` itself rather than
+/// a repository named by the caller's environment.
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    for var in GIT_LOCAL_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    let output = cmd
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8(output.stdout).ok()
 }
 
 #[cfg(test)]
@@ -1665,5 +1830,215 @@ mod tests {
             .filter_recipes_by_tags(&all_fqns, &["nonexistent".to_string()])
             .unwrap();
         assert_eq!(result.len(), 0);
+    }
+
+    /// Runs git in `dir`, panicking on failure (test helper). Repository-local
+    /// variables are removed so the caller's environment cannot redirect it.
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let mut cmd = std::process::Command::new("git");
+        for var in super::GIT_LOCAL_ENV_VARS {
+            cmd.env_remove(var);
+        }
+        let status = cmd
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn test_cache_path_outside_git_is_local() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            super::resolve_cache_path(tmp.path()),
+            tmp.path().join(".bake").join("cache")
+        );
+    }
+
+    #[test_case("" ; "project at repo root")]
+    #[test_case("sub/proj" ; "project in subdirectory")]
+    fn test_cache_path_shared_across_worktrees(project_rel: &str) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let main = base.join("main");
+        let main_project = main.join(project_rel);
+        std::fs::create_dir_all(&main_project).unwrap();
+        std::fs::write(main_project.join("bake.yml"), "").unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-q", "-m", "init"]);
+        let wt = base.join("wt");
+        git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+
+        let expected = main_project.join(".bake").join("cache");
+        assert_eq!(super::resolve_cache_path(&main_project), expected);
+        assert_eq!(super::resolve_cache_path(&wt.join(project_rel)), expected);
+    }
+
+    /// A bare repository stored at `<repo>/.git` has no main worktree, so its
+    /// linked worktrees keep a local cache even though the common dir is named `.git`.
+    #[test]
+    fn test_cache_path_bare_repo_named_dot_git_is_local() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("bake.yml"), "").unwrap();
+        git(&src, &["init", "-q"]);
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-q", "-m", "init"]);
+        let bare = base.join("repo").join(".git");
+        git(
+            &base,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                src.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        let wt = base.join("wt");
+        git(&bare, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+
+        assert_eq!(
+            super::resolve_cache_path(&wt),
+            wt.join(".bake").join("cache")
+        );
+    }
+
+    /// Creates `dir` holding a `bake.yml` and commits it to a new repository
+    /// initialised with `init_args`.
+    fn commit_repo(dir: &std::path::Path, init_args: &[&str]) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("bake.yml"), "").unwrap();
+        git(dir, &[&["init", "-q"], init_args].concat());
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    fn add_worktree(repo: &std::path::Path, wt: &std::path::Path) {
+        git(repo, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    }
+
+    /// `<base>/super` with a submodule checked out at `super/sub`.
+    fn superproject_with_submodule(base: &std::path::Path) -> PathBuf {
+        let sub_origin = base.join("sub-origin");
+        commit_repo(&sub_origin, &[]);
+        let superproject = base.join("super");
+        commit_repo(&superproject, &[]);
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                sub_origin.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        git(&superproject, &["commit", "-q", "-m", "submodule"]);
+        superproject.join("sub")
+    }
+
+    // Each layout builds a repository under `base` and returns the project
+    // directory together with the directory whose `.bake/cache` it must use.
+
+    fn layout_submodule_checkout(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let sub = superproject_with_submodule(base);
+        (sub.clone(), sub)
+    }
+
+    fn layout_submodule_linked_worktree(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let sub = superproject_with_submodule(base);
+        let wt = base.join("sub-wt");
+        add_worktree(&sub, &wt);
+        (wt, sub)
+    }
+
+    fn layout_separate_git_dir_main(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let checkout = base.join("sep");
+        let store = base.join("store");
+        commit_repo(&checkout, &["--separate-git-dir", store.to_str().unwrap()]);
+        (checkout.clone(), checkout)
+    }
+
+    /// The git dir is literally named `.git` but lives outside the checkout, so
+    /// `store/.git` looks like the git dir of a `store` work tree.
+    fn layout_separate_git_dir_named_dot_git_main(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let checkout = base.join("sep");
+        let store = base.join("store").join(".git");
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        commit_repo(&checkout, &["--separate-git-dir", store.to_str().unwrap()]);
+        (checkout.clone(), checkout)
+    }
+
+    fn layout_separate_git_dir_linked_worktree(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let (checkout, _) = layout_separate_git_dir_main(base);
+        let wt = base.join("wt");
+        add_worktree(&checkout, &wt);
+        (wt.clone(), wt)
+    }
+
+    /// The separate git dir holds a `.git` file pointing at another repository,
+    /// so git run there reports a work tree whose git dir is not this repository.
+    fn layout_separate_git_dir_holding_foreign_dot_git(
+        base: &std::path::Path,
+    ) -> (PathBuf, PathBuf) {
+        let (wt, _) = layout_separate_git_dir_linked_worktree(base);
+        let other = base.join("other");
+        commit_repo(&other, &[]);
+        let foreign = format!("gitdir: {}\n", other.join(".git").display());
+        std::fs::write(base.join("store").join(".git"), foreign).unwrap();
+        (wt.clone(), wt)
+    }
+
+    /// The main repository is bare through `core.bare` in its `config.worktree`.
+    fn layout_worktree_config_bare(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let main = base.join("main");
+        commit_repo(&main, &[]);
+        git(&main, &["config", "extensions.worktreeConfig", "true"]);
+        let wt = base.join("wt");
+        add_worktree(&main, &wt);
+        git(&main, &["config", "--worktree", "core.bare", "true"]);
+        (wt.clone(), wt)
+    }
+
+    /// A newline in the main worktree path splits git's output across lines.
+    fn layout_main_path_with_newline(base: &std::path::Path) -> (PathBuf, PathBuf) {
+        let main = base.join("main\nrepo");
+        commit_repo(&main, &[]);
+        let wt = base.join("wt");
+        add_worktree(&main, &wt);
+        (wt.clone(), wt)
+    }
+
+    #[test_case(layout_submodule_checkout ; "submodule checkout")]
+    #[test_case(layout_submodule_linked_worktree ; "linked worktree of a submodule")]
+    #[test_case(layout_separate_git_dir_main ; "separate git dir main checkout")]
+    #[test_case(layout_separate_git_dir_named_dot_git_main ; "separate git dir named dot git main checkout")]
+    #[test_case(layout_separate_git_dir_linked_worktree ; "linked worktree of a separate git dir repo")]
+    #[test_case(layout_separate_git_dir_holding_foreign_dot_git ; "separate git dir holding a foreign dot git file")]
+    #[test_case(layout_worktree_config_bare ; "linked worktree of a bare main via config worktree")]
+    #[test_case(layout_main_path_with_newline ; "linked worktree of a main path with a newline")]
+    fn test_cache_path_layouts(layout: fn(&std::path::Path) -> (PathBuf, PathBuf)) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (project, cache_owner) = layout(&tmp.path().canonicalize().unwrap());
+        assert_eq!(
+            super::resolve_cache_path(&project),
+            cache_owner.join(".bake").join("cache")
+        );
     }
 }
