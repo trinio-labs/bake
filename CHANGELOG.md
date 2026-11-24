@@ -1,6 +1,6 @@
 # Bake
 
-## Unreleased
+## v2.4.0 - 2026-11-24
 
 ### Added
 
@@ -10,6 +10,11 @@
 
 - **Concurrent action-cache writes** - Several bake processes storing the same action-cache entry at once could fail because they shared one temp file name. Each write now uses its own temp file.
 - **SQLite "database is locked" errors** - The blob index now waits up to 30 seconds for another process's lock instead of failing, including when several processes open a fresh cache at the same moment.
+
+### Changed
+
+- **Dependency upgrades** - Every direct dependency is on its latest release, including major bumps of `rusqlite` (0.43, with a newer bundled SQLite), `rand` (0.10), `sha2`/`hmac` (0.11/0.13), `zstd` (0.14), `dirs` (7), `validator` (0.21) and `mockall` (0.15).
+- **Release pipeline** - Releases are built with cargo-dist 0.34.0, which also moves the workflow to `actions/checkout@v6`, `upload-artifact@v7` and `download-artifact@v8`.
 
 ## v2.3.0 - 2026-09-22
 
